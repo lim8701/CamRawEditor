@@ -720,6 +720,8 @@ class Controller(QObject):
         self._seg_guide = None      # 캐시된 원본 휘도(guided filter 가이드)
         self._seg_size = None       # 캐시된 마스크 출력 크기(H,W)
         self._mask_keys = []        # 현재 선택된 클래스 그룹 key 목록
+        self._mask_point = None     # SAM 클릭 선택 정규화 좌표 (nx,ny 0..1) — 클래스와 상호배타
+        self._sam_enc = None        # 캐시된 SAM 인코더 임베딩(이미지당 1회, 클릭마다 decode 만 재실행)
         self._full_url = "image://rawfull/f?v=0"
         self._full_counter = 0
         self._gpu_path = ""                      # GPU export 대상 파일
@@ -2209,6 +2211,7 @@ class Controller(QObject):
         if keys_list == self._mask_keys and self._sky_mask is not None:
             return
         self._mask_keys = keys_list
+        self._mask_point = None             # 클래스 선택 → SAM 점 소스 비활성(상호배타)
         if self._proxy_img is None:
             return
         self._sky_seq += 1
@@ -2216,6 +2219,58 @@ class Controller(QObject):
         self.skyBusyChanged.emit()
         threading.Thread(target=self._mask_worker,
                          args=(self._sky_seq, list(self._mask_keys)), daemon=True).start()
+
+    @Slot(float, float)
+    def selectMaskAtPoint(self, nx: float, ny: float) -> None:  # noqa: N802 (QML 슬롯)
+        """이미지 클릭 지점(정규화 프록시 좌표 0..1)으로 SAM 대상 마스크 생성(백그라운드).
+        클래스 선택과 상호배타. 좌표는 해상도 독립(사이드카 저장→로드 시 재생성)."""
+        if self._proxy_img is None:
+            return
+        self._mask_point = (float(nx), float(ny))
+        self._mask_keys = []                # SAM 점 → 클래스 비활성(상호배타)
+        self._sky_seq += 1
+        self._sky_busy = True
+        self.skyBusyChanged.emit()
+        threading.Thread(target=self._sam_worker,
+                         args=(self._sky_seq, float(nx), float(ny)), daemon=True).start()
+
+    def _sam_worker(self, seq: int, nx: float, ny: float) -> None:
+        """SlimSAM 클릭 선택: 인코더 임베딩(이미지당 1회 캐시) + 점 디코드 → 프록시 마스크.
+        하늘 마스크와 동일 종착점(_skyReady→_on_sky_ready→_set_sky_mask). CPU 세션(GPU 경합 회피)."""
+        import sam_seg
+        mask = None
+        try:
+            if not sam_seg.is_ready():          # 최초 1회 모델 다운로드(~40MB) → 진행률 문구
+                self._segDlSig.emit((True, 0.0))
+                _last = [0.0]
+
+                def _dl(f):
+                    if f - _last[0] >= 0.02 or f >= 1.0:
+                        _last[0] = f
+                        self._segDlSig.emit((True, f))
+                try:
+                    sam_seg.ensure_model(_dl)
+                finally:
+                    self._segDlSig.emit((False, 1.0))
+            if self._sam_enc is None:           # 인코더 임베딩 이미지당 1회(비쌈) → 캐시
+                rgb8 = self._sky_input_rgb()
+                enc = sam_seg.encode(rgb8)
+                if seq != self._sky_seq:        # 인코딩 중 이미지 전환 → 폐기
+                    return
+                self._sam_enc = enc
+            enc = self._sam_enc
+            px, py = nx * enc["W"], ny * enc["H"]
+            m = sam_seg.decode(enc, [(px, py)])
+            if m is None or float(m.max()) <= 0.0:
+                self._skyReady.emit((seq, None))
+                return
+            if seq != self._sky_seq:
+                return
+            mask = m
+        except Exception as exc:
+            print(f"[mask] SAM 클릭 세그 실패: {exc}")
+            self._segStatusSig.emit("")
+        self._skyReady.emit((seq, mask))
 
     @staticmethod
     def _qimage_to_rgb(qimg):
@@ -2645,6 +2700,7 @@ class Controller(QObject):
         되살리는 레이스 방지(다른 무효화 경로와 동일 규칙)."""
         self._sky_seq += 1
         self._mask_keys = []
+        self._mask_point = None
         self._set_sky_mask(None)
 
     def _get_sky_url(self) -> str:
@@ -2792,7 +2848,9 @@ class Controller(QObject):
         self._proxy_img = img            # 세그 입력 디코드용(display sRGB 변환 base)
         self._seg_probs = None           # 프록시 바뀜 → 추론 캐시 무효화(재추론 필요)
         self._seg_guide = self._seg_size = None
+        self._sam_enc = None             # 프록시 바뀜 → SAM 인코더 임베딩 무효화(재인코딩 필요)
         prev_mask_keys = list(self._mask_keys)
+        prev_mask_point = self._mask_point
         self._sky_seq += 1               # 이전 이미지의 진행 중 세그 워커 결과 폐기(전환 레이스 방지)
         self._set_sky_mask(None)         # 새 프록시 → 이전 마스크 무효(곧 재생성/복원)
         # 디헤이즈 물리(DCP): 이전 추정 무효화(준비 전엔 conf=0 → 톤모델 폴백) 후 백그라운드 재추정.
@@ -2828,10 +2886,13 @@ class Controller(QObject):
         # 비-fresh 재디코딩(렌즈 보정·WB 커밋 등)은 editsReady(복원)를 안 거친다 → 활성 마스크가
         # 있었으면 같은 클래스로 새 프록시에 재생성(렌즈 보정은 기하 변경 → 정렬 위해 재생성 필수).
         # fresh load 는 applyEdits 가 저장본에서 복원하므로 여기선 건드리지 않는다.
-        if prev_mask_keys and not self._fresh_load:
+        if not self._fresh_load and prev_mask_point is not None:
+            self.selectMaskAtPoint(*prev_mask_point)   # SAM 점 마스크도 새 프록시에 재정렬
+        elif prev_mask_keys and not self._fresh_load:
             self.setMaskClasses(prev_mask_keys)
         else:
             self._mask_keys = []
+            self._mask_point = None
         self._update_stamp_layer()       # 날짜 스탬프 프리뷰 레이어(프록시, 우하단)
         self._compute_histogram(img)     # 톤커브 배경 히스토그램(디코딩된 프록시)
         print(f"[load] {self._path}  ({img.width()}x{img.height()})  "
