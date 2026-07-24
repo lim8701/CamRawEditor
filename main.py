@@ -503,8 +503,16 @@ class ThumbProvider(QQuickImageProvider):
                         im = QImage()
                         if im.loadFromData(thumb):
                             ori = tags.get("Image Orientation")
-                            im = ThumbProvider._apply_orientation(
-                                im, ori.values[0] if ori and ori.values else 1)
+                            ori_v = ori.values[0] if ori and ori.values else 1
+                            im = ThumbProvider._apply_orientation(im, ori_v)
+                            # 후지 EXIF 썸네일(4:3)에 구워진 레터박스 띠 제거 — 실제 사진 비율
+                            # (EXIF 치수)로 중앙 크롭. 90/270°는 표시 비율 반전. 없으면 스킵(현행 유지).
+                            tw, tl = tags.get("EXIF ExifImageWidth"), tags.get("EXIF ExifImageLength")
+                            if tw and tl and tw.values and tl.values:
+                                target = float(tw.values[0]) / max(1.0, float(tl.values[0]))
+                                if ori_v in (5, 6, 7, 8):
+                                    target = 1.0 / target
+                                im = ThumbProvider._crop_to_aspect(im, target)
                             # 원본보다 크게 요청돼도 업스케일 안 함(호버 피크가 160
                             # 요청 시 세로사진은 회전 후 120px 폭 원본 그대로 반환).
                             if im.width() > edge:
@@ -533,6 +541,23 @@ class ThumbProvider(QQuickImageProvider):
             return img if not img.isNull() else QImage()
         except Exception:
             return QImage()
+
+    @staticmethod
+    def _crop_to_aspect(img: QImage, target: float) -> QImage:
+        """이미지를 target 종횡비(가로/세로)로 중앙 크롭. 후지 EXIF 썸네일은 4:3 컨테이너에
+        실제 사진 비율을 레터박스(검은 띠)로 담으므로, 실제 비율로 잘라 띠를 제거한다
+        (정사각형 PreserveAspectCrop 채움이 깔끔해짐). 오차 작으면 원본 반환."""
+        w, h = img.width(), img.height()
+        if w <= 0 or h <= 0 or target <= 0:
+            return img
+        cur = w / h
+        if abs(cur - target) < 0.02:
+            return img
+        if cur > target:                                    # 너무 넓음 → 폭 크롭(좌우 띠)
+            nw = max(1, round(h * target))
+            return img.copy((w - nw) // 2, 0, nw, h)
+        nh = max(1, round(w / target))                      # 너무 높음 → 높이 크롭(상하 띠)
+        return img.copy(0, (h - nh) // 2, w, nh)
 
     @staticmethod
     def _apply_orientation(img: QImage, ori: int) -> QImage:

@@ -1568,7 +1568,9 @@ ApplicationWindow {
                                     Image {
                                         anchors.fill: parent; anchors.margins: 2
                                         source: "image://thumb/" + encodeURIComponent(modelData)
-                                        sourceSize.width: 220; fillMode: Image.PreserveAspectCrop
+                                        // 160=EXIF 썸네일 고속 경로 한계(탐색기와 동일 경로, ~1-5ms).
+                                        // >160 이면 풀 프리뷰 축소 디코딩으로 넘어가 느려짐(128px 셀엔 160 충분).
+                                        sourceSize.width: 160; fillMode: Image.PreserveAspectCrop
                                         asynchronous: true; cache: true
                                     }
                                     HoverHandler { id: gThumbHover }
