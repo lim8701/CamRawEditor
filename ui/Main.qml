@@ -124,27 +124,15 @@ ApplicationWindow {
     property bool showSkyMask: false
     // 현재 체크된 마스크 클래스 그룹 key 목록(복합 선택). 토글 시 라이브 재조합.
     property var maskKeys: []
-    // SAM 클릭 선택: 모드 on 이면 이미지 클릭이 대상 마스크 생성. maskPoint=정규화 좌표[nx,ny](저장/복원).
-    property bool samSelectMode: false
-    property var maskPoint: null
     // 사이드카 복원으로 마스크 재생성 중 — 완료 시 오버레이 자동 표시 억제(로드 시 갑자기 적색 방지).
     property bool _maskRestore: false
     function toggleMaskKey(key, on) {
-        maskPoint = null; samSelectMode = false   // 클래스 조작 → SAM 점 소스 해제(상호배타)
         var a = maskKeys.slice()
         var i = a.indexOf(key)
         if (on && i < 0) a.push(key)
         else if (!on && i >= 0) a.splice(i, 1)
         maskKeys = a
         maskApplyTimer.restart()   // 디바운스: 빠른 연속 토글을 한 번의 재조합으로 합침
-    }
-    // SAM 클릭 선택: 이미지 클릭(정규화 프록시 좌표) → 대상 마스크. 클래스 해제(상호배타).
-    function selectMaskByPoint(nx, ny) {
-        maskKeys = []
-        maskPoint = [nx, ny]
-        win.showSkyMask = false
-        samSelectMode = false      // 한 번 클릭하면 모드 해제(다시 고르려면 버튼 재토글)
-        controller.selectMaskAtPoint(nx, ny)
     }
     // 체크박스 토글 코얼레싱 — 마지막 토글 후 잠깐 뒤 한 번만 세그/재조합 실행(스레드 폭증 방지).
     Timer {
@@ -210,7 +198,7 @@ ApplicationWindow {
     }
     // 저장/export 페이로드 조각(maskKeys + invert + 9개 조정값). render_full 은 maskKeys 무시.
     function skyEditParams() {
-        var o = { "maskKeys": win.maskKeys, "maskPoint": win.maskPoint, "skyInvert": skyInvertCheck.checked }
+        var o = { "maskKeys": win.maskKeys, "skyInvert": skyInvertCheck.checked }
         for (var i = 0; i < win.skyAdjustKeys.length; i++) {
             var k = win.skyAdjustKeys[i]; o[k] = win._skySlider(k).value
         }
@@ -225,23 +213,13 @@ ApplicationWindow {
         }
         skyInvertCheck.checked = win._ev(p, "skyInvert", false)
         win.showSkyMask = false
-        var mpt = win._ev(p, "maskPoint", null)
         var mk = win._ev(p, "maskKeys", [])
-        if (mpt && mpt.length === 2) {           // SAM 점 마스크 우선 — 좌표로 재생성
-            var samept = controller.hasSkyMask && win.maskPoint
-                         && mpt[0] === win.maskPoint[0] && mpt[1] === win.maskPoint[1]
-            win.maskKeys = []
-            win.maskPoint = mpt.slice()
-            if (!samept) { win._maskRestore = true; controller.selectMaskAtPoint(mpt[0], mpt[1]) }
-        } else {
-            win.maskPoint = null
-            // 같은 클래스 조합 + 마스크 이미 존재(undo/redo·paste 등) → 재조합 생략(세그 후처리 비쌈).
-            var same = controller.hasSkyMask && JSON.stringify(mk) === JSON.stringify(win.maskKeys)
-            win.maskKeys = mk.slice()
-            if (mk.length > 0) {
-                if (!same) { win._maskRestore = true; controller.setMaskClasses(mk) }
-            } else controller.clearSky()
-        }
+        // 같은 클래스 조합 + 마스크 이미 존재(undo/redo·paste 등) → 재조합 생략(세그 후처리 비쌈).
+        var same = controller.hasSkyMask && JSON.stringify(mk) === JSON.stringify(win.maskKeys)
+        win.maskKeys = mk.slice()
+        if (mk.length > 0) {
+            if (!same) { win._maskRestore = true; controller.setMaskClasses(mk) }
+        } else controller.clearSky()
     }
 
     // === 회전/크롭(지오메트리) 상태 — 프리뷰 뷰변환과 export numpy 양쪽에서 사용 ===
@@ -417,8 +395,6 @@ ApplicationWindow {
         skyInvertCheck.checked = false
         win.showSkyMask = false
         win.maskKeys = []
-        win.maskPoint = null
-        win.samSelectMode = false
         controller.clearSky()
     }
 
@@ -3117,24 +3093,6 @@ ApplicationWindow {
                         }
                     }
 
-                    // === SAM 클릭 선택(Masking 탭 선택 모드): 이미지 대상 클릭 → 마스크 ===
-                    // pan/zoom MouseArea 뒤(위)에 선언 → 선택 모드일 때 클릭을 먼저 받는다.
-                    // pipeView.mapFromItem 으로 화면좌표→프록시 픽셀 역변환(회전/줌/팬/원근 반영).
-                    MouseArea {
-                        id: samClickArea
-                        anchors.fill: parent
-                        enabled: win.samSelectMode && cropClip.visible
-                                 && controller.imagePath !== "" && !controller.skyBusy
-                        cursorShape: Qt.CrossCursor
-                        onClicked: (m) => {
-                            var p = pipeView.mapFromItem(samClickArea, m.x, m.y)
-                            var nx = p.x / Math.max(1, viewport.procW)
-                            var ny = p.y / Math.max(1, viewport.procH)
-                            if (nx >= 0 && nx <= 1 && ny >= 0 && ny <= 1)
-                                win.selectMaskByPoint(nx, ny)
-                        }
-                    }
-
                     // === 미니맵(확대 시): 전체(크롭 결과) 중 현재 보이는 영역 표시. 우하단. ===
                     Item {
                         id: minimap
@@ -5414,27 +5372,6 @@ ApplicationWindow {
                                         }
                                     }
                                 }
-                            }
-                            // ---- 또는: 이미지에서 대상 클릭 선택 (SAM, 픽셀 정밀) ----
-                            Label {
-                                text: "Or click a subject"
-                                color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
-                                font.capitalization: Font.AllUppercase
-                                Layout.topMargin: 4
-                            }
-                            Button {
-                                Layout.fillWidth: true
-                                enabled: controller.imagePath !== "" && !controller.skyBusy
-                                checkable: true
-                                checked: win.samSelectMode
-                                text: win.samSelectMode ? "Now click the subject on the image…"
-                                                        : "Select subject by click"
-                                onToggled: win.samSelectMode = checked
-                            }
-                            Label {
-                                Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                text: "Turn on, then click any object in the photo to mask it. Downloads a small model on first use."
-                                color: "#888"; font.pixelSize: 11
                             }
                             Button {
                                 text: "Clear"
