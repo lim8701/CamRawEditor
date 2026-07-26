@@ -25,6 +25,19 @@ Set-Location $proj
 
 Write-Host "[1/4] stopping any running app + cleaning dist..."
 Get-Process FilmRawstery -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+# 개발 중 실행해 둔 `python main.py` 도 함께 종료 — 이 인스턴스가 살아 있으면 single-instance
+# named pipe 를 잡고 있어서 [3/4] 스모크 테스트가 exe 를 띄우자마자 '이미 실행 중'으로 종료돼
+# 빌드 산출물이 멀쩡해도 항상 실패한다. 창을 먼저 정중히 닫고, 안 닫히면 강제 종료.
+$devApp = Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" -ErrorAction SilentlyContinue |
+          Where-Object { $_.CommandLine -like '*main.py*' }
+foreach ($p in $devApp) {
+    $proc = Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue
+    if ($proc) { $null = $proc.CloseMainWindow() }
+}
+if ($devApp) {
+    Start-Sleep -Milliseconds 1200
+    foreach ($p in $devApp) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
+}
 Start-Sleep -Milliseconds 400
 Remove-Item -Recurse -Force (Join-Path $proj 'dist') -ErrorAction SilentlyContinue
 
