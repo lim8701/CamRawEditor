@@ -73,6 +73,11 @@ a = Analysis(
     excludes=excludes,
     noarchive=False,
 )
+# OpenCV 의 videoio ffmpeg DLL(29MB) 제외 — hooks-contrib 의 hook-cv2 가 무조건 넣지만
+# 이 앱은 cv2 를 얼굴 검출(FaceDetectorYN)과 리샘플(resize/boxFilter)에만 쓴다(영상 없음).
+# videoio 는 지연 로드라 파일이 없어도 나머지 기능에 영향 없음.
+a.binaries = [b for b in a.binaries if "opencv_videoio_ffmpeg" not in b[0].lower()]
+
 pyz = PYZ(a.pure, a.zipped_data)
 
 exe = EXE(
