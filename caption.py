@@ -56,6 +56,12 @@ _FILES = {
     "florence2_generation_config.json": "generation_config.json",
 }
 _TOTAL_BYTES = 1_090_000_000     # 진행률 표시용 대략 총량(fp32 4파일 합)
+
+# ── 모델 관리 화면(AI Models)용 메타데이터 — sky_seg 와 동일 계약 ────────────
+MODEL_LABEL = "Photo caption"
+MODEL_NOTE = "English captions → hashtags and folder search (Florence-2 base-ft). Opt-in only"
+MODEL_FILES = list(_FILES.keys())
+TOTAL_BYTES = _TOTAL_BYTES
 _DL_TIMEOUT = 30                 # 소켓 읽기 타임아웃(초)
 
 # 캡션 상세도(Florence-2 태스크) -> 프롬프트 (processing_florence2.py 의 매핑과 동일)

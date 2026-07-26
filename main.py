@@ -20,7 +20,8 @@ from pathlib import Path
 
 from PySide6.QtCore import (Property, QBuffer, QEvent, QFileSystemWatcher, QObject,
                             QPointF, QSettings, QSize, Qt, QTimer, Signal, Slot, QUrl)
-from PySide6.QtGui import QGuiApplication, QImage, QImageReader, QTransform
+from PySide6.QtGui import (QDesktopServices, QGuiApplication, QImage, QImageReader,
+                           QTransform)
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickImageProvider, QQuickItem
 
@@ -675,6 +676,10 @@ class Controller(QObject):
     skySelected = Signal()       # 하늘 마스크 '생성 완료'만(클리어 제외) → QML 이 오버레이 자동 표시
     skyBusyChanged = Signal()    # 하늘 세그멘테이션(추론) 진행 중 표시
     segStatusChanged = Signal()  # 세그 상태 문구(예: 모델 다운로드 중) 갱신 알림
+    modelsChanged = Signal()     # AI 모델 설치 상태 변화(다운로드 시작/완료) — 목록 재평가
+    # ⚠️진행률은 별도 시그널 — modelsChanged 로 묶으면 틱마다 modelCatalog 가 새 리스트를
+    #   반환해 Repeater 가 델리게이트를 전부 재생성한다(1GB 다운로드 = 200회, 버튼 깜빡임·클릭 유실).
+    modelProgressChanged = Signal()
     cmChanged = Signal()         # 디스플레이 색관리 LUT 갱신 알림(모니터 전환/로드)
     hazeChanged = Signal()       # 디헤이즈 투과율 맵/대기광/conf 갱신 알림(DCP)
     nrChanged = Signal()         # 휘도 NR 베이스 텍스처/준비 상태 갱신 알림
@@ -688,6 +693,7 @@ class Controller(QObject):
     _skyReady = Signal(object)   # (내부) 마스크 워커 -> 메인 스레드 (img_gen, layer, lseq, mask)
     _segStatusSig = Signal(str)  # (내부) 세그 워커 -> 메인 스레드 상태 문구 전달
     _segDlSig = Signal(object)   # (내부) 세그 워커 -> 메인 스레드 (downloading, 진행률 0..1)
+    _modelDlSig = Signal(object)  # (내부) AI Models 수동 다운로드 워커 -> 메인 (key, 0..1, state)
     _exportProgressSig = Signal(float)  # (내부) export 워커 -> 메인 스레드 진행률(0..1)
     _hazeReady = Signal(object)  # (내부) 디헤이즈 추정 워커 -> 메인 스레드 (seq, (t, A, conf))
     _nrReady = Signal(object)    # (내부) NR 베이스 워커 -> 메인 스레드 (seq, 디노이즈드 luma)
@@ -748,6 +754,9 @@ class Controller(QObject):
         self._sky_pending = 0       # in-flight 마스크 워커 수(busy = pending>0)
         self._sky_busy = False      # 세그 추론/재조합 진행 중
         self._seg_status = ""       # 세그 상태 문구(모델 다운로드 중 등). 빈 문자열=없음
+        self._model_dl_key = ""     # AI Models 화면에서 수동 다운로드 중인 모듈 key("" = 없음)
+        self._model_dl_prog = 0.0   # 그 진행률 0..1
+        self._model_error = ""      # 마지막 다운로드 실패 메시지(성공 시 "")
         self._seg_downloading = False   # 마스킹 모델 다운로드 중(전용 프로그레스바 표시)
         self._seg_dl_prog = 0.0         # 다운로드 진행률 0..1
         self._layer_masks = [None] * 5  # 레이어별 마스크(numpy [0,1], 프록시) — CPU export 용
@@ -841,6 +850,7 @@ class Controller(QObject):
         self._skyReady.connect(self._on_sky_ready)
         self._segStatusSig.connect(self._on_seg_status)
         self._segDlSig.connect(self._on_seg_dl)
+        self._modelDlSig.connect(self._on_model_dl)
         self._exportProgressSig.connect(self._on_export_progress)
         self._hazeReady.connect(self._on_haze_ready)
         self._nrReady.connect(self._on_nr_ready)
@@ -2246,6 +2256,148 @@ class Controller(QObject):
 
     faceGroups = Property("QVariantList", _get_face_groups, constant=True)
 
+    # ---------- AI 모델 관리(설치 현황 + 수동 다운로드) ----------
+    # 모델이 늘어나면서 "무엇이 얼마나 받아졌는지"가 안 보이고, 다운로드가 기능을 처음 쓰는
+    # 순간에만 암묵적으로 일어난다. 여기서 현황을 모아 보여주고 미리 받을 수 있게 한다.
+    # ⚠️크기·파일명·설명은 각 엔진 모듈이 소유한다(MODEL_LABEL/NOTE/FILES/TOTAL_BYTES).
+    #   여기에 복제하면 모델을 교체할 때 한쪽만 고쳐져 표시가 어긋난다.
+    MODEL_MODULES = ("sky_seg", "face_seg", "ai_denoise", "caption")
+
+    @staticmethod
+    def _fmt_bytes(n: int) -> str:
+        return f"{n / 1e9:.2f} GB" if n >= 1e9 else f"{n / 1e6:.0f} MB"
+
+    def _get_model_catalog(self):
+        """[{key,label,note,sizeText,totalBytes,installed,partial,haveText}] — 모듈 순서 유지."""
+        import importlib
+        import app_dirs
+        out = []
+        for key in self.MODEL_MODULES:
+            try:
+                mod = importlib.import_module(key)
+                files = list(getattr(mod, "MODEL_FILES", []))
+                total = int(getattr(mod, "TOTAL_BYTES", 0))
+                have = [f for f in files if app_dirs.have(f)]
+                out.append({
+                    "key": key,
+                    "label": getattr(mod, "MODEL_LABEL", key),
+                    "note": getattr(mod, "MODEL_NOTE", ""),
+                    "totalBytes": total,
+                    # 항상 모델 전체 크기. 실제 디스크 사용량을 쓰면 일부만 받힌 상태에서
+                    # "340 MB"(=이미 있는 파싱 모델)로 보여 남은 0.2MB 를 오해하게 된다.
+                    "sizeText": self._fmt_bytes(total),
+                    "installed": len(have) == len(files) and bool(files),
+                    # 일부만 받힌 상태(중간 취소·실패) — 다시 받으면 있는 파일은 건너뛴다
+                    "partial": 0 < len(have) < len(files),
+                    "haveText": f"{len(have)}/{len(files)} files",
+                })
+            except Exception as exc:            # 모듈 하나가 깨져도 나머지는 보여준다
+                print(f"[models] {key} 정보 읽기 실패: {exc}")
+        return out
+
+    modelCatalog = Property("QVariantList", _get_model_catalog, notify=modelsChanged)
+
+    def _get_model_summary(self):
+        """{installedText, missingText, missingBytes, dirPath, orphanText} — 헤더/푸터 요약."""
+        import importlib
+        import app_dirs
+        cat = self._get_model_catalog()
+        inst = sum(c["totalBytes"] for c in cat if c["installed"])
+        miss = sum(c["totalBytes"] for c in cat if not c["installed"])
+        # 어느 모듈도 청구하지 않는 파일(기각·대체된 모델 잔재) — 사용자가 직접 지울 수 있게 안내만.
+        # ⚠️청구 목록은 **MODEL_MODULES 전체** 기준으로 모은다(카탈로그 기준 금지). 카탈로그는
+        #   import 에 실패한 모듈을 조용히 빼므로, 예컨대 caption 이 깨지면 그 8파일 1.09GB 가
+        #   '미사용 — 지워도 됨'으로 안내된다(멀쩡한 기능의 모델을 지우게 만드는 오안내).
+        #   하나라도 못 읽으면 무엇이 청구됐는지 알 수 없으므로 아예 표시하지 않는다.
+        known = {"ai_denoise_device.json"}
+        all_known = True
+        for key in self.MODEL_MODULES:
+            try:
+                known |= set(getattr(importlib.import_module(key), "MODEL_FILES", []))
+            except Exception:
+                all_known = False
+        orphan = 0
+        if all_known:
+            try:
+                for fn in os.listdir(app_dirs.MODELS_DIR):
+                    p = os.path.join(app_dirs.MODELS_DIR, fn)
+                    if fn not in known and not fn.endswith(".part") and os.path.isfile(p):
+                        orphan += os.path.getsize(p)
+            except OSError:
+                pass
+        return {"installedText": self._fmt_bytes(inst), "missingText": self._fmt_bytes(miss),
+                "missingBytes": miss,          # QML 이 "0 MB" 문자열 비교를 안 하도록 수치도 제공
+                "dirPath": app_dirs.MODELS_DIR,
+                "orphanText": self._fmt_bytes(orphan) if (all_known and orphan) else ""}
+
+    modelSummary = Property("QVariant", _get_model_summary, notify=modelsChanged)
+
+    @Slot(str)
+    def downloadModel(self, key) -> None:  # noqa: N802 (QML 슬롯)
+        """모델 하나를 백그라운드 다운로드. 동시 1개만 — 대역폭 분산과 진행률 혼선 방지."""
+        key = str(key)
+        if self._model_dl_key or key not in self.MODEL_MODULES:
+            return
+        self._model_dl_key, self._model_dl_prog, self._model_error = key, 0.0, ""
+        self.modelsChanged.emit()            # 버튼 잠금/진행 표시 시작
+        self.modelProgressChanged.emit()
+        threading.Thread(target=self._model_dl_worker, args=(key,), daemon=True).start()
+
+    def _model_dl_worker(self, key: str) -> None:
+        err = ""
+        try:
+            import importlib
+            mod = importlib.import_module(key)
+            last = [0.0]
+
+            def _prog(f):
+                if f - last[0] >= 0.005 or f >= 1.0:     # 0.5% 스로틀
+                    last[0] = f
+                    self._modelDlSig.emit((key, float(f), ""))
+            mod.ensure_model(_prog)
+        except Exception as exc:
+            err = str(exc)
+            print(f"[models] {key} 다운로드 실패: {exc}")
+        self._modelDlSig.emit((key, 1.0, err or "done"))
+
+    @Slot(object)
+    def _on_model_dl(self, payload) -> None:
+        key, frac, state = payload
+        if key != self._model_dl_key:
+            return                       # 취소/중복 워커의 뒤늦은 진행률 무시
+        self._model_dl_prog = float(frac)
+        if state:                        # "done" 또는 에러 메시지 — 설치 상태가 바뀐 시점
+            self._model_dl_key = ""
+            self._model_error = "" if state == "done" else state
+            self.modelsChanged.emit()
+        self.modelProgressChanged.emit()   # 진행률 틱은 목록을 건드리지 않는다
+
+    def _get_model_dl_key(self) -> str:
+        return self._model_dl_key
+
+    def _get_model_dl_prog(self) -> float:
+        return self._model_dl_prog
+
+    def _get_model_error(self) -> str:
+        return self._model_error
+
+    modelDownloading = Property(str, _get_model_dl_key, notify=modelsChanged)   # 시작/종료 시만 변함
+    modelProgress = Property(float, _get_model_dl_prog, notify=modelProgressChanged)
+    modelError = Property(str, _get_model_error, notify=modelsChanged)
+
+    @Slot()
+    def refreshModels(self) -> None:  # noqa: N802 (QML 슬롯) — 대화상자 열 때 호출
+        """설치 현황 재평가. 기능 첫 사용으로 받힌 모델(캡션 등)이나 사용자가 폴더에서 직접
+        지운 파일이 목록에 반영되지 않는 경로가 남아 있어, 열 때마다 한 번 강제로 갱신한다."""
+        self.modelsChanged.emit()
+
+    @Slot()
+    def openModelsFolder(self) -> None:  # noqa: N802 (QML 슬롯)
+        """models 폴더를 파일 탐색기로 연다 — 미사용 파일 정리는 사용자가 직접(삭제 미구현)."""
+        import app_dirs
+        os.makedirs(app_dirs.MODELS_DIR, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(app_dirs.MODELS_DIR))
+
     # ---------- 앱 버전(제목표시줄 표시용) ----------
     def _get_app_version(self) -> str:
         return APP_VERSION
@@ -2580,9 +2732,12 @@ class Controller(QObject):
     @Slot(object)
     def _on_ai_nr_dl(self, payload) -> None:
         downloading, prog = payload
+        was = self._ai_downloading
         self._ai_downloading = bool(downloading)
         self._ai_dl_prog = float(prog)
         self.aiNrChanged.emit()
+        if was and not self._ai_downloading:
+            self.modelsChanged.emit()   # 기능 첫 사용으로 받힌 것도 AI Models 목록에 반영
 
     @Slot(bool)
     def _on_ai_nr_init(self, on) -> None:
@@ -2815,9 +2970,12 @@ class Controller(QObject):
     def _on_seg_dl(self, payload) -> None:
         """워커 스레드 → 메인 스레드: 마스킹 모델 다운로드 (진행중, 진행률) 갱신."""
         downloading, frac = payload
+        was = self._seg_downloading
         self._seg_downloading = bool(downloading)
         self._seg_dl_prog = float(frac)
         self.segStatusChanged.emit()
+        if was and not self._seg_downloading:
+            self.modelsChanged.emit()   # 기능 첫 사용으로 받힌 것도 AI Models 목록에 반영
 
     def _get_seg_status(self) -> str:
         return self._seg_status

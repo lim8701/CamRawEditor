@@ -59,6 +59,11 @@ DET_PATH = app_dirs.model_path(_DET_NAME)
 PARSE_PATH = app_dirs.model_path(_PARSE_NAME)
 TOTAL_BYTES = _DET_BYTES + _PARSE_BYTES              # 최초 사용 시 받아야 할 총량(진행률 표시용)
 
+# ── 모델 관리 화면(AI Models)용 메타데이터 — sky_seg 와 동일 계약 ────────────
+MODEL_LABEL = "Face masking"
+MODEL_NOTE = "Face part masks — skin, hair, eyes, lips (YuNet detection + SegFormer parsing)"
+MODEL_FILES = [_DET_NAME, _PARSE_NAME]
+
 # ── 검출 파라미터 ────────────────────────────────────────────────────────────
 # YuNet 은 **네트워크 입력 기준** 약 10~300px 얼굴로 학습됐다. 프록시(긴 변 ~2560)를 한 가지
 # 크기로만 넣으면 한쪽 끝이 잘린다:

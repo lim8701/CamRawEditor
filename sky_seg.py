@@ -45,6 +45,14 @@ _MODEL_NAME = "segformer_b2_ade.onnx"
 MODEL_DIR = app_dirs.MODELS_DIR
 MODEL_PATH = app_dirs.model_path(_MODEL_NAME)
 
+# ── 모델 관리 화면(AI Models)용 메타데이터 ──────────────────────────────────
+# 각 엔진 모듈이 자기 정보를 들고 있고 Controller.modelCatalog 가 취합한다
+# (상수를 UI 쪽에 복제하면 모델 교체 시 한쪽만 고쳐져 크기/이름이 어긋난다).
+MODEL_LABEL = "Scene masking"
+MODEL_NOTE = "Scene-class masks — sky, vegetation, buildings, water (SegFormer-B2 / ADE20K)"
+MODEL_FILES = [_MODEL_NAME]
+TOTAL_BYTES = 110_445_327
+
 # ── SegFormer 전처리 (preprocessor_config.json 와 일치) ──────────────────────
 # 추론 입력 긴 변(종횡비 유지, 각 변 32의 배수=SegFormer stride 로 라운딩).
 # ↑ 키우면 가는 가지/전선/경계 디테일↑, 추론 시간↑(1024≈280ms, 1536≈900ms @ proxy). 튜닝 대상.

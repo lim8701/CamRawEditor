@@ -1063,6 +1063,172 @@ ApplicationWindow {
         aiCpuDialog.open()
     }
 
+    // AI 모델 관리 — 좌측 패널 푸터의 'AI Models' 에서 열림. 사진과 무관한 앱 전역 화면이라
+    // 우측 편집 패널(Edit/Crop/Masking)이 아니라 모달로 둔다(사진 없이도 열려야 함).
+    // 목록/크기/설명은 각 엔진 모듈이 소유하고 controller.modelCatalog 가 취합한다.
+    Popup {
+        id: modelDialog
+        modal: true
+        dim: true
+        // 창이 좁으면 넘치지 않게 — 시작은 최대화지만 사용자가 줄일 수 있다
+        width: Math.min(620, win.width - 48)
+        padding: 0
+        anchors.centerIn: Overlay.overlay
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Overlay.modal: Rectangle { color: "#000000"; opacity: 0.55 }
+        background: Rectangle {
+            color: "#232325"; radius: 16
+            border.color: "#3d3d40"; border.width: 1
+        }
+        // 폴더에서 직접 지웠거나 다른 경로로 받힌 모델이 있을 수 있으니 열 때마다 재평가.
+        onOpened: controller.refreshModels()
+
+        contentItem: ColumnLayout {
+            spacing: 0
+
+            RowLayout {                                   // 헤더
+                Layout.fillWidth: true
+                Layout.margins: 20
+                Layout.bottomMargin: 12
+                Label {
+                    Layout.fillWidth: true
+                    text: "AI Models"
+                    color: "white"; font.pixelSize: 16; font.bold: true
+                }
+                Label {
+                    text: controller.modelSummary.installedText + " installed"
+                          + (controller.modelSummary.missingBytes > 0
+                             ? "   ·   " + controller.modelSummary.missingText + " missing" : "")
+                    color: "#8a8a8a"; font.pixelSize: 11
+                }
+            }
+            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#3d3d40" }
+
+            ColumnLayout {                                // 모델 목록
+                Layout.fillWidth: true
+                Layout.margins: 20
+                spacing: 14
+                Repeater {
+                    model: controller.modelCatalog
+                    delegate: RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 12
+                        Rectangle {                       // 상태 점: 초록=설치, 앰버=일부, 회색=없음
+                            Layout.preferredWidth: 8; Layout.preferredHeight: 8; radius: 4
+                            Layout.alignment: Qt.AlignTop
+                            Layout.topMargin: 5
+                            color: modelData.installed ? "#6fbf73"
+                                   : (modelData.partial ? "#E0A226" : "#5a5a5a")
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+                            Label {
+                                text: modelData.label
+                                color: "#eee"; font.pixelSize: 13
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: modelData.note
+                                color: "#8a8a8a"; font.pixelSize: 11; wrapMode: Text.WordWrap
+                            }
+                            Label {                       // 일부만 받힌 경우에만 파일 진행 표시
+                                visible: modelData.partial
+                                text: modelData.haveText + " downloaded"
+                                color: "#E0A226"; font.pixelSize: 10
+                            }
+                        }
+                        Label {
+                            Layout.preferredWidth: 62
+                            Layout.alignment: Qt.AlignTop
+                            text: modelData.sizeText
+                            color: "#9a9a9a"; font.pixelSize: 12
+                            horizontalAlignment: Text.AlignRight
+                        }
+                        Item {                            // 설치됨 표시 / 다운로드 버튼 자리
+                            Layout.preferredWidth: 96
+                            Layout.preferredHeight: 28
+                            Layout.alignment: Qt.AlignTop
+                            Label {
+                                anchors.centerIn: parent
+                                visible: modelData.installed
+                                text: "Installed"; color: "#6fbf73"; font.pixelSize: 12
+                            }
+                            Button {
+                                anchors.fill: parent
+                                visible: !modelData.installed
+                                // 동시 1개만 — 진행 중에는 나머지 버튼 잠금
+                                enabled: controller.modelDownloading === ""
+                                text: controller.modelDownloading === modelData.key
+                                      ? Math.round(controller.modelProgress * 100) + "%"
+                                      : (modelData.partial ? "Resume" : "Download")
+                                onClicked: controller.downloadModel(modelData.key)
+                            }
+                        }
+                    }
+                }
+            }
+
+            ColumnLayout {                                // 진행률 / 에러
+                Layout.fillWidth: true
+                Layout.leftMargin: 20; Layout.rightMargin: 20
+                Layout.bottomMargin: 12
+                spacing: 6
+                visible: controller.modelDownloading !== "" || controller.modelError !== ""
+                Label {
+                    Layout.fillWidth: true
+                    visible: controller.modelDownloading !== ""
+                    text: "Downloading " + controller.modelDownloading + "…  "
+                          + Math.round(controller.modelProgress * 100) + "%"
+                    color: "#E0A226"; font.pixelSize: 11
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 4
+                    visible: controller.modelDownloading !== ""
+                    color: "#3a3a3a"; radius: 2
+                    Rectangle {
+                        height: parent.height; radius: 2; color: "#E0A226"
+                        width: parent.width * Math.min(1.0, controller.modelProgress)
+                    }
+                }
+                Label {
+                    Layout.fillWidth: true
+                    visible: controller.modelError !== ""
+                    text: "Download failed — " + controller.modelError
+                    color: "#e07a7a"; font.pixelSize: 11; wrapMode: Text.WordWrap
+                }
+            }
+
+            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#3d3d40" }
+            RowLayout {                                   // 푸터: 저장 위치 / 미사용 파일 / 닫기
+                Layout.fillWidth: true
+                Layout.margins: 16
+                spacing: 10
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 2
+                    Label {
+                        Layout.fillWidth: true
+                        text: controller.modelSummary.dirPath
+                        color: "#7a7a7a"; font.pixelSize: 10; elide: Text.ElideMiddle
+                    }
+                    Label {
+                        visible: controller.modelSummary.orphanText !== ""
+                        // 기각·대체된 모델의 잔재. 삭제는 구현하지 않고 폴더만 열어준다
+                        // (사용자 데이터 삭제는 되돌릴 수 없어 앱이 임의로 하지 않는다).
+                        text: controller.modelSummary.orphanText
+                              + " unused (superseded models) — delete manually if you want the space"
+                        color: "#8a8a8a"; font.pixelSize: 10; wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
+                    }
+                }
+                Button { text: "Open folder"; onClicked: controller.openModelsFolder() }
+                Button { text: "Close"; onClicked: modelDialog.close() }
+            }
+        }
+    }
+
     // AI 디노이즈 CPU 폴백 확인 대화상자 (quitDialog 와 동일 컨셉 스타일)
     Popup {
         id: aiCpuDialog
@@ -2448,8 +2614,41 @@ ApplicationWindow {
                     wrapMode: Text.WrapAnywhere
                 }
 
-                // 푸터: GitHub 저장소 링크 + (있으면) 새 버전 배지 (클릭 시 외부 브라우저로 열기)
+                // 푸터: AI 모델 현황 + GitHub 저장소 링크 + (있으면) 새 버전 배지
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+                // AI 모델 관리 진입점 — 사진과 무관한 앱 전역 항목이라 업데이트 배지와 같은 자리.
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 24
+                    color: "transparent"
+                    ToolTip.visible: mdlHover.hovered
+                    ToolTip.text: "Downloaded AI models — check status and pre-download"
+                    Text {
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "AI Models ↗"
+                        color: mdlHover.hovered ? "#8ab4f8" : "#8a8a8a"
+                        font.pixelSize: 12
+                        font.underline: mdlHover.hovered
+                    }
+                    Text {                       // 우측: 진행률(다운로드 중) 또는 미설치 용량
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: controller.modelDownloading !== ""
+                              ? Math.round(controller.modelProgress * 100) + "%"
+                              : (controller.modelSummary.missingBytes === 0
+                                 ? controller.modelSummary.installedText
+                                 : controller.modelSummary.missingText + " missing")
+                        color: controller.modelDownloading !== "" ? "#E0A226" : "#6a6a6a"
+                        font.pixelSize: 11
+                    }
+                    HoverHandler { id: mdlHover }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: modelDialog.open()
+                    }
+                }
                 Rectangle {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 24

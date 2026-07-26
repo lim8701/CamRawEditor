@@ -44,6 +44,12 @@ _MODEL_NAME = "nafnet_sidd_width32_512.onnx"
 MODEL_DIR = app_dirs.MODELS_DIR
 MODEL_PATH = app_dirs.model_path(_MODEL_NAME)
 
+# ── 모델 관리 화면(AI Models)용 메타데이터 — sky_seg 와 동일 계약 ────────────
+MODEL_LABEL = "AI denoise"
+MODEL_NOTE = "High-ISO noise reduction (NAFNet-SIDD w32). GPU (DirectML / CoreML) if available, else CPU"
+MODEL_FILES = [_MODEL_NAME]
+TOTAL_BYTES = 117_090_403
+
 TILE = 512      # ONNX export 고정 입력 크기(변경 시 재-export 필요)
 OVERLAP = 64    # 타일 겹침(px) — 경계 컨텍스트 확보 + 램프 블렌딩 폭
 # 모델 드리프트 제거 반경(프록시 px, 가우시안 σ). NAFNet 은 노이즈 외에 넓은 영역의
