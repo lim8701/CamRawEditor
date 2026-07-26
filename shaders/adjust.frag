@@ -53,20 +53,15 @@ layout(std140, binding = 0) uniform buf {
     float cgBalance;
     float lumaNR;       // 휘도 노이즈 리덕션 0..1 (평탄부 고주파 억제, 엣지 보존)
     float colorNR;      // 컬러(chroma) 노이즈 리덕션 0..1 (색얼룩 제거, 휘도 불변)
-    // 하늘(로컬) 조정 — skyMask(binding 9) 게이팅. ML 세그멘테이션 마스크에만 적용.
-    float skyExp;       // 하늘 국소 노출 (stop, -1..1)
-    float skyTemp;      // 하늘 색온도 (+따뜻 R↑B↓ / -차갑, -1..1)
-    float skySat;       // 하늘 채도 (-1..1)
-    float skyHi;        // 하늘 하이라이트 국소 노출 (밝은 부분, -1..1)
-    float skyInvert;    // 마스크 반전 1/0
-    float skyShowMask;  // 마스크 선택영역 오버레이(프리뷰 전용) 1/0
-    float skyHasMask;   // 실제 마스크 존재 1/0 — 0이면 invert 라도 미적용(export 와 정합)
-    float skyTint;      // 하늘 틴트 (+마젠타 / -녹, -1..1)
-    float skyShadows;   // 하늘 섀도 국소 노출 (어두운 부분, -1..1)
-    float skyTexture;   // 하늘 텍스처 (중주파 로컬대비, -1..1)
-    float skyClarity;   // 하늘 클래리티 (중간톤 로컬대비, -1..1)
-    float skyDehaze;    // 하늘 디헤이즈 (-1..1)
-    float skyContrast;  // 하늘 대비 (전역 contrast 와 동일한 곱수, 0.5..2.0, 중립 1.0)
+    // 로컬 마스크 레이어(최대 3) — 각 skyMaskN(binding 9/13/14) 게이팅, 레이어별 독립 보정.
+    //   A=(exp, hi, sh, dehaze)               전역 단계(0/3/6)에 강도 합산(전역과 동일 반응)
+    //   B=(temp, tint, sat, contrast[중립 1.0]) 후반 9.7 블록
+    //   C=(texture, clarity, invert[1/0], hasMask[1/0])
+    // (비활성 레이어는 hasMask=0 → m=0 → 모든 항 항등. QML 은 미사용 레이어 값을 0/contrast=1 로 전달)
+    vec4 skyA0; vec4 skyB0; vec4 skyC0;
+    vec4 skyA1; vec4 skyB1; vec4 skyC1;
+    vec4 skyA2; vec4 skyB2; vec4 skyC2;
+    float skyShowLayer; // 마스크 오버레이(프리뷰 전용): 표시할 레이어 0/1/2, 미표시 = -1
     // 현상 계수(coeffs.py 단일 진실원, uniform 주입 — pipeline.py 와 값 공유, 셰이더 리터럴 제거).
     float dehazeKLocal; float dehazeKContrast; float dehazeKVeil; float dehazeKSat;
     float clarityK;     // 클래리티 강도(전역+하늘 공용)
@@ -101,12 +96,33 @@ layout(binding = 5) uniform sampler2D claBlur;   // dispSrc 가우시안 블러(
 layout(binding = 6) uniform sampler2D stampTex;  // 날짜 스탬프 오버레이(프록시 RGBA)
 layout(binding = 7) uniform sampler2D dispSrc;   // src 의 display sRGB 변환본(블러/로컬대비 base)
 layout(binding = 8) uniform sampler2D sharpBlur; // dispSrc 가우시안 블러(샤프닝 반경, 가변)
-layout(binding = 9) uniform sampler2D skyMask;   // 하늘 마스크(단일채널 R, 프록시 해상도). 없으면 1x1 검정
+layout(binding = 9) uniform sampler2D skyMask0;  // 로컬 마스크 레이어0(단일채널 R, 프록시 해상도). 없으면 1x1 검정
 layout(binding = 10) uniform sampler2D cmLut;    // 디스플레이 색관리 LUT 아틀라스(sRGB→모니터). 프리뷰 전용
 layout(binding = 11) uniform sampler2D hazeT;    // 디헤이즈 투과율 맵(단일채널 R, 소형 — bilinear 업샘플). 없으면 1x1 흰색(t=1)
 layout(binding = 12) uniform sampler2D nrBase;   // 디노이즈드 중성 베이스(프록시, RGBA64). 가이디드=luma 복제 그레이, AI=RGB(크로마 포함, nrChroma=1)
+layout(binding = 13) uniform sampler2D skyMask1; // 로컬 마스크 레이어1(단일채널 R). 없으면 1x1 검정
+layout(binding = 14) uniform sampler2D skyMask2; // 로컬 마스크 레이어2(단일채널 R). 없으면 1x1 검정
 
 const vec3 LUMA = vec3(0.299, 0.587, 0.114);
+
+// 로컬 조정 후반 블록(9.7) — 레이어별 호출. B=(temp,tint,sat,contrast), C=(texture,clarity,..).
+// m=0 이면 모든 항 항등(비선택 픽셀 무영향). pipeline._sky_adjust 와 반드시 동일 수식.
+vec3 applyLocalB(vec3 rgb, vec3 s0, vec2 uv, vec4 B, vec4 C, float m) {
+    rgb.r *= (1.0 + B.x * ubuf.skyTempK * m);            // 색온도(+따뜻 R↑B↓)
+    rgb.b *= (1.0 - B.x * ubuf.skyTempK * m);
+    rgb.g *= (1.0 - B.y * ubuf.skyTintK * m);            // 틴트(+마젠타 G↓)
+    if (C.x != 0.0)                                      // 텍스처(전역과 동일 base·계수)
+        rgb += (s0 - texture(texBlur, uv).rgb) * C.x * ubuf.textureK * m;
+    if (C.y != 0.0) {                                    // 클래리티(중간톤 가중)
+        float d = dot(s0, LUMA) - dot(texture(claBlur, uv).rgb, LUMA);
+        float l = dot(rgb, LUMA);
+        rgb += d * C.y * ubuf.clarityK * (1.0 - abs(2.0 * l - 1.0)) * m;
+    }
+    rgb = (rgb - 0.5) * (1.0 + (B.w - 1.0) * m) + 0.5;   // 대비(전역 contrast 곱수)
+    float la = dot(rgb, LUMA);
+    rgb = mix(vec3(la), rgb, 1.0 + B.z * m);             // 채도
+    return clamp(rgb, 0.0, 1.0);
+}
 
 // sRGB <-> linear (정확 EOTF, rawpy gamma=(2.4,12.92) 와 정합)
 vec3 srgbToLinear(vec3 c) {
@@ -292,11 +308,10 @@ void main() {
 
     // 하늘 마스크(0=비선택) — 마스크 노출/톤존을 전역과 **같은 단계·같은 수식**으로 적용하기
     // 위해 상단에서 1회 계산(강도만 마스크로 게이팅). 마스크 없으면 1x1 검정 텍스처 → 0.
-    float skyM = 0.0;
-    if (ubuf.skyHasMask > 0.5) {
-        skyM = texture(skyMask, uv).r;
-        skyM = mix(skyM, 1.0 - skyM, ubuf.skyInvert);
-    }
+    // 레이어별 마스크 알파(0=비선택). C.w=hasMask, C.z=invert.
+    float skyM0 = (ubuf.skyC0.w > 0.5) ? mix(texture(skyMask0, uv).r, 1.0 - texture(skyMask0, uv).r, ubuf.skyC0.z) : 0.0;
+    float skyM1 = (ubuf.skyC1.w > 0.5) ? mix(texture(skyMask1, uv).r, 1.0 - texture(skyMask1, uv).r, ubuf.skyC1.z) : 0.0;
+    float skyM2 = (ubuf.skyC2.w > 0.5) ? mix(texture(skyMask2, uv).r, 1.0 - texture(skyMask2, uv).r, ubuf.skyC2.z) : 0.0;
 
     // 0) scene-linear 프론트엔드: 헤드룸 디코드 → WB(카메라공간) → cam→sRGB 매트릭스
     //    → 유저 노출(scene-linear 배수) → filmic(단일 베이스 톤커브) → display sRGB.
@@ -304,7 +319,8 @@ void main() {
     //    마스크 노출(skyExp)도 여기서 합산 — 전역 노출과 동일한 진짜 stop(filmic 롤오프 적용).
     vec3 cam = srgbToLinear(texture(src, uv).rgb) * PROXY_HEADROOM;
     cam *= vec3(ubuf.wbR, ubuf.wbG, ubuf.wbB);
-    vec3 lin = applyCamMat(cam) * pow(2.0, ubuf.exposure + ubuf.skyExp * skyM);
+    vec3 lin = applyCamMat(cam) * pow(2.0, ubuf.exposure
+                 + ubuf.skyA0.x * skyM0 + ubuf.skyA1.x * skyM1 + ubuf.skyA2.x * skyM2);
     vec3 rgb = filmic(lin);                                  // → display sRGB[0,1]
 
     // 0.5) 하이라이트 디새추레이션: near-clip 센서클립 색끼(예: 불꽃 코어 청록) 제거 → 중성.
@@ -321,8 +337,8 @@ void main() {
     //    영역 톤맵(국소 평균 휘도·넓은 범위)으로 반응(과거 9.7 픽셀휘도 근사는 이질적이라 폐기).
     float lb = dot(texture(claBlur, uv).rgb, LUMA);
     rgb = max(tone_zones(rgb, lb,
-                         ubuf.highlights + ubuf.skyHi * skyM,
-                         ubuf.shadows + ubuf.skyShadows * skyM,
+                         ubuf.highlights + ubuf.skyA0.y * skyM0 + ubuf.skyA1.y * skyM1 + ubuf.skyA2.y * skyM2,
+                         ubuf.shadows    + ubuf.skyA0.z * skyM0 + ubuf.skyA1.z * skyM1 + ubuf.skyA2.z * skyM2,
                          ubuf.whites, ubuf.blacks), 0.0);
 
     vec3 s0 = texture(dispSrc, uv).rgb;          // display sRGB 변환본(블러 비교용)
@@ -386,7 +402,7 @@ void main() {
     //    마스크 디헤이즈(skyDehaze)도 여기서 강도 합산 — 전역과 같은 단계(LUT/커브 전)에서
     //    동일하게 반응(과거 9.7 적용은 LUT/커브 뒤라 같은 값에도 결과가 달랐음).
     {
-        float dAmt = ubuf.dehaze + ubuf.skyDehaze * skyM;
+        float dAmt = ubuf.dehaze + ubuf.skyA0.w * skyM0 + ubuf.skyA1.w * skyM1 + ubuf.skyA2.w * skyM2;
         if (dAmt != 0.0) {
             float ld = dot(s0, LUMA) - dot(texture(claBlur, uv).rgb, LUMA);
             rgb = dehazeApply(rgb, dAmt, ld, texture(hazeT, uv).r);
@@ -442,29 +458,14 @@ void main() {
     //        전역과 같은 단계(0/3/6)에서 강도 합산으로 적용됨 — 전역 조절과 동일한 반응 보장.
     //      m 스케일이 국소화하므로 별도 mix 불필요(m=0 인 곳은 모든 항이 항등 → 영향 없음).
     // 마스크가 실제로 있을 때만 적용(export 의 sky_mask is not None 게이트와 정합).
-    if (ubuf.skyHasMask > 0.5 && (ubuf.skyShowMask > 0.5 || ubuf.skyTemp != 0.0
-        || ubuf.skyTint != 0.0 || ubuf.skySat != 0.0 || ubuf.skyTexture != 0.0
-        || ubuf.skyClarity != 0.0 || ubuf.skyContrast != 1.0)) {
-        float m = skyM;
-        if (ubuf.skyShowMask > 0.5) {
-            rgb = mix(rgb, vec3(0.95, 0.25, 0.25), m * 0.5);   // 선택 영역 시각화(프리뷰 전용)
-        } else {
-            rgb.r *= (1.0 + ubuf.skyTemp * ubuf.skyTempK * m); // 색온도(+따뜻 R↑B↓)
-            rgb.b *= (1.0 - ubuf.skyTemp * ubuf.skyTempK * m);
-            rgb.g *= (1.0 - ubuf.skyTint * ubuf.skyTintK * m); // 틴트(+마젠타 G↓ / -녹)
-            // 로컬 대비(중성 dispSrc 기준 — 전역 텍스처/클래리티와 동일 base·계수)
-            if (ubuf.skyTexture != 0.0)
-                rgb += (s0 - texture(texBlur, uv).rgb) * ubuf.skyTexture * ubuf.textureK * m;
-            if (ubuf.skyClarity != 0.0) {
-                float d = dot(s0, LUMA) - dot(texture(claBlur, uv).rgb, LUMA);
-                float l = dot(rgb, LUMA);
-                rgb += d * ubuf.skyClarity * ubuf.clarityK * (1.0 - abs(2.0 * l - 1.0)) * m;
-            }
-            rgb = (rgb - 0.5) * (1.0 + (ubuf.skyContrast - 1.0) * m) + 0.5;   // 대비(전역 contrast 곱수, 마스크 게이팅)
-            float la = dot(rgb, LUMA);
-            rgb = mix(vec3(la), rgb, 1.0 + ubuf.skySat * m);   // 채도
-            rgb = clamp(rgb, 0.0, 1.0);
-        }
+    //      레이어 0→1→2 순서로 적용(pipeline._sky_adjust 순서와 동일 — 파리티). m=0 이면 항등.
+    if (ubuf.skyC0.w > 0.5) rgb = applyLocalB(rgb, s0, uv, ubuf.skyB0, ubuf.skyC0, skyM0);
+    if (ubuf.skyC1.w > 0.5) rgb = applyLocalB(rgb, s0, uv, ubuf.skyB1, ubuf.skyC1, skyM1);
+    if (ubuf.skyC2.w > 0.5) rgb = applyLocalB(rgb, s0, uv, ubuf.skyB2, ubuf.skyC2, skyM2);
+    // 마스크 오버레이(프리뷰 전용): 지정 레이어의 선택 영역을 붉게(export 는 skyShowLayer=-1)
+    if (ubuf.skyShowLayer >= 0.0) {
+        float ms = (ubuf.skyShowLayer < 0.5) ? skyM0 : ((ubuf.skyShowLayer < 1.5) ? skyM1 : skyM2);
+        rgb = mix(rgb, vec3(0.95, 0.25, 0.25), ms * 0.5);
     }
 
     // 10) 비네팅 (방사형)

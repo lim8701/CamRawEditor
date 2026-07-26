@@ -120,9 +120,17 @@ ApplicationWindow {
     property var secOpen: [true, true, true, true, true, false, true, true, false, false, true, false, false]
     function toggleSec(i) { var a = secOpen.slice(); a[i] = !a[i]; secOpen = a }
 
-    // 마스크 선택영역 오버레이 표시(프리뷰 전용 시각화)
+    // 마스크 선택영역 오버레이 표시(프리뷰 전용, 활성 레이어 마스크)
     property bool showSkyMask: false
-    // 현재 체크된 마스크 클래스 그룹 key 목록(복합 선택). 토글 시 라이브 재조합.
+    // 로컬 마스크 레이어(최대 3) — 각 {keys, invert, 10 조정}. 슬라이더/체크박스는 activeLayer 를 편집.
+    property int activeLayer: 0
+    function _newLayer() {
+        return { keys: [], invert: false, skyExp: 0, skyTemp: 0, skyTint: 0, skySat: 0, skyHi: 0,
+                 skyShadows: 0, skyContrast: 1.0, skyTexture: 0, skyClarity: 0, skyDehaze: 0 }
+    }
+    property var layers: [ _newLayer(), _newLayer(), _newLayer() ]
+    property bool _loadingLayer: false      // 레이어 로드 중 저장 억제(루프 방지)
+    // 활성 레이어의 선택 클래스(체크박스 편의 미러). toggleMaskKey 가 layers[active].keys 와 동기.
     property var maskKeys: []
     // 사이드카 복원으로 마스크 재생성 중 — 완료 시 오버레이 자동 표시 억제(로드 시 갑자기 적색 방지).
     property bool _maskRestore: false
@@ -132,14 +140,48 @@ ApplicationWindow {
         if (on && i < 0) a.push(key)
         else if (!on && i >= 0) a.splice(i, 1)
         maskKeys = a
+        layers[activeLayer].keys = a; layers = layers.slice()   // 활성 레이어 반영 + notify
         maskApplyTimer.restart()   // 디바운스: 빠른 연속 토글을 한 번의 재조합으로 합침
     }
     // 체크박스 토글 코얼레싱 — 마지막 토글 후 잠깐 뒤 한 번만 세그/재조합 실행(스레드 폭증 방지).
     Timer {
         id: maskApplyTimer
         interval: 220
-        onTriggered: controller.setMaskClasses(win.maskKeys)
+        onTriggered: controller.setMaskClasses(win.activeLayer, win.maskKeys)
     }
+    // 활성 레이어 값 → 슬라이더/체크박스 로드(레이어 전환·사이드카 복원). _loadingLayer 로 저장 억제.
+    function loadActiveToSliders() {
+        win._loadingLayer = true
+        var L = win.layers[win.activeLayer]
+        for (var i = 0; i < win.skyAdjustKeys.length; i++) { var k = win.skyAdjustKeys[i]; win._skySlider(k).value = L[k] }
+        skyInvertCheck.checked = L.invert
+        win.maskKeys = L.keys.slice()
+        win._loadingLayer = false
+    }
+    // 슬라이더/invert → 활성 레이어 저장(+ 셰이더 유니폼 notify). 슬라이더 워처(skyLayerWatch)가 호출.
+    function saveActiveFromSliders() {
+        if (win._loadingLayer) return
+        var L = win.layers[win.activeLayer]
+        for (var i = 0; i < win.skyAdjustKeys.length; i++) { var k = win.skyAdjustKeys[i]; L[k] = win._skySlider(k).value }
+        L.invert = skyInvertCheck.checked
+        L.keys = win.maskKeys.slice()
+        win.layers = win.layers.slice()
+    }
+    function selectLayer(i) {           // 레이어 전환: 현재값 저장 → 활성 변경 → 새 레이어 로드
+        win.saveActiveFromSliders()
+        win.activeLayer = i
+        win.loadActiveToSliders()
+        win.showSkyMask = false
+    }
+    // 셰이더 유니폼용 레이어 vec4 (A=exp/hi/sh/dehaze, B=temp/tint/sat/contrast, C=texture/clarity/invert/hasMask)
+    function _layerA(i) { var L = win.layers[i]; return Qt.vector4d(L.skyExp, L.skyHi, L.skyShadows, L.skyDehaze) }
+    function _layerB(i) { var L = win.layers[i]; return Qt.vector4d(L.skyTemp, L.skyTint, L.skySat, L.skyContrast) }
+    function _layerC(i) { var L = win.layers[i]
+        return Qt.vector4d(L.skyTexture, L.skyClarity, L.invert ? 1.0 : 0.0,
+                           (controller.layerHasMask[i] ? 1.0 : 0.0)) }
+    property vector4d skyA0: win._layerA(0); property vector4d skyB0: win._layerB(0); property vector4d skyC0: win._layerC(0)
+    property vector4d skyA1: win._layerA(1); property vector4d skyB1: win._layerB(1); property vector4d skyC1: win._layerC(1)
+    property vector4d skyA2: win._layerA(2); property vector4d skyB2: win._layerB(2); property vector4d skyC2: win._layerC(2)
 
     // 마스킹 조정 슬라이더(라벨 + -1..1 슬라이더 + 더블클릭 리셋 + 조정 중 오버레이 끄기) 공용 컴포넌트.
     // host=win 주입(인라인 컴포넌트는 외부 id 접근 불가). value 는 alias 라 id 로 .value 참조 가능.
@@ -196,30 +238,45 @@ ApplicationWindow {
         }
         return null
     }
-    // 저장/export 페이로드 조각(maskKeys + invert + 9개 조정값). render_full 은 maskKeys 무시.
+    // 저장/export 페이로드 — 레이어 3개(각 keys + invert + 10 조정값). render_full 은 keys 무시(마스크는 sky_masks).
+    // win.layers 는 슬라이더 워처(skyLayerWatch)가 활성 레이어를 항상 동기화하므로 그대로 읽는다.
     function skyEditParams() {
-        var o = { "maskKeys": win.maskKeys, "skyInvert": skyInvertCheck.checked }
-        for (var i = 0; i < win.skyAdjustKeys.length; i++) {
-            var k = win.skyAdjustKeys[i]; o[k] = win._skySlider(k).value
+        var out = []
+        for (var i = 0; i < 3; i++) {
+            var L = win.layers[i]
+            var o = { "keys": (L.keys || []).slice(), "skyInvert": L.invert }
+            for (var j = 0; j < win.skyAdjustKeys.length; j++) { var k = win.skyAdjustKeys[j]; o[k] = L[k] }
+            out.push(o)
         }
-        return o
+        return { "maskLayers": out }
     }
-    // 복원: 조정값 + 선택 클래스. 마스크는 클래스로부터 재생성(setMaskClasses → 재추론).
     // skyContrast 는 곱셈자라 중립=1.0(전역 Contrast 와 동일), 나머지는 0.0.
     function _skyDefault(k) { return k === "skyContrast" ? 1.0 : 0.0 }
+    // 복원: 레이어별 조정값 + 선택 클래스. 마스크는 클래스로부터 재생성. 구 평면 스키마는 레이어0 매핑(하위호환).
     function applySkyEdits(p) {
-        for (var i = 0; i < win.skyAdjustKeys.length; i++) {
-            var k = win.skyAdjustKeys[i]; win._skySlider(k).value = win._ev(p, k, win._skyDefault(k))
+        var ml = win._ev(p, "maskLayers", null)
+        if (!ml) {                          // 하위호환: 구 평면(maskKeys + sky*) → 레이어 0
+            var flat = { keys: (win._ev(p, "maskKeys", []) || []).slice(), invert: win._ev(p, "skyInvert", false) }
+            for (var j = 0; j < win.skyAdjustKeys.length; j++) { var kf = win.skyAdjustKeys[j]; flat[kf] = win._ev(p, kf, win._skyDefault(kf)) }
+            ml = [flat]
         }
-        skyInvertCheck.checked = win._ev(p, "skyInvert", false)
+        var newLayers = [win._newLayer(), win._newLayer(), win._newLayer()]
+        for (var i = 0; i < Math.min(3, ml.length); i++) {
+            var src = ml[i]; var L = newLayers[i]
+            L.keys = (win._ev(src, "keys", []) || []).slice()
+            L.invert = win._ev(src, "skyInvert", false)
+            for (var m = 0; m < win.skyAdjustKeys.length; m++) { var kk = win.skyAdjustKeys[m]; L[kk] = win._ev(src, kk, win._skyDefault(kk)) }
+        }
+        win._loadingLayer = true
+        win.layers = newLayers
+        win.activeLayer = 0
         win.showSkyMask = false
-        var mk = win._ev(p, "maskKeys", [])
-        // 같은 클래스 조합 + 마스크 이미 존재(undo/redo·paste 등) → 재조합 생략(세그 후처리 비쌈).
-        var same = controller.hasSkyMask && JSON.stringify(mk) === JSON.stringify(win.maskKeys)
-        win.maskKeys = mk.slice()
-        if (mk.length > 0) {
-            if (!same) { win._maskRestore = true; controller.setMaskClasses(mk) }
-        } else controller.clearSky()
+        win._loadingLayer = false
+        win.loadActiveToSliders()           // 레이어0 값을 슬라이더/체크박스로
+        for (var q = 0; q < 3; q++) {        // 각 레이어 마스크 재생성(클래스로부터)
+            if (newLayers[q].keys.length > 0) { win._maskRestore = true; controller.setMaskClasses(q, newLayers[q].keys) }
+            else controller.clearLayer(q)
+        }
     }
 
     // === 회전/크롭(지오메트리) 상태 — 프리뷰 뷰변환과 export numpy 양쪽에서 사용 ===
@@ -387,15 +444,27 @@ ApplicationWindow {
     }
 
     // 하늘(로컬) 조정 초기화 — 슬라이더 + 마스크 + 오버레이. 새 파일 로드/Reset 에서 호출.
-    function resetSky() {
+    function resetSky() {           // 전 레이어 초기화
+        win._loadingLayer = true
+        win.layers = [win._newLayer(), win._newLayer(), win._newLayer()]
+        win.activeLayer = 0
         skyExpSlider.value = 0.0; skyTempSlider.value = 0.0; skyTintSlider.value = 0.0
         skySatSlider.value = 0.0; skyHiSlider.value = 0.0; skyShadowsSlider.value = 0.0
         skyTextureSlider.value = 0.0; skyClaritySlider.value = 0.0; skyDehazeSlider.value = 0.0
         skyContrastSlider.value = 1.0
         skyInvertCheck.checked = false
-        win.showSkyMask = false
         win.maskKeys = []
+        win.showSkyMask = false
+        win._loadingLayer = false
         controller.clearSky()
+    }
+    // 마스킹 슬라이더/invert 변경 → 활성 레이어 저장(셰이더 라이브 갱신). _loadingLayer 시 무시.
+    Item {
+        visible: false
+        property string skySig: JSON.stringify([skyExpSlider.value, skyContrastSlider.value, skyTempSlider.value,
+            skyTintSlider.value, skyHiSlider.value, skyShadowsSlider.value, skyTextureSlider.value,
+            skyClaritySlider.value, skyDehazeSlider.value, skySatSlider.value, skyInvertCheck.checked])
+        onSkySigChanged: win.saveActiveFromSliders()
     }
 
     // 전체 초기화(편집 + 지오메트리). 수동 Reset 버튼 & 저장본 없는 파일 로드에서 호출.
@@ -2457,14 +2526,10 @@ ApplicationWindow {
                 source: controller.stampUrl
             }
 
-            // 하늘 마스크 텍스처(프록시 크기 단일채널). 셰이더가 하늘 로컬조정에 게이팅.
-            Image {
-                id: skyMaskImage
-                visible: false
-                cache: false
-                smooth: true
-                source: controller.skyMaskUrl
-            }
+            // 로컬 마스크 텍스처(레이어별, 프록시 크기 단일채널). 셰이더가 레이어별 로컬조정에 게이팅.
+            Image { id: skyMaskImage0; visible: false; cache: false; smooth: true; source: controller.layerMaskUrls[0] }
+            Image { id: skyMaskImage1; visible: false; cache: false; smooth: true; source: controller.layerMaskUrls[1] }
+            Image { id: skyMaskImage2; visible: false; cache: false; smooth: true; source: controller.layerMaskUrls[2] }
 
             // 디헤이즈 투과율 맵(DCP, 소형 단일채널 — bilinear 업샘플 위해 smooth:true).
             // 없으면 1x1 흰색(t=1) → 물리 분기 항등. 이미지당 1회 갱신(hazeChanged).
@@ -2596,21 +2661,14 @@ ApplicationWindow {
                         property real lutSize: lutN
                         property real lutStrength: simStrengthSlider.value
                         property int lutEnabled: simCombo.currentIndex === 0 ? 0 : 1
-                        // 하늘(로컬) 조정 — 프리뷰(pipe)와 동일 바인딩. 오버레이는 export 미적용(0).
-                        property variant skyMask: skyMaskImage
-                        property real skyExp: skyExpSlider.value
-                        property real skyTemp: skyTempSlider.value
-                        property real skyTint: skyTintSlider.value
-                        property real skySat: skySatSlider.value
-                        property real skyHi: skyHiSlider.value
-                        property real skyShadows: skyShadowsSlider.value
-                        property real skyTexture: skyTextureSlider.value
-                        property real skyClarity: skyClaritySlider.value
-                        property real skyDehaze: skyDehazeSlider.value
-                        property real skyContrast: skyContrastSlider.value
-                        property real skyInvert: skyInvertCheck.checked ? 1.0 : 0.0
-                        property real skyHasMask: controller.hasSkyMask ? 1.0 : 0.0
-                        property real skyShowMask: 0.0
+                        // 로컬 마스크 레이어(3) — win.layers 에서 vec4 유니폼. export 는 오버레이 없음(-1).
+                        property variant skyMask0: skyMaskImage0
+                        property variant skyMask1: skyMaskImage1
+                        property variant skyMask2: skyMaskImage2
+                        property vector4d skyA0: win.skyA0; property vector4d skyB0: win.skyB0; property vector4d skyC0: win.skyC0
+                        property vector4d skyA1: win.skyA1; property vector4d skyB1: win.skyB1; property vector4d skyC1: win.skyC1
+                        property vector4d skyA2: win.skyA2; property vector4d skyB2: win.skyB2; property vector4d skyC2: win.skyC2
+                        property real skyShowLayer: -1.0
                         // 현상 계수(coeffs.py 단일 진실원) uniform 주입 — pipeline.py 와 값 공유.
                         property real dehazeKLocal: controller.adjustCoeffs["dehazeKLocal"]
                         property real dehazeKContrast: controller.adjustCoeffs["dehazeKContrast"]
@@ -2926,21 +2984,14 @@ ApplicationWindow {
                         property real lutSize: lutN             // context property (LUT 크기 N)
                         property real lutStrength: simStrengthSlider.value
                         property int lutEnabled: simCombo.currentIndex === 0 ? 0 : 1
-                        // 하늘(로컬) 조정 — ML 세그 마스크에만 적용. showSkyMask=선택영역 시각화(프리뷰 전용).
-                        property variant skyMask: skyMaskImage
-                        property real skyExp: skyExpSlider.value
-                        property real skyTemp: skyTempSlider.value
-                        property real skyTint: skyTintSlider.value
-                        property real skySat: skySatSlider.value
-                        property real skyHi: skyHiSlider.value
-                        property real skyShadows: skyShadowsSlider.value
-                        property real skyTexture: skyTextureSlider.value
-                        property real skyClarity: skyClaritySlider.value
-                        property real skyDehaze: skyDehazeSlider.value
-                        property real skyContrast: skyContrastSlider.value
-                        property real skyInvert: skyInvertCheck.checked ? 1.0 : 0.0
-                        property real skyHasMask: controller.hasSkyMask ? 1.0 : 0.0
-                        property real skyShowMask: win.showSkyMask ? 1.0 : 0.0
+                        // 로컬 마스크 레이어(3) — win.layers vec4 유니폼. 오버레이=활성 레이어(프리뷰 전용).
+                        property variant skyMask0: skyMaskImage0
+                        property variant skyMask1: skyMaskImage1
+                        property variant skyMask2: skyMaskImage2
+                        property vector4d skyA0: win.skyA0; property vector4d skyB0: win.skyB0; property vector4d skyC0: win.skyC0
+                        property vector4d skyA1: win.skyA1; property vector4d skyB1: win.skyB1; property vector4d skyC1: win.skyC1
+                        property vector4d skyA2: win.skyA2; property vector4d skyB2: win.skyB2; property vector4d skyC2: win.skyC2
+                        property real skyShowLayer: win.showSkyMask ? win.activeLayer : -1.0
                         // 현상 계수(coeffs.py 단일 진실원) uniform 주입 — pipeline.py 와 값 공유.
                         property real dehazeKLocal: controller.adjustCoeffs["dehazeKLocal"]
                         property real dehazeKContrast: controller.adjustCoeffs["dehazeKContrast"]
@@ -5333,6 +5384,35 @@ ApplicationWindow {
                             x: 16; y: 16
                             width: maskScroll.width - 32
                             spacing: 12
+
+                            // ---- 레이어 선택(최대 3, 각 독립 마스크+보정) ----
+                            Label {
+                                text: "Mask Layers"
+                                color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                                font.capitalization: Font.AllUppercase
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 6
+                                Repeater {
+                                    model: 3
+                                    delegate: Button {
+                                        id: layerBtn
+                                        Layout.fillWidth: true
+                                        checkable: true
+                                        enabled: controller.imagePath !== ""
+                                        text: "Layer " + (index + 1) + (controller.layerHasMask[index] ? "  ●" : "")
+                                        onClicked: win.selectLayer(index)
+                                        // 인라인 checked 는 클릭 시 바인딩 파괴 → 독립 Binding 으로 activeLayer 반영.
+                                        Binding { target: layerBtn; property: "checked"; value: win.activeLayer === index }
+                                    }
+                                }
+                            }
+                            Label {
+                                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                text: "Each layer has its own mask + adjustments (e.g. Layer 1 = sky brighter, Layer 2 = mountains darker). ● = layer has a mask."
+                                color: "#888"; font.pixelSize: 11
+                            }
+                            Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
 
                             // ---- Create Mask: 클래스 체크박스(복합 선택, 라이브 재조합) ----
                             Label {
