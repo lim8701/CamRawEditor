@@ -160,6 +160,16 @@ ApplicationWindow {
     property bool _loadingLayer: false      // 레이어 로드 중 저장 억제(루프 방지)
     // 활성 레이어의 선택 클래스(체크박스 편의 미러). toggleMaskKey 가 layers[active].keys 와 동기.
     property var maskKeys: []
+    // Create Mask 탭: 0=Scene(장면 클래스) 1=Face(얼굴 부위). 표시만 나누고 마스크는 **두 탭의
+    // 합집합** — 얼굴 부위 key 는 "face:" 접두사로 구분되고 컨트롤러가 갈라서 처리한다.
+    property int maskTab: 0
+    // 숨은 탭의 선택이 안 보여 혼란스럽지 않도록 탭 라벨에 개수를 띄운다.
+    function maskTabCount(tab) {
+        var n = 0
+        for (var i = 0; i < win.maskKeys.length; i++)
+            if ((String(win.maskKeys[i]).indexOf("face:") === 0) === (tab === 1)) n++
+        return n
+    }
     // 사이드카 복원으로 마스크 재생성 중 — 완료 시 오버레이 자동 표시 억제(로드 시 갑자기 적색 방지).
     property bool _maskRestore: false
     function toggleMaskKey(key, on) {
@@ -655,7 +665,11 @@ ApplicationWindow {
             } else if (win.batchPhase === 2) {
                 // 재디코딩(WB/렌즈)·마스크 재생성(세그) 완료 대기. 마스크가 있어야 하는데
                 // 20초 내 안 오면(세그 실패) 마스크 없이 진행(단일 export 와 동일 폴백).
-                var maskPending = win.maskKeys.length > 0 && !controller.hasSkyMask
+                // maskSettled: 워커가 끝났고 결과가 '마스크 없음'인 경우도 대기 종료 —
+                // 얼굴 없는 사진에 Face 부위가 선택돼 있으면 hasSkyMask 가 영영 False 라
+                // 이게 없으면 장당 20초 타임아웃을 그대로 기다린다.
+                var maskPending = win.maskKeys.length > 0 &&
+                                  !controller.hasSkyMask && !controller.maskSettled
                 if (!controller.busy && !controller.skyBusy && (!maskPending || waited > 20000)) {
                     var url = controller.batchExportUrl(
                         win.batchDestUrl, win.batchQueue[win.batchIndex], win.batchExt)
@@ -5511,12 +5525,58 @@ ApplicationWindow {
                                 text: "Check one or more — the mask is the union of the selected classes."
                                 color: "#888"; font.pixelSize: 11
                             }
+                            // Scene / Face 탭. 표시만 전환하고 선택은 양쪽 모두 살아 있으므로
+                            // 라벨에 ●개수를 띄워 숨은 탭의 선택이 보이게 한다.
+                            // Controls 의 TabBar/Button 대신 Item+Rectangle 로 직접 그린다 —
+                            // Windows 네이티브 스타일이 contentItem 커스터마이즈를 막아
+                            // (콘솔 경고) 다크 테마 색을 못 맞추기 때문.
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 30
+                                color: "transparent"
+                                Rectangle {                    // 탭 스트립 하단 기준선
+                                    anchors.bottom: parent.bottom
+                                    width: parent.width; height: 1; color: "#444"
+                                }
+                                Row {
+                                    anchors.fill: parent
+                                    Repeater {
+                                        model: ["Scene", "Face"]
+                                        delegate: Item {
+                                            width: parent.width / 2
+                                            height: parent.height
+                                            property bool active: win.maskTab === index
+                                            Text {
+                                                anchors.centerIn: parent
+                                                text: modelData + (win.maskTabCount(index) > 0
+                                                      ? "   ● " + win.maskTabCount(index) : "")
+                                                color: active ? "#8ab4f8"
+                                                       : (tabHover.containsMouse ? "#ddd" : "#8a8a8a")
+                                                font.pixelSize: 12; font.bold: active
+                                            }
+                                            Rectangle {        // 활성 탭 강조 밑줄
+                                                anchors.bottom: parent.bottom
+                                                width: parent.width; height: 2
+                                                color: "#8ab4f8"; visible: parent.active
+                                            }
+                                            MouseArea {
+                                                id: tabHover
+                                                anchors.fill: parent; hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                // 탭 전환은 표시만 바꾸므로 세그 진행 중에도 허용
+                                                onClicked: win.maskTab = index
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             GridLayout {
                                 Layout.fillWidth: true
                                 columns: 2
                                 columnSpacing: 4; rowSpacing: 2
                                 Repeater {
-                                    model: controller.maskGroups
+                                    model: win.maskTab === 1 ? controller.faceGroups
+                                                             : controller.maskGroups
                                     delegate: RowLayout {
                                         Layout.fillWidth: true; spacing: 6
                                         CheckBox {

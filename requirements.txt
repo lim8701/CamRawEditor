@@ -7,3 +7,10 @@ exifread>=3.0
 #   — AI 디노이즈 GPU 가속용. 그 외 플랫폼은 표준 onnxruntime(macOS 는 CoreML EP 내장).
 onnxruntime-directml>=1.17; sys_platform == 'win32'
 onnxruntime>=1.17; sys_platform != 'win32'
+# 얼굴 검출(face_seg: cv2.FaceDetectorYN) 전용. YuNet ONNX 는 입력이 640x640 고정이라
+# onnxruntime 으로 돌리려면 letterbox+앵커프리 디코드+NMS 를 직접 구현해야 하는데,
+# OpenCV DNN 이 그 전부를 C++ 로 갖고 있다.
+#   ⚠️headless 필수 — 일반 opencv-python 은 자체 Qt 플러그인을 들고 와 PySide6 와 충돌.
+#   ⚠️>=5.0 필수 — 4.x 는 `numpy<2.3` 을 강제해 설치 시 numpy 를 다운그레이드시킨다.
+#     (5.0 은 numpy>=2 만 요구. 검출 결과는 4.12 와 동일, 새 graph engine 이라 ~1.6배 빠름)
+opencv-python-headless>=5.0

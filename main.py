@@ -756,6 +756,12 @@ class Controller(QObject):
         self._seg_guide = None      # 캐시된 원본 휘도(guided filter 가이드)
         self._seg_size = None       # 캐시된 마스크 출력 크기(H,W)
         self._layer_keys = [[] for _ in range(5)]  # 레이어별 선택 클래스 그룹 key 목록
+        self._mask_ran = False      # 이 이미지에서 마스크 워커가 한 번이라도 끝났는지(maskSettled)
+        self._seg_rgb8 = None       # 캐시된 세그 입력(중성 display sRGB) — 장면/얼굴 공용
+        self._face_parsed = None    # 캐시된 얼굴별 파싱 확률맵 [(geom, probs19)] — 약 1.2MB/얼굴
+        # 검출+파싱 compute-once. 사진 복원 시 applySkyEdits 가 5개 레이어의 setMaskClasses 를
+        # 한 틱에 호출 → 워커 5개가 동시에 캐시 miss 를 보고 각자 파싱(얼굴당 0.8s×5)한다.
+        self._face_lock = threading.Lock()
         self._active_layer = 0      # 편집 중인 활성 레이어(오버레이/슬라이더 대상)
         self._full_url = "image://rawfull/f?v=0"
         self._full_counter = 0
@@ -2232,6 +2238,14 @@ class Controller(QObject):
 
     maskGroups = Property("QVariantList", _get_mask_groups, constant=True)
 
+    # 얼굴 부위 그룹(Face 탭). 장면 클래스와 **같은 keys 목록**에 섞여 setMaskClasses 로 오고,
+    # _mask_worker 가 접두사로 갈라 각각 마스크를 만든 뒤 합집합(np.maximum)한다.
+    def _get_face_groups(self):
+        import face_seg
+        return face_seg.groups_for_qml()
+
+    faceGroups = Property("QVariantList", _get_face_groups, constant=True)
+
     # ---------- 앱 버전(제목표시줄 표시용) ----------
     def _get_app_version(self) -> str:
         return APP_VERSION
@@ -2596,55 +2610,112 @@ class Controller(QObject):
     aiNrDlProgress = Property(float, _get_ai_dl_prog, notify=aiNrChanged)
     aiNrInitializing = Property(bool, _get_ai_initializing, notify=aiNrChanged)
 
-    def _mask_worker(self, img_gen: int, layer: int, lseq: int, keys) -> None:
-        import os
-        import numpy as np
-        import sky_seg
-        mask = None
-        try:
-            if self._seg_probs is None:                 # 이미지당 추론 1회 → 캐시
-                # 모델이 아직 없으면 최초 1회 다운로드(~105MB) → 진행률 % 문구 표시.
-                # (legacy 에 있으면 ensure 가 복사만 하므로 '다운로드' 문구는 진짜 없을 때만)
-                if not os.path.exists(sky_seg.MODEL_PATH):
-                    if not sky_seg.model_available():
-                        # 진짜 다운로드일 때만 전용 프로그레스바(AI 디노이즈와 동일 UX).
-                        # 명칭 주의: 하늘 전용이 아니라 150클래스 세그멘테이션(마스킹 전체).
-                        self._segDlSig.emit((True, 0.0))
-                        _last = [0.0]
+    def _dl_progress_cb(self):
+        """모델 다운로드 진행률 콜백 — 1% 스로틀로 _segDlSig 에 전달. 호출측이 finally 로 해제."""
+        self._segDlSig.emit((True, 0.0))
+        last = [0.0]
 
-                        def _dl_prog(f):
-                            if f - _last[0] >= 0.01 or f >= 1.0:   # 1% 스로틀
-                                _last[0] = f
-                                self._segDlSig.emit((True, f))
-                        try:
-                            sky_seg.ensure_model(_dl_prog)
-                        finally:
-                            self._segDlSig.emit((False, 1.0))   # 실패해도 반드시 해제
-                    else:
-                        sky_seg.ensure_model()               # legacy 복사(순간, 표시 없음)
+        def _cb(f):
+            if f - last[0] >= 0.01 or f >= 1.0:
+                last[0] = f
+                self._segDlSig.emit((True, f))
+        return _cb
+
+    def _mask_worker(self, img_gen: int, layer: int, lseq: int, keys) -> None:
+        """레이어 마스크 생성. keys 는 장면(sky_seg)·얼굴(face_seg) 그룹이 섞여 올 수 있고,
+        각 소스가 만든 알파를 np.maximum 으로 합집합한다. 추론 결과는 이미지당 캐시 —
+        체크박스 재조합만으로는 재추론하지 않는다."""
+        mask = None
+        status_set = False
+        try:
+            # ⚠️import 는 반드시 try 안에서 — 여기서 예외가 나면 _skyReady 가 발화하지 않아
+            #   _sky_pending 이 영영 안 줄고 UI 가 busy 로 굳는다(스피너·체크박스 잠김).
+            import numpy as np
+            import face_seg
+            import sky_seg
+            ade_ids = sky_seg.class_ids_for(keys)
+            face_ids = face_seg.class_ids_for(keys)
+            if not ade_ids and not face_ids:
+                self._skyReady.emit((img_gen, layer, lseq, None))
+                return
+
+            # 세그 입력(중성 display sRGB)과 휘도 가이드는 두 소스 공용 — 예전엔 ADE 추론 분기
+            # 안에서 만들어서, 얼굴만 선택하면 쓸 수 없었다.
+            # ⚠️세 값을 한 번에 스냅샷하되 **셋 다** 검사한다 — 메인 스레드가 이미지 전환으로
+            #   캐시를 비우는 중이면(_on_render_ready 가 guide→size→rgb8 순으로 None 대입)
+            #   rgb8 만 살아 있는 찢긴 조합을 읽을 수 있다. 하나라도 비면 다시 만든다.
+            rgb8, hw, guide = self._seg_rgb8, self._seg_size, self._seg_guide
+            if rgb8 is None or hw is None or guide is None:
                 rgb8 = self._sky_input_rgb()
-                probs, hw = sky_seg.infer_softmax(rgb8)
+                hw = tuple(rgb8.shape[:2])
                 guide = (rgb8.astype(np.float32) / 255.0) @ sky_seg._LUMA
-                # ⚠️캐시 쓰기는 seq 가드 필수 — 추론 중 이미지가 바뀌면(_on_render_ready 가
-                # 캐시를 비움) 이전 이미지의 softmax 를 되살려 다음 워커가 '이전 이미지
-                # 마스크를 현재 이미지에' 합성하는 레이스가 있었음. stale 워커는 여기서 종료.
-                if img_gen != self._img_gen:             # 추론 중 이미지 전환 → 캐시 안 함(stale)
+                if img_gen != self._img_gen:         # 준비 중 이미지 전환 → 캐시 안 함(stale)
                     self._skyReady.emit((img_gen, layer, lseq, None))
                     return
-                self._seg_probs, self._seg_size, self._seg_guide = probs, hw, guide
-            else:
-                # 로컬 스냅샷 — 메인 스레드가 로드 전환으로 캐시를 비우는 중이어도 찢긴
-                # 조합(probs 는 새것/size 는 None)을 읽지 않도록 한 번에 잡는다.
-                probs, hw, guide = self._seg_probs, self._seg_size, self._seg_guide
-                if probs is None or hw is None:
-                    self._skyReady.emit((img_gen, layer, lseq, None))
-                    return
-            ids = sky_seg.class_ids_for(keys)
-            if ids:
-                mask = sky_seg.compose_mask(probs, hw, ids, guide)
+                self._seg_rgb8, self._seg_size, self._seg_guide = rgb8, hw, guide
+
+            if ade_ids:
+                if self._seg_probs is None:              # 이미지당 추론 1회 → 캐시
+                    # 모델이 아직 없으면 최초 1회 다운로드(~105MB) → 진행률 % 문구 표시.
+                    # (legacy 에 있으면 ensure 가 복사만 하므로 '다운로드' 문구는 진짜 없을 때만)
+                    if not os.path.exists(sky_seg.MODEL_PATH):
+                        if not sky_seg.model_available():
+                            # 진짜 다운로드일 때만 전용 프로그레스바(AI 디노이즈와 동일 UX).
+                            # 명칭 주의: 하늘 전용이 아니라 150클래스 세그멘테이션.
+                            try:
+                                sky_seg.ensure_model(self._dl_progress_cb())
+                            finally:
+                                self._segDlSig.emit((False, 1.0))   # 실패해도 반드시 해제
+                        else:
+                            sky_seg.ensure_model()       # legacy 복사(순간, 표시 없음)
+                    probs = sky_seg.infer_softmax(rgb8)[0]
+                    # ⚠️캐시 쓰기는 세대 가드 필수 — 추론 중 이미지가 바뀌면(_on_render_ready 가
+                    # 캐시를 비움) 이전 이미지의 softmax 를 되살려 다음 워커가 '이전 이미지
+                    # 마스크를 현재 이미지에' 합성하는 레이스가 있었음. stale 워커는 여기서 종료.
+                    if img_gen != self._img_gen:
+                        self._skyReady.emit((img_gen, layer, lseq, None))
+                        return
+                    self._seg_probs = probs
+                else:
+                    probs = self._seg_probs
+                if probs is not None:
+                    mask = sky_seg.compose_mask(probs, hw, ade_ids, guide)
+
+            if face_ids:
+                # 검출+파싱은 얼굴당 ~0.8s 로 비싸다 → 락으로 이미지당 1회만(레이어 5개가
+                # 동시에 복원돼도 중복 추론 없음). 부위 조합 변경은 락 밖 recompose(~10ms).
+                with self._face_lock:
+                    if self._face_parsed is None:
+                        if not face_seg.is_ready():      # 최초 1회 다운로드(~340MB)
+                            try:
+                                face_seg.ensure_model(self._dl_progress_cb())
+                            finally:
+                                self._segDlSig.emit((False, 1.0))
+                        else:
+                            face_seg.ensure_model()      # legacy 복사(순간, 표시 없음)
+                        dets = face_seg.detect_faces(rgb8)
+                        if dets:
+                            status_set = True
+                            self._segStatusSig.emit(f"Analyzing {len(dets)} face(s)…")
+                        parsed = face_seg.parse_faces(rgb8, dets)
+                        if img_gen != self._img_gen:     # 파싱 중 이미지 전환 → 캐시 안 함
+                            self._skyReady.emit((img_gen, layer, lseq, None))
+                            return
+                        self._face_parsed = parsed       # 빈 리스트(얼굴 없음)도 캐시 — 재검출 방지
+                    parsed = self._face_parsed
+                fm = face_seg.compose_face_mask(parsed, rgb8, face_ids)
+                mask = fm if mask is None else np.maximum(mask, fm)
+            # 전부 0(예: 얼굴 없는 사진에 Face 선택) → 마스크 없음으로 되돌린다. 안 그러면
+            # 레이어에 ● 가 붙고 빈 오버레이가 번쩍이며 export 가 0 배열을 들고 다닌다.
+            if mask is not None and not mask.any():
+                mask = None
         except Exception as exc:
             print(f"[mask] 세그 실패: {exc}")
-            self._segStatusSig.emit("")                  # 실패(다운로드 포함) 시에도 문구 제거
+        finally:
+            # 이 워커가 띄운 문구만 지운다 — 무조건 지우면 동시 실행 중인 다른 레이어의
+            # "Analyzing N face(s)…" 를 먼저 끝난 워커가 꺼버린다.
+            if status_set:
+                self._segStatusSig.emit("")
         self._skyReady.emit((img_gen, layer, lseq, mask))
 
     @Slot(object)
@@ -2657,6 +2728,10 @@ class Controller(QObject):
             self.skyBusyChanged.emit()
         if img_gen != self._img_gen or lseq != self._layer_seq[layer]:
             return                       # stale(이미지 전환 or 레이어 재요청) → 마스크 반영 안 함
+        # ⚠️_mask_ran 은 반드시 stale 가드 **뒤**에서 — 이전 이미지의 늦은 워커가 여기서
+        #   켜버리면 새 이미지가 아직 마스크를 만들기도 전에 maskSettled 가 참이 돼,
+        #   배치 export 가 마스크 없이 저장해 버린다.
+        self._mask_ran = True            # 결과가 None 이어도 '요청은 끝났다'(maskSettled)
         self._set_layer_mask(layer, mask)
         if mask is not None:
             self.skySelected.emit()      # 갱신 완료 → QML 이 마스크 오버레이 자동 표시
@@ -2715,6 +2790,14 @@ class Controller(QObject):
         return any(m is not None for m in self._layer_masks)
 
     hasSkyMask = Property(bool, _get_has_sky_mask, notify=skyMaskChanged)   # 아무 레이어나 마스크 있음
+
+    def _get_mask_settled(self) -> bool:
+        """이 이미지의 마스크 요청이 전부 끝났는지 — **결과가 마스크 없음이어도 True**.
+        배치 export 가 '아직 안 옴'과 '없는 게 결과'를 구분하는 데 쓴다. 없으면 얼굴 없는
+        사진에 Face 부위가 선택돼 있을 때 hasSkyMask 가 영영 False 라 장당 20초를 기다린다."""
+        return self._sky_pending == 0 and self._mask_ran
+
+    maskSettled = Property(bool, _get_mask_settled, notify=skyBusyChanged)
 
     def _get_sky_busy(self) -> bool:
         return self._sky_busy
@@ -2849,7 +2932,11 @@ class Controller(QObject):
         self._proxy_w, self._proxy_h = img.width(), img.height()
         self._proxy_img = img            # 세그 입력 디코드용(display sRGB 변환 base)
         self._seg_probs = None           # 프록시 바뀜 → 추론 캐시 무효화(재추론 필요)
-        self._seg_guide = self._seg_size = None
+        self._seg_guide = self._seg_size = self._seg_rgb8 = None
+        # 얼굴 검출/파싱도 프록시 좌표계 기준 → 렌즈 보정·기하 변경이면 반드시 재실행
+        self._face_parsed = None
+        self._mask_ran = False           # 새 프록시 → 마스크 요청 결과 '아직 없음'
+        self.skyBusyChanged.emit()       # maskSettled 의 notify — 값은 그대로여도 재평가시킨다
         prev_layer_keys = [list(k) for k in self._layer_keys]   # 레이어별 선택 스냅샷(재정렬용)
         self._img_gen += 1               # 이미지 세대↑ → 이전 이미지의 진행 중 세그 워커 결과 무효화
         for _i in range(5):
