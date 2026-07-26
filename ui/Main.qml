@@ -122,13 +122,41 @@ ApplicationWindow {
 
     // 마스크 선택영역 오버레이 표시(프리뷰 전용, 활성 레이어 마스크)
     property bool showSkyMask: false
-    // 로컬 마스크 레이어(최대 3) — 각 {keys, invert, 10 조정}. 슬라이더/체크박스는 activeLayer 를 편집.
+    // 로컬 마스크 레이어(동적 생성/삭제, 최대 5) — 각 {keys, invert, 10 조정}. 슬라이더/체크박스는
+    // activeLayer 를 편집. layers 는 항상 길이 5(고정 슬롯=셰이더/컨트롤러 정합), layerCount 개만 활성.
     property int activeLayer: 0
+    property int layerCount: 1               // 현재 존재하는 레이어 수(1..5) — UI/저장 대상
+    property int maxLayers: 5
     function _newLayer() {
         return { keys: [], invert: false, skyExp: 0, skyTemp: 0, skyTint: 0, skySat: 0, skyHi: 0,
                  skyShadows: 0, skyContrast: 1.0, skyTexture: 0, skyClarity: 0, skyDehaze: 0 }
     }
-    property var layers: [ _newLayer(), _newLayer(), _newLayer() ]
+    property var layers: [ _newLayer(), _newLayer(), _newLayer(), _newLayer(), _newLayer() ]
+    // 컨트롤러 마스크를 현재 layers 슬롯에 재동기(삭제로 시프트된 뒤 등). 캐시된 확률이라 재조합 저렴.
+    function _resyncLayers() {
+        for (var q = 0; q < win.maxLayers; q++) {
+            if (q < win.layerCount && win.layers[q].keys.length > 0) controller.setMaskClasses(q, win.layers[q].keys)
+            else controller.clearLayer(q)
+        }
+    }
+    function addLayer() {                     // 새 빈 레이어 추가 → 그 레이어로 전환
+        if (win.layerCount >= win.maxLayers) return
+        win.layerCount += 1
+        win.selectLayer(win.layerCount - 1)
+    }
+    function deleteLayer(i) {                 // 레이어 i 삭제(뒤 슬롯 앞으로 시프트, 빈 슬롯으로 끝 채움)
+        if (win.layerCount <= 1) return       // 최소 1개 유지
+        win.saveActiveFromSliders()
+        var ls = win.layers.slice()
+        ls.splice(i, 1); ls.push(win._newLayer())
+        win._loadingLayer = true
+        win.layers = ls
+        win.layerCount -= 1
+        if (win.activeLayer >= win.layerCount) win.activeLayer = win.layerCount - 1
+        win._loadingLayer = false
+        win._resyncLayers()                   // 시프트된 슬롯에 마스크 재생성
+        win.loadActiveToSliders()
+    }
     property bool _loadingLayer: false      // 레이어 로드 중 저장 억제(루프 방지)
     // 활성 레이어의 선택 클래스(체크박스 편의 미러). toggleMaskKey 가 layers[active].keys 와 동기.
     property var maskKeys: []
@@ -168,20 +196,21 @@ ApplicationWindow {
         win.layers = win.layers.slice()
     }
     function selectLayer(i) {           // 레이어 전환: 현재값 저장 → 활성 변경 → 새 레이어 로드
-        win.saveActiveFromSliders()
+        win.saveActiveFromSliders()     // showSkyMask 는 유지 → 오버레이가 새 활성 레이어 마스크를 따라감
         win.activeLayer = i
         win.loadActiveToSliders()
-        win.showSkyMask = false
     }
     // 셰이더 유니폼용 레이어 vec4 (A=exp/hi/sh/dehaze, B=temp/tint/sat/contrast, C=texture/clarity/invert/hasMask)
     function _layerA(i) { var L = win.layers[i]; return Qt.vector4d(L.skyExp, L.skyHi, L.skyShadows, L.skyDehaze) }
     function _layerB(i) { var L = win.layers[i]; return Qt.vector4d(L.skyTemp, L.skyTint, L.skySat, L.skyContrast) }
     function _layerC(i) { var L = win.layers[i]
         return Qt.vector4d(L.skyTexture, L.skyClarity, L.invert ? 1.0 : 0.0,
-                           (controller.layerHasMask[i] ? 1.0 : 0.0)) }
+                           ((i < win.layerCount && controller.layerHasMask[i]) ? 1.0 : 0.0)) }
     property vector4d skyA0: win._layerA(0); property vector4d skyB0: win._layerB(0); property vector4d skyC0: win._layerC(0)
     property vector4d skyA1: win._layerA(1); property vector4d skyB1: win._layerB(1); property vector4d skyC1: win._layerC(1)
     property vector4d skyA2: win._layerA(2); property vector4d skyB2: win._layerB(2); property vector4d skyC2: win._layerC(2)
+    property vector4d skyA3: win._layerA(3); property vector4d skyB3: win._layerB(3); property vector4d skyC3: win._layerC(3)
+    property vector4d skyA4: win._layerA(4); property vector4d skyB4: win._layerB(4); property vector4d skyC4: win._layerC(4)
 
     // 마스킹 조정 슬라이더(라벨 + -1..1 슬라이더 + 더블클릭 리셋 + 조정 중 오버레이 끄기) 공용 컴포넌트.
     // host=win 주입(인라인 컴포넌트는 외부 id 접근 불가). value 는 alias 라 id 로 .value 참조 가능.
@@ -242,7 +271,7 @@ ApplicationWindow {
     // win.layers 는 슬라이더 워처(skyLayerWatch)가 활성 레이어를 항상 동기화하므로 그대로 읽는다.
     function skyEditParams() {
         var out = []
-        for (var i = 0; i < 3; i++) {
+        for (var i = 0; i < win.layerCount; i++) {   // 존재하는 레이어만 저장 → 재로드 시 개수 복원
             var L = win.layers[i]
             var o = { "keys": (L.keys || []).slice(), "skyInvert": L.invert }
             for (var j = 0; j < win.skyAdjustKeys.length; j++) { var k = win.skyAdjustKeys[j]; o[k] = L[k] }
@@ -260,8 +289,9 @@ ApplicationWindow {
             for (var j = 0; j < win.skyAdjustKeys.length; j++) { var kf = win.skyAdjustKeys[j]; flat[kf] = win._ev(p, kf, win._skyDefault(kf)) }
             ml = [flat]
         }
-        var newLayers = [win._newLayer(), win._newLayer(), win._newLayer()]
-        for (var i = 0; i < Math.min(3, ml.length); i++) {
+        var newLayers = [win._newLayer(), win._newLayer(), win._newLayer(), win._newLayer(), win._newLayer()]
+        var cnt = Math.max(1, Math.min(win.maxLayers, ml.length))
+        for (var i = 0; i < cnt; i++) {
             var src = ml[i]; var L = newLayers[i]
             L.keys = (win._ev(src, "keys", []) || []).slice()
             L.invert = win._ev(src, "skyInvert", false)
@@ -269,12 +299,13 @@ ApplicationWindow {
         }
         win._loadingLayer = true
         win.layers = newLayers
+        win.layerCount = cnt
         win.activeLayer = 0
         win.showSkyMask = false
         win._loadingLayer = false
         win.loadActiveToSliders()           // 레이어0 값을 슬라이더/체크박스로
-        for (var q = 0; q < 3; q++) {        // 각 레이어 마스크 재생성(클래스로부터)
-            if (newLayers[q].keys.length > 0) { win._maskRestore = true; controller.setMaskClasses(q, newLayers[q].keys) }
+        for (var q = 0; q < win.maxLayers; q++) {   // 각 레이어 마스크 재생성(클래스로부터)/비활성 슬롯 해제
+            if (q < cnt && newLayers[q].keys.length > 0) { win._maskRestore = true; controller.setMaskClasses(q, newLayers[q].keys) }
             else controller.clearLayer(q)
         }
     }
@@ -446,7 +477,8 @@ ApplicationWindow {
     // 하늘(로컬) 조정 초기화 — 슬라이더 + 마스크 + 오버레이. 새 파일 로드/Reset 에서 호출.
     function resetSky() {           // 전 레이어 초기화
         win._loadingLayer = true
-        win.layers = [win._newLayer(), win._newLayer(), win._newLayer()]
+        win.layers = [win._newLayer(), win._newLayer(), win._newLayer(), win._newLayer(), win._newLayer()]
+        win.layerCount = 1
         win.activeLayer = 0
         skyExpSlider.value = 0.0; skyTempSlider.value = 0.0; skyTintSlider.value = 0.0
         skySatSlider.value = 0.0; skyHiSlider.value = 0.0; skyShadowsSlider.value = 0.0
@@ -2530,6 +2562,8 @@ ApplicationWindow {
             Image { id: skyMaskImage0; visible: false; cache: false; smooth: true; source: controller.layerMaskUrls[0] }
             Image { id: skyMaskImage1; visible: false; cache: false; smooth: true; source: controller.layerMaskUrls[1] }
             Image { id: skyMaskImage2; visible: false; cache: false; smooth: true; source: controller.layerMaskUrls[2] }
+            Image { id: skyMaskImage3; visible: false; cache: false; smooth: true; source: controller.layerMaskUrls[3] }
+            Image { id: skyMaskImage4; visible: false; cache: false; smooth: true; source: controller.layerMaskUrls[4] }
 
             // 디헤이즈 투과율 맵(DCP, 소형 단일채널 — bilinear 업샘플 위해 smooth:true).
             // 없으면 1x1 흰색(t=1) → 물리 분기 항등. 이미지당 1회 갱신(hazeChanged).
@@ -2661,13 +2695,17 @@ ApplicationWindow {
                         property real lutSize: lutN
                         property real lutStrength: simStrengthSlider.value
                         property int lutEnabled: simCombo.currentIndex === 0 ? 0 : 1
-                        // 로컬 마스크 레이어(3) — win.layers 에서 vec4 유니폼. export 는 오버레이 없음(-1).
+                        // 로컬 마스크 레이어(5) — win.layers 에서 vec4 유니폼. export 는 오버레이 없음(-1).
                         property variant skyMask0: skyMaskImage0
                         property variant skyMask1: skyMaskImage1
                         property variant skyMask2: skyMaskImage2
+                        property variant skyMask3: skyMaskImage3
+                        property variant skyMask4: skyMaskImage4
                         property vector4d skyA0: win.skyA0; property vector4d skyB0: win.skyB0; property vector4d skyC0: win.skyC0
                         property vector4d skyA1: win.skyA1; property vector4d skyB1: win.skyB1; property vector4d skyC1: win.skyC1
                         property vector4d skyA2: win.skyA2; property vector4d skyB2: win.skyB2; property vector4d skyC2: win.skyC2
+                        property vector4d skyA3: win.skyA3; property vector4d skyB3: win.skyB3; property vector4d skyC3: win.skyC3
+                        property vector4d skyA4: win.skyA4; property vector4d skyB4: win.skyB4; property vector4d skyC4: win.skyC4
                         property real skyShowLayer: -1.0
                         // 현상 계수(coeffs.py 단일 진실원) uniform 주입 — pipeline.py 와 값 공유.
                         property real dehazeKLocal: controller.adjustCoeffs["dehazeKLocal"]
@@ -2988,9 +3026,13 @@ ApplicationWindow {
                         property variant skyMask0: skyMaskImage0
                         property variant skyMask1: skyMaskImage1
                         property variant skyMask2: skyMaskImage2
+                        property variant skyMask3: skyMaskImage3
+                        property variant skyMask4: skyMaskImage4
                         property vector4d skyA0: win.skyA0; property vector4d skyB0: win.skyB0; property vector4d skyC0: win.skyC0
                         property vector4d skyA1: win.skyA1; property vector4d skyB1: win.skyB1; property vector4d skyC1: win.skyC1
                         property vector4d skyA2: win.skyA2; property vector4d skyB2: win.skyB2; property vector4d skyC2: win.skyC2
+                        property vector4d skyA3: win.skyA3; property vector4d skyB3: win.skyB3; property vector4d skyC3: win.skyC3
+                        property vector4d skyA4: win.skyA4; property vector4d skyB4: win.skyB4; property vector4d skyC4: win.skyC4
                         property real skyShowLayer: win.showSkyMask ? win.activeLayer : -1.0
                         // 현상 계수(coeffs.py 단일 진실원) uniform 주입 — pipeline.py 와 값 공유.
                         property real dehazeKLocal: controller.adjustCoeffs["dehazeKLocal"]
@@ -5391,20 +5433,64 @@ ApplicationWindow {
                                 color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
                                 font.capitalization: Font.AllUppercase
                             }
-                            RowLayout {
+                            ColumnLayout {
                                 Layout.fillWidth: true; spacing: 6
-                                Repeater {
-                                    model: 3
-                                    delegate: Button {
-                                        id: layerBtn
-                                        Layout.fillWidth: true
-                                        checkable: true
-                                        enabled: controller.imagePath !== ""
-                                        text: "Layer " + (index + 1) + (controller.layerHasMask[index] ? "  ●" : "")
-                                        onClicked: win.selectLayer(index)
-                                        // 인라인 checked 는 클릭 시 바인딩 파괴 → 독립 Binding 으로 activeLayer 반영.
-                                        Binding { target: layerBtn; property: "checked"; value: win.activeLayer === index }
+                                // 고정 높이 리스트뷰 — 항목당 [레이어 이름 | ✕]. 개수와 무관하게 높이 일정.
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 168
+                                    color: "#242424"; radius: 4; border.color: "#444"; border.width: 1
+                                    clip: true
+                                    ListView {
+                                        id: layerList
+                                        anchors.fill: parent; anchors.margins: 3
+                                        model: win.layerCount        // 동적: 존재하는 레이어만(1..5)
+                                        spacing: 2
+                                        currentIndex: win.activeLayer
+                                        interactive: false           // 최대 5개라 스크롤 불필요 → 패널 스크롤과 충돌 방지
+                                        delegate: Rectangle {
+                                            width: ListView.view ? ListView.view.width : 0
+                                            height: 30; radius: 3
+                                            color: index === win.activeLayer ? "#3d5a80"
+                                                   : (rowMouse.containsMouse ? "#333" : "transparent")
+                                            // 행 선택(라벨/여백 클릭). ✕ 버튼이 위에 있어 삭제 클릭은 버튼이 소비.
+                                            MouseArea {
+                                                id: rowMouse; anchors.fill: parent; hoverEnabled: true
+                                                onClicked: win.selectLayer(index)
+                                            }
+                                            RowLayout {
+                                                anchors.fill: parent
+                                                anchors.leftMargin: 10; anchors.rightMargin: 4; spacing: 4
+                                                Label {
+                                                    Layout.fillWidth: true
+                                                    text: "Layer " + (index + 1) + (controller.layerHasMask[index] ? "   ●" : "")
+                                                    color: "#eee"; font.pixelSize: 12; elide: Text.ElideRight
+                                                    verticalAlignment: Text.AlignVCenter
+                                                }
+                                                Button {                 // 레이어 삭제(최소 1개는 유지 — 비활성)
+                                                    id: delBtn
+                                                    text: "✕"; flat: true
+                                                    implicitWidth: 26; implicitHeight: 24
+                                                    enabled: win.layerCount > 1
+                                                    ToolTip.text: "Delete this layer"; ToolTip.visible: hovered; ToolTip.delay: 500
+                                                    onClicked: win.deleteLayer(index)
+                                                    contentItem: Text {   // ✕ 흰색(비활성 시 흐림)
+                                                        text: delBtn.text; color: "white"
+                                                        opacity: delBtn.enabled ? 1.0 : 0.35
+                                                        font.pixelSize: 13
+                                                        horizontalAlignment: Text.AlignHCenter
+                                                        verticalAlignment: Text.AlignVCenter
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
+                                }
+                                Button {                         // 레이어 추가(상한 5)
+                                    Layout.fillWidth: true
+                                    text: "+ Add Layer  (" + win.layerCount + "/" + win.maxLayers + ")"
+                                    enabled: controller.imagePath !== "" && win.layerCount < win.maxLayers
+                                    onClicked: win.addLayer()
                                 }
                             }
                             Label {

@@ -398,7 +398,7 @@ class SkyMaskProvider(QQuickImageProvider):
     def __init__(self):
         super().__init__(QQuickImageProvider.ImageType.Image)
         self._imgs = []
-        for _ in range(3):
+        for _ in range(5):
             im = QImage(1, 1, QImage.Format.Format_Grayscale8)
             im.fill(0)               # 시작 시에도 유효한 검정(마스크 없음) 텍스처
             self._imgs.append(im)
@@ -741,21 +741,21 @@ class Controller(QObject):
         self._ai_initializing = False  # ORT 세션 초기화 중(GPU 점유 → 차단 오버레이 'Preparing…')
         self._nr_chroma = False     # 현재 nrBase 가 AI RGB(크로마 유효) 베이스인지 — 셰이더 게이트
         self._nr_ai_seq = -1        # AI(RGB) 베이스가 적용된 seq — 뒤늦은 가이디드 폴백의 덮어쓰기 방지
-        self._layer_urls = [f"image://skymask/{i}?v=0" for i in range(3)]  # 레이어별 마스크 URL
-        self._layer_counters = [0, 0, 0]   # 레이어별 URL 버전(해당 레이어만 QML 재로드)
+        self._layer_urls = [f"image://skymask/{i}?v=0" for i in range(5)]  # 레이어별 마스크 URL
+        self._layer_counters = [0] * 5     # 레이어별 URL 버전(해당 레이어만 QML 재로드)
         self._img_gen = 0           # 이미지 세대 — 이미지 바뀜 시 in-flight 워커/_seg_probs 캐시 무효화
-        self._layer_seq = [0, 0, 0] # 레이어별 마스크 워커 순번(레이어 독립 staleness — 전역 seq 아님)
+        self._layer_seq = [0] * 5   # 레이어별 마스크 워커 순번(레이어 독립 staleness — 전역 seq 아님)
         self._sky_pending = 0       # in-flight 마스크 워커 수(busy = pending>0)
         self._sky_busy = False      # 세그 추론/재조합 진행 중
         self._seg_status = ""       # 세그 상태 문구(모델 다운로드 중 등). 빈 문자열=없음
         self._seg_downloading = False   # 마스킹 모델 다운로드 중(전용 프로그레스바 표시)
         self._seg_dl_prog = 0.0         # 다운로드 진행률 0..1
-        self._layer_masks = [None, None, None]  # 레이어별 마스크(numpy [0,1], 프록시) — CPU export 용
+        self._layer_masks = [None] * 5  # 레이어별 마스크(numpy [0,1], 프록시) — CPU export 용
         self._proxy_img = None      # 마지막 프록시 QImage(세그 입력 디코드용)
         self._seg_probs = None      # 캐시된 150클래스 softmax(저해상도) — 이미지당 추론 1회(레이어 공유)
         self._seg_guide = None      # 캐시된 원본 휘도(guided filter 가이드)
         self._seg_size = None       # 캐시된 마스크 출력 크기(H,W)
-        self._layer_keys = [[], [], []]    # 레이어별 선택 클래스 그룹 key 목록
+        self._layer_keys = [[] for _ in range(5)]  # 레이어별 선택 클래스 그룹 key 목록
         self._active_layer = 0      # 편집 중인 활성 레이어(오버레이/슬라이더 대상)
         self._full_url = "image://rawfull/f?v=0"
         self._full_counter = 0
@@ -2243,7 +2243,7 @@ class Controller(QObject):
         """레이어의 체크된 클래스 그룹 key 목록으로 마스크 생성(백그라운드). 추론은 이미지당 1회
         캐시라 클래스 재조합만. 같은 조합의 마스크가 이미 있으면 no-op(중복 호출 방어)."""
         layer = int(layer)
-        if not (0 <= layer < 3):
+        if not (0 <= layer < 5):
             return
         keys_list = [str(k) for k in keys]
         if keys_list == self._layer_keys[layer] and self._layer_masks[layer] is not None:
@@ -2664,7 +2664,7 @@ class Controller(QObject):
     def _set_layer_mask(self, layer: int, mask) -> None:
         """레이어 마스크(numpy [0,1] 또는 None)를 프로바이더/캐시에 반영. None=1x1 검정(sampler 유효)."""
         import numpy as np
-        if not (0 <= layer < 3):
+        if not (0 <= layer < 5):
             return
         self._layer_masks[layer] = mask  # CPU export 용(프록시 해상도 보관)
         if mask is None:
@@ -2687,7 +2687,7 @@ class Controller(QObject):
     @Slot(int)
     def clearLayer(self, layer) -> None:  # noqa: N802 (QML 슬롯) — 한 레이어만 해제
         layer = int(layer)
-        if 0 <= layer < 3:
+        if 0 <= layer < 5:
             self._layer_seq[layer] += 1      # 해당 레이어 in-flight 워커만 무효화(전역 아님)
             self._layer_keys[layer] = []
             self._set_layer_mask(layer, None)
@@ -2695,7 +2695,7 @@ class Controller(QObject):
     def _clear_sky(self) -> None:
         """전 레이어 마스크 해제(1x1 검정). 캐시(_seg_probs)는 유지 — 같은 이미지 재선택은 재추론 불필요.
         레이어별 seq 증가 — 진행 중이던 워커 결과가 해제 직후 도착해 되살리는 레이스 방지."""
-        for i in range(3):
+        for i in range(5):
             self._layer_seq[i] += 1
             self._layer_keys[i] = []
             self._set_layer_mask(i, None)
@@ -2852,7 +2852,7 @@ class Controller(QObject):
         self._seg_guide = self._seg_size = None
         prev_layer_keys = [list(k) for k in self._layer_keys]   # 레이어별 선택 스냅샷(재정렬용)
         self._img_gen += 1               # 이미지 세대↑ → 이전 이미지의 진행 중 세그 워커 결과 무효화
-        for _i in range(3):
+        for _i in range(5):
             self._set_layer_mask(_i, None)   # 새 프록시 → 이전 마스크 무효(곧 재생성/복원)
         # 디헤이즈 물리(DCP): 이전 추정 무효화(준비 전엔 conf=0 → 톤모델 폴백) 후 백그라운드 재추정.
         self._haze_seq += 1
@@ -2888,11 +2888,11 @@ class Controller(QObject):
         # 있었으면 같은 클래스로 새 프록시에 재생성(렌즈 보정은 기하 변경 → 정렬 위해 재생성 필수).
         # fresh load 는 applyEdits 가 저장본에서 복원하므로 여기선 건드리지 않는다.
         if not self._fresh_load:         # 비-fresh 재디코딩 → 각 레이어 마스크 재정렬(렌즈/기하 변경)
-            for _i in range(3):
+            for _i in range(5):
                 if prev_layer_keys[_i]:
                     self.setMaskClasses(_i, prev_layer_keys[_i])
         else:
-            self._layer_keys = [[], [], []]
+            self._layer_keys = [[] for _ in range(5)]
         self._update_stamp_layer()       # 날짜 스탬프 프리뷰 레이어(프록시, 우하단)
         self._compute_histogram(img)     # 톤커브 배경 히스토그램(디코딩된 프록시)
         print(f"[load] {self._path}  ({img.width()}x{img.height()})  "

@@ -438,7 +438,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         _lp = [p] if _flat_any else []
     _masks_in = list(sky_masks) if sky_masks is not None else []
     sky_layers = []                          # [(sky_dict, skym_full)] — 마스크 있는 활성 레이어만
-    for _i, lp in enumerate(_lp[:3]):
+    for _i, lp in enumerate(_lp[:5]):
         sky = {"exp": float(lp.get("skyExp", 0)), "temp": float(lp.get("skyTemp", 0)),
                "tint": float(lp.get("skyTint", 0)), "sat": float(lp.get("skySat", 0)),
                "hi": float(lp.get("skyHi", 0)), "sh": float(lp.get("skyShadows", 0)),
