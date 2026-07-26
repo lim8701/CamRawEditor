@@ -83,6 +83,78 @@ repositories are under the MIT License" 명시(1차 출처 확인). 따라서 ON
 인공 가우시안 노이즈에는 SCUNet 보다 보수적으로 반응하지만 실카메라 고ISO 노이즈가
 본래 학습 도메인.
 
+## 얼굴 마스킹 (Face masking — 검출 + 부위 파싱)
+
+모델 두 개가 짝으로 동작한다. 검출기는 **어디를 자를지**만 정하고, 경계 정밀도는 전적으로
+파싱이 만든다(박스가 곧 마스크가 아님). 파싱 모델은 정렬된 얼굴 크롭으로만 학습돼서 전체
+사진을 넣으면 배경을 피부/머리카락으로 오분류한다 → 검출 → 크롭 → 파싱 순서가 필수.
+
+### 1) 검출 — YuNet
+
+- **사용 파일**: `models/yunet_face_2023mar.onnx` (232 KB)
+- **출처(HF)**: [`opencv/face_detection_yunet`](https://huggingface.co/opencv/face_detection_yunet)
+  (OpenCV Zoo 미러). 코드 상수: `face_seg.py` 의 `_DET_REPO`/`_DET_REV`/`_DET_SHA256`
+- **실행**: onnxruntime 이 아니라 **`cv2.FaceDetectorYN`(OpenCV DNN)**. 이 ONNX 는 입력이
+  640×640 **고정**이라 ORT 로 돌리려면 letterbox + 앵커프리 디코드 + NMS 를 직접 구현해야 하는데,
+  OpenCV 가 그 전부를 C++ 로 갖고 있다. 그래서 `opencv-python-headless` 가 의존성에 있다.
+- **2스케일 필수**: YuNet 은 네트워크 입력 기준 약 10~300px 얼굴로 학습됐다. 긴 변 640(s=0.25)만
+  쓰면 프록시 얼굴 40~1200px 만 커버해 클로즈업을 놓친다 → 640 + 320 두 패스 교차 NMS.
+  (실측: 2560 프레임의 954px 얼굴은 640 단독으로 미검출, 320 패스가 잡음)
+- **속도**: 2패스 합쳐 프록시 1장당 ~60 ms (CPU)
+- **라이선스**: **MIT** — 코드(MIT)와 충돌 없음
+
+### 2) 부위 파싱 — SegFormer-B5 / CelebAMask-HQ
+
+- **사용 파일**: `models/face_parsing_b5.onnx` (~340 MB, fp32)
+- **출처(HF)**: [`Xenova/face-parsing`](https://huggingface.co/Xenova/face-parsing)
+  = [`jonathandinu/face-parsing`](https://huggingface.co/jonathandinu/face-parsing) 의 ONNX export.
+  코드 상수: `face_seg.py` 의 `_PARSE_REPO`/`_PARSE_REV`/`_PARSE_SHA256`
+- **19클래스**: 0 background, 1 skin, 2 nose, 3 eye_g(안경), 4 l_eye, 5 r_eye, 6 l_brow, 7 r_brow,
+  8 l_ear, 9 r_ear, 10 mouth, 11 u_lip, 12 l_lip, 13 hair, 14 hat, 15 ear_r(귀걸이),
+  16 neck_l(목걸이), 17 neck, 18 cloth
+- **UI 그룹**: 좌/우를 병합해 11개(Skin·Nose·Eyes·Brows·Glasses·Lips·Mouth·Ears·Hair·Hat·Neck).
+  `cloth`(18)는 제외 — 크롭(얼굴 박스 1.9배) 밖까지 이어져 구조적으로 항상 일부만 잡힌다.
+- **전처리**: sky_seg 와 동일 계열(/255 → ImageNet 정규화 → NCHW). 단 512×512 **정사각**
+  (`preprocessor_config.json`) — 크롭이 정사각이라 왜곡 없음.
+- **속도**: 얼굴당 ~0.8 s (CPU). 얼굴 상한 5개. 파싱 결과는 이미지당 캐시 → 부위 토글 ~10 ms.
+
+#### 변형 (fp32 를 쓰는 이유 — 재조사 방지)
+
+같은 repo 의 `onnx/` 에 `model_fp16.onnx`(172MB)·`model_quantized.onnx`(89MB)도 있지만 **둘 다
+CPU EP 에는 부적합**하다: fp16 은 ORT 가 cast 노드를 끼워 넣어 결국 fp32 로 돌고, int8 은 동적
+양자화라 `MatMulInteger` 융합이 안 돼 오히려 느려질 수 있으며 per-pixel 경계가 뭉갠다.
+바꾸려면 `face_seg.py` 의 `_PARSE_NAME`/`_PARSE_URL`/`_PARSE_SHA256`/`_PARSE_BYTES` 네 상수만 교체.
+
+#### 후처리 (하늘과 반대로 튜닝)
+
+- 결정 곡선 `FACE_LO/HI = 0.35/0.65` — 하늘의 0.02/0.20 은 약확신 구름을 끌어올리려는 값이라
+  얼굴에 쓰면 옆 부위로 번진다(입술 선택인데 턱까지 물듦).
+- **구멍 채우기 안 함** — skin 마스크의 구멍을 메우면 눈·입이 삼켜진다(부위 분리가 존재 이유).
+- 가이디드 필터는 **크롭 공간**에서 크롭 변의 2%. 프록시 기준(sky 의 0.012)을 쓰면 입술보다 커진다.
+- 크롭 경계 6% 페더 — neck/긴 머리가 크롭 밖까지 이어져 모서리에서 잘리면 **직사각형 자국**이 남는다.
+- 리사이즈/가이디드필터는 scipy 대신 cv2 (1898² 크롭 기준 0.45 s → 0.13 s).
+
+#### 롤 정렬을 하지 않는 이유 (재조사 방지)
+
+CelebAMask-HQ 가 정렬된 얼굴로 학습됐으니 눈 랜드마크로 크롭을 회전시키는 게 이론상 유리하지만,
+**90° 누운 얼굴도 정렬 없이 제대로 파싱됐다**(실측). 게다가 크게 기울어진 얼굴에서는 랜드마크
+자체가 부정확해(박스는 정확한데 두 눈 점이 한쪽에 몰림) 각도를 믿을 수 없다. 도입하지 않음.
+
+### 라이선스 (⚠️ 상업 배포 시 확인)
+
+- 검출(YuNet): **MIT**
+- 파싱: 업스트림(`jonathandinu/face-parsing`)이 **라이선스를 명시하지 않았고**, `nvidia/mit-b5`
+  (NVIDIA 연구용)를 **CelebAMask-HQ** 로 파인튜닝한 것이다. CelebAMask-HQ 는 **비상업 연구 전용**.
+  → 하늘 세그와 마찬가지로 상업 배포 시 교체 대상.
+
+### 알려진 한계
+
+- 천 마스크(KF94 등)를 **skin 으로 분류**한다 — CelebAMask-HQ 가 코로나 이전 데이터셋이라 해당
+  클래스가 없다. 스킨 톤 보정 시 천까지 물든다(모델 한계, 우회 불가).
+- 작은 얼굴일수록 마스크가 소프트하다(213px 얼굴 기준 >0.5 영역 평균 알파 0.845 = 실효 84%).
+  피부는 눈·코·입 구멍이 뚫린 얇은 형태라 페더 밴드가 영역 대부분을 차지하기 때문.
+  더 강하게 하려면 `FACE_GUIDED_R` 을 0.020 → 0.010 (0.90) / 0.005 (0.92) 로. 경계 밀착은 약해진다.
+
 ## 사진 캡션 (Photo caption — Florence-2)
 
 - **모델**: Microsoft Florence-2-base-ft (비전-언어, 영어 캡션 생성)

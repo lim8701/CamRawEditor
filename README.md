@@ -48,11 +48,19 @@ Any Fujifilm body works out of the box (everything is driven by per-file metadat
 - **Highlight reconstruction** — hue-aware desaturation that neutralizes clipped-highlight color casts (e.g. a fire core) while preserving saturated colored light sources (neon, signs)
 
 ### Masking (local adjustments)
-- **AI selection** — ONNX semantic segmentation (SegFormer-B2 / ADE20K) detects regions to mask; the model auto-downloads on first use
-- **Multi-class composite** — tick any combination of **Sky / Vegetation / Building / Ground / Water / Mountain / Person**; the mask is their union, recomposed live from a single cached inference
-- **Edge-refined soft mask** — guided-filter refinement against image luminance for clean branch/edge boundaries, plus invert and a red mask overlay
+- **AI selection, two families** — a **Scene** tab (SegFormer-B2 / ADE20K) and a **Face** tab; models auto-download on first use
+  - **Scene** — tick any combination of **Sky / Vegetation / Building / Ground / Water / Mountain / Person**
+  - **Face** — pixel-precise face parts: **Skin / Nose / Eyes / Brows / Glasses / Lips / Mouth / Ears / Hair / Hat / Neck**, for up to 5 faces per photo
+- **Composite** — the mask is the union of everything ticked across both tabs, recomposed live from cached inference (switching parts is instant; no re-inference)
+- **Up to 5 layers** — create and delete mask layers, each with its own mask *and* its own adjustments (e.g. sky brighter, skin warmer, mountains darker in one photo)
+- **Edge-refined soft mask** — guided-filter refinement against image luminance for clean branch/hairline boundaries, plus invert and a red mask overlay
 - **Per-mask develop** — Exposure / Temp / Tint / Contrast / Highlights / Shadows / Texture / Clarity / Dehaze / Saturation, applied only to the masked region in both preview and export
 - Masks persist per-image (regenerated from the saved classes on reopen)
+
+Face masking is two models working together: **YuNet** locates faces (232 KB), then **SegFormer-B5
+trained on CelebAMask-HQ** parses each face crop into 19 classes. The detector only decides where to
+crop — boundary precision comes from parsing plus the guided filter, so masks follow the real hairline
+and jaw rather than a box. Detection takes ~60 ms, parsing ~0.8 s per face, and part toggles ~10 ms.
 
 ### AI Caption
 - **On-device English captions** — Microsoft **Florence-2** running locally via ONNX (MIT-licensed model); no cloud, no account
@@ -109,6 +117,7 @@ Distortion, vignetting, and chromatic aberration — applied from the **per-shot
 - **File explorer** with RAF thumbnails and a likes/favorites filter
 - **Live histogram** reflecting current adjustments
 - **Full-resolution export** to JPEG / PNG / TIFF (background-threaded, UI stays responsive)
+- **AI Models screen** — the left panel footer shows what has been downloaded; open it to see each model's size and status, pre-download anything missing instead of waiting on first use, and spot files no longer claimed by any feature
 
 ---
 
@@ -135,9 +144,10 @@ Key design decisions:
 ## Requirements
 
 - Python 3.13 (3.11+ should work)
-- `PySide6`, `rawpy`, `numpy`, `scipy`, `exifread`, `onnxruntime-directml` (Windows; plain `onnxruntime` elsewhere — see [`requirements.txt`](requirements.txt))
+- `PySide6`, `rawpy`, `numpy`, `scipy`, `exifread`, `opencv-python-headless`, `onnxruntime-directml` (Windows; plain `onnxruntime` elsewhere — see [`requirements.txt`](requirements.txt))
+  - ⚠️ OpenCV must be **`headless` and 5.0+**: the full package ships its own Qt plugins and clashes with PySide6, and 4.x pins `numpy<2.3` so it would downgrade the project's numpy. It is used only for face detection and mask resampling.
 - A GPU/driver supporting the Qt RHI (OpenGL / Direct3D / Metal / Vulkan)
-- AI models download on first use into a per-user data folder that survives app updates (`%LOCALAPPDATA%\FilmRawstery\models` on Windows): masking (SegFormer-B2, ~105 MB) and AI denoise (NAFNet, ~117 MB) automatically, the caption model (Florence-2, ~1.1 GB) **only after an explicit in-app opt-in** — needs an internet connection the first time (see [`models/README.md`](models/README.md))
+- AI models download on first use into a per-user data folder that survives app updates (`%LOCALAPPDATA%\FilmRawstery\models` on Windows) — needs an internet connection the first time. Scene masking (SegFormer-B2, ~105 MB), face masking (YuNet + SegFormer-B5, ~341 MB) and AI denoise (NAFNet, ~117 MB) fetch automatically when you first use the feature; the caption model (Florence-2, ~1.1 GB) **only after an explicit in-app opt-in**. The **AI Models** screen (left panel footer) shows what is installed and lets you pre-download any of them (see [`models/README.md`](models/README.md))
 
 ## Install & Run
 
@@ -187,7 +197,8 @@ Runs from source with the common setup above — all dependencies ship prebuilt 
 | `main.py` | App entry point, controller, image providers (raw / lut / curve / stamp / thumb) |
 | `raw_loader.py` | RAW → display proxy (X-Trans-safe / Bayer-AHD decode, headroom encoding, lens correction) |
 | `pipeline.py` | Full-resolution export — numpy reproduction of the shader pipeline |
-| `sky_seg.py` | ML masking engine — ONNX SegFormer multi-class segmentation → composite soft mask |
+| `sky_seg.py` | Scene masking engine — ONNX SegFormer multi-class segmentation → composite soft mask |
+| `face_seg.py` | Face masking engine — YuNet detection (OpenCV DNN) + ONNX SegFormer face parsing → per-part soft mask |
 | `ai_denoise.py` | AI denoise engine — ONNX NAFNet tiled inference, DirectML-accelerated (luminance NR base) |
 | `caption.py` | AI caption engine — ONNX Florence-2 on-device English captions (self-contained BPE tokenizer) |
 | `app_dirs.py` | Per-OS user-data model store (survives updates; migrates legacy downloads by copy) |
@@ -209,7 +220,7 @@ A hobby project — shared so others can use and learn from it.
 
 - **Source code & original assets** — [MIT](LICENSE). Use, modify, and redistribute freely (including commercially).
 - **Film-simulation LUTs** (`luts/*.cube`) — **CC BY-NC-SA 4.0** (attribution · **non-commercial** · share-alike), derived from [FujifilmCameraProfiles](https://github.com/abpy/FujifilmCameraProfiles); see [`luts/LICENSE`](luts/LICENSE). The code is reusable commercially, but the bundled LUTs are not.
-- **AI models** — downloaded at runtime under their own licenses: the masking model is research-oriented (verify before commercial use); the caption model (Florence-2) and denoise model (NAFNet) are MIT. See [`models/README.md`](models/README.md).
+- **AI models** — downloaded at runtime under their own licenses: the scene masking model is research-oriented and the face parsing model derives from **CelebAMask-HQ (non-commercial research only)** — verify both before commercial use; the face detector (YuNet) is MIT, and the caption model (Florence-2) and denoise model (NAFNet) are MIT. See [`models/README.md`](models/README.md).
 
 > Bundled third-party components keep their own licenses; the MIT grant covers this project's own code and assets only.
 
@@ -219,10 +230,13 @@ A hobby project — shared so others can use and learn from it.
 
 - **Film-simulation LUTs** — derived from the [*FujifilmCameraProfiles*](https://github.com/abpy/FujifilmCameraProfiles) project (sRGB `.cube`), licensed CC BY-NC-SA 4.0
 - **Date-back fonts** — [DSEG](https://github.com/keshikan/DSEG) by Keshikan (seven-/fourteen-segment) and [Doto](https://github.com/oliverlalan/Doto) by the Doto Project Authors (round-dot matrix) — both SIL Open Font License 1.1
-- **Masking model** — SegFormer-B2 finetuned on ADE20K, ONNX export by [Xenova](https://huggingface.co/Xenova/segformer-b2-finetuned-ade-512-512) (transformers.js). ⚠️ Research-oriented license — verify before commercial use; see [`models/README.md`](models/README.md)
+- **Scene masking model** — SegFormer-B2 finetuned on ADE20K, ONNX export by [Xenova](https://huggingface.co/Xenova/segformer-b2-finetuned-ade-512-512) (transformers.js). ⚠️ Research-oriented license — verify before commercial use; see [`models/README.md`](models/README.md)
+- **Face detection model** — [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) from OpenCV Zoo (MIT), run through OpenCV's `FaceDetectorYN`
+- **Face parsing model** — [face-parsing](https://huggingface.co/jonathandinu/face-parsing) by Jonathan Dinu (SegFormer finetuned on CelebAMask-HQ), ONNX export by [Xenova](https://huggingface.co/Xenova/face-parsing). ⚠️ CelebAMask-HQ is **non-commercial research only**; see [`models/README.md`](models/README.md)
 - **Caption model** — [Florence-2-base-ft](https://huggingface.co/microsoft/Florence-2-base-ft) by Microsoft (MIT), ONNX export by [onnx-community](https://huggingface.co/onnx-community/Florence-2-base-ft)
 - **Denoise model** — [NAFNet](https://github.com/megvii-research/NAFNet) SIDD-width32 by megvii-research (MIT), converted to ONNX for this project
 - **ONNX inference** — [ONNX Runtime](https://onnxruntime.ai/)
+- **Face detection runtime** — [OpenCV](https://opencv.org/) (Apache-2.0), via `opencv-python-headless` (MIT packaging)
 - **RAW decoding** — [rawpy](https://github.com/letmaik/rawpy) / LibRaw
 - **UI & GPU pipeline** — [Qt for Python (PySide6)](https://doc.qt.io/qtforpython/)
 - Plus [NumPy](https://numpy.org/), [SciPy](https://scipy.org/), and [ExifRead](https://github.com/ianare/exif-py)

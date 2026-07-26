@@ -8,10 +8,11 @@ PACKAGE AS A WHOLE may be redistributed for NON-COMMERCIAL use only, with
 attribution. (The MIT-licensed source code itself remains reusable, including
 commercially, when taken on its own — see LICENSE.)
 
-The two components that make the bundled package non-commercial are:
-  - the film-simulation LUTs (CC BY-NC-SA 4.0), and
-  - the sky-segmentation model (NVIDIA research license, non-commercial),
-    which is downloaded at runtime and is NOT part of this package.
+The components that make the bundled package non-commercial are:
+  - the film-simulation LUTs (CC BY-NC-SA 4.0),
+  - the scene-segmentation model (NVIDIA research license, non-commercial), and
+  - the face-parsing model (CelebAMask-HQ, non-commercial research only).
+    The two models are downloaded at runtime and are NOT part of this package.
 
 Components and licenses
 -----------------------
@@ -28,11 +29,21 @@ Components and licenses
 3. Sky-segmentation ONNX model  (downloaded at runtime; NOT in this package)
    NVIDIA research license — non-commercial. See models/README.md.
 
+3a. Face-detection ONNX model — YuNet  (downloaded at runtime; NOT in this package)
+    MIT License. Source: opencv/opencv_zoo (face_detection_yunet)
+    https://github.com/opencv/opencv_zoo — see models/README.md.
+
 3b. AI-denoise ONNX model — NAFNet  (downloaded at runtime; NOT in this package)
     MIT License — Copyright (c) 2022 megvii-model (portions BasicSR, Apache-2.0)
     Converted 1:1 from the official pretrained weights
     (NAFNet-SIDD-width32.pth, trained on the SIDD dataset).
     Source: https://github.com/megvii-research/NAFNet — see models/README.md.
+
+3c. Face-parsing ONNX model  (downloaded at runtime; NOT in this package)
+    No license declared upstream (jonathandinu/face-parsing). Derived from
+    nvidia/mit-b5 (NVIDIA research license) finetuned on CelebAMask-HQ, which
+    is NON-COMMERCIAL research use only.
+    https://github.com/switchablenorms/CelebAMask-HQ — see models/README.md.
 
 4. PySide6 / Qt 6
    GNU LGPL v3. Copyright (c) The Qt Company Ltd.
@@ -50,6 +61,12 @@ Components and licenses
                        (+ onnxruntime-ThirdPartyNotices.txt)
 10. ExifRead    — see THIRD_PARTY_LICENSES/exifread-LICENSE.txt
 
+10b. OpenCV  (opencv-python-headless; used for face detection and mask resampling)
+     opencv-python packaging — MIT, Copyright (c) Olli-Pekka Heinisuo
+     OpenCV library itself   — Apache License 2.0
+     See THIRD_PARTY_LICENSES/opencv-LICENSE.txt
+         (+ opencv-ThirdPartyNotices.txt for OpenCV's own bundled dependencies)
+
 11. DSEG fonts  (fonts/DSEG7Classic-*.ttf, DSEG14Classic-*.ttf)
     SIL Open Font License 1.1 — Copyright (c) keshikan, Reserved Font Name "DSEG"
     https://github.com/keshikan/DSEG  ·  https://openfontlicense.org
@@ -63,7 +80,7 @@ The canonical license texts are bundled in THIRD_PARTY_LICENSES/:
   - OFL.txt      (DSEG7 font)        — SIL Open Font License 1.1
   - LibRaw-LGPL-2.1.txt, rawpy-LICENSE.txt, numpy-LICENSE.txt,
     scipy-LICENSE.txt, onnxruntime-LICENSE.txt (+ ThirdPartyNotices),
-    exifread-LICENSE.txt
+    exifread-LICENSE.txt, opencv-LICENSE.txt (+ opencv-ThirdPartyNotices.txt)
 
 Summary: share NON-COMMERCIALLY, keep this NOTICE and the license files with
 the package, and credit the sources above.
