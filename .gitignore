@@ -29,6 +29,10 @@ luts/sepia.cube
 /dist/
 *.zip
 
+# 후원 QR 원본 캡처(카카오페이 앱 풀해상도). README 에는 여백을 잘라 520px 로
+# 줄인 docs/donate_kakaopay.jpg 를 쓴다.
+/donate/
+
 # OS
 Thumbs.db
 .DS_Store

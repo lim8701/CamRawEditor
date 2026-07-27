@@ -214,6 +214,21 @@ Runs from source with the common setup above — all dependencies ship prebuilt 
 
 ---
 
+## Support / 후원
+
+Free and always will be. If it saved you a roll of film's worth of time, a coffee is welcome — entirely optional.
+
+무료이고 앞으로도 그렇습니다. 필름 한 롤만큼의 시간을 아끼셨다면 커피 한 잔 정도 후원은 환영입니다 — 전혀 부담 갖지 않으셔도 됩니다.
+
+[![KakaoPay](https://img.shields.io/badge/KakaoPay-donate%20%C2%B7%20%ED%9B%84%EC%9B%90-FFCD00?style=flat-square&logo=kakaotalk&logoColor=3C1E1E)](https://qr.kakaopay.com/281006011121697761001224)
+
+<a href="https://qr.kakaopay.com/281006011121697761001224"><img src="docs/donate_kakaopay.jpg" width="180" alt="KakaoPay donation QR"></a>
+
+*KakaoPay (Korea) — scan the QR with your phone, or tap the badge above.*
+*카카오페이 — 휴대폰으로 QR을 스캔하거나 위 배지를 눌러주세요.*
+
+---
+
 ## License
 
 A hobby project — shared so others can use and learn from it.
