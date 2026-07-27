@@ -224,8 +224,8 @@ Runs from source with the common setup above — all dependencies ship prebuilt 
 
 <a href="https://qr.kakaopay.com/281006011121697761001224"><img src="docs/donate_kakaopay.jpg" width="180" alt="KakaoPay donation QR"></a>
 
-*KakaoPay (Korea) — scan the QR with your phone, or tap the badge above.*
-*카카오페이입니다. 휴대폰으로 QR을 찍거나 위 배지를 눌러주세요.*
+*KakaoPay (Korea) — mobile only. On a desktop, scan the QR with your phone; on a phone, tap the badge.*
+*카카오페이는 모바일 전용입니다. PC에서는 휴대폰으로 QR을 찍고, 휴대폰에서는 위 배지를 눌러주세요.*
 
 ---
 

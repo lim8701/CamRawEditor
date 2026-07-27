@@ -1,2 +1,4 @@
+# The KakaoPay transfer link only opens on a phone, so the Sponsor button
+# points at the README section that carries the QR code instead.
 custom:
-  - "https://qr.kakaopay.com/281006011121697761001224"
+  - "https://github.com/lim8701/FilmRawstery#support--%ED%9B%84%EC%9B%90"
