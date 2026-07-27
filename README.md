@@ -186,7 +186,7 @@ Runs from source with the common setup above — all dependencies ship prebuilt 
 - Shaders are precompiled with Metal (MSL) included; if a recompile is triggered, the `pyside6-qsb` tool installed with PySide6 handles it automatically.
 - Display color management (preview-only monitor-profile correction) is Windows-only and silently disabled on macOS — everything else works the same.
 - AI denoise uses the CoreML execution provider (included in the standard `onnxruntime` macOS wheel, Apple Silicon included) and falls back to CPU — with a confirm prompt — if unavailable.
-- ⚠️ **Untested in practice** — the code is written to be platform-clean, but no one has verified a real macOS run yet. If you try it, [feedback is very welcome](https://github.com/lim8701/FilmRawstery/issues).
+- ⚠️ **Untested in practice** — the code is written to be platform-clean, but no one has verified a real macOS run yet (I develop on Windows and don't own a Mac — see [Support](#support--후원)). If you try it, [feedback is very welcome](https://github.com/lim8701/FilmRawstery/issues).
 
 ---
 
@@ -216,16 +216,16 @@ Runs from source with the common setup above — all dependencies ship prebuilt 
 
 ## Support / 후원
 
-Free and always will be. If it saved you a roll of film's worth of time, a coffee is welcome — entirely optional.
+**Donations go toward buying a MacBook.** Development happens on Windows only; the macOS side is written to match but has never been properly tested. I'd like to raise a little toward doing macOS development right. Development continues regardless, of course. :)
 
-무료이고 앞으로도 그렇습니다. 필름 한 롤만큼의 시간을 아끼셨다면 커피 한 잔 정도 후원은 환영입니다 — 전혀 부담 갖지 않으셔도 됩니다.
+**후원금은 맥북을 구입하는 데 사용하려 합니다.** 개발은 Windows에서만 진행하고 있으며 macOS는 코드만 맞춰놨을 뿐 한 번도 제대로 테스트해 보지 못하였습니다. 제대로 된 mac용 개발을 위해 조금의 모금을 해보려 합니다. 물론 이와 상관없이 개발은 그대로 계속 이어집니다. :)
 
 [![KakaoPay](https://img.shields.io/badge/KakaoPay-donate%20%C2%B7%20%ED%9B%84%EC%9B%90-FFCD00?style=flat-square&logo=kakaotalk&logoColor=3C1E1E)](https://qr.kakaopay.com/281006011121697761001224)
 
 <a href="https://qr.kakaopay.com/281006011121697761001224"><img src="docs/donate_kakaopay.jpg" width="180" alt="KakaoPay donation QR"></a>
 
 *KakaoPay (Korea) — scan the QR with your phone, or tap the badge above.*
-*카카오페이 — 휴대폰으로 QR을 스캔하거나 위 배지를 눌러주세요.*
+*카카오페이입니다. 휴대폰으로 QR을 찍거나 위 배지를 눌러주세요.*
 
 ---
 
