@@ -1042,17 +1042,39 @@ class Controller(QObject):
         ranked = sorted(self._kw_index_liked.items(), key=lambda kv: len(kv[1]), reverse=True)[:max(1, int(top))]
         return [{"word": w, "count": len(p)} for w, p in ranked]
 
-    @Slot(str, int, result="QVariantList")
-    def filesWithKeyword(self, word: str, limit: int = 8):  # noqa: N802 (QML 슬롯)
+    @Slot(str, int, int, result="QVariantList")
+    def filesWithKeyword(self, word: str, limit: int = 8, roll: int = 0):  # noqa: N802 (QML 슬롯)
         """word 를 포함한 사진 경로(최대 limit개) — 워드클라우드 호버 미리보기용. 역인덱스 O(1) 조회
-        (folderKeywords 가 ☁ 열 때 이미 구축). 방어적으로 미구축이면 1회 구축."""
+        (folderKeywords 가 ☁ 열 때 이미 구축). 방어적으로 미구축이면 1회 구축.
+
+        사진이 limit 보다 많으면 앞을 자르지 않고(=먼저 찍은 것만 보이던 문제) 전체에서 무작위
+        표본을 뽑아 **원래 순서로 되돌려** 반환한다(그리드가 시간순으로 읽히게).
+        시드는 (word, roll) 고정 — 창 리사이즈·재호버로 refreshPreview 가 다시 불려도 같은 표본이라
+        썸네일이 튀지 않고, roll 을 올리면(⟳ 버튼) 다른 표본이 나온다."""
         word = (word or "").strip().lower()
         if not word:
             return []
         paths = self._kw_index.get(word)
         if paths is None:
             paths = self._build_kw_index().get(word, [])
-        return paths[:max(1, int(limit))]
+        n = max(1, int(limit))
+        if len(paths) <= n:
+            return list(paths)
+        import random
+        pick = random.Random(f"{word}/{int(roll)}").sample(range(len(paths)), n)
+        return [paths[i] for i in sorted(pick)]
+
+    @Slot(str, result=int)
+    def keywordCount(self, word: str) -> int:  # noqa: N802 (QML 슬롯)
+        """word 를 포함한 폴더 내 사진 수 — 미리보기 헤더의 '표본 n / 전체 N' 표시용
+        (무작위 표본이라 보이는 개수가 전체가 아님을 알려야 함)."""
+        word = (word or "").strip().lower()
+        if not word:
+            return 0
+        paths = self._kw_index.get(word)
+        if paths is None:
+            paths = self._build_kw_index().get(word, [])
+        return len(paths)
 
     @Slot(result="QVariantMap")
     def folderTagStats(self):  # noqa: N802 (QML 슬롯)

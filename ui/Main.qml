@@ -1577,6 +1577,9 @@ ApplicationWindow {
     property string _hoverTag: ""            // 호버 미리보기 대상 태그
     property string _pendingTag: ""          // 디바운스 대기 태그
     property var tagPreviewPaths: []         // 미리보기 썸네일 경로
+    property int tagPreviewTotal: 0          // 그 태그의 전체 사진 수(보이는 건 무작위 표본)
+    property int _tagRoll: 0                 // 표본 시드 — ⟳ 로 증가시켜 다른 사진들을 뽑는다
+    property int _tagRollBase: 0             // 이번 ☁ 오픈의 시드 출발점(열 때마다 무작위 → 재시작해도 다른 사진)
     property var tagStats: ({})              // 헤더 통계 {photos, indexed, tags, liked}
     property bool _idxWasBusy: false         // 인덱싱 busy 이전 상태(완료 에지 감지용)
     // 인덱싱이 방금 끝났고(busy true→false) 팝업이 열려 있으면 최종 태그로 1회 자동 갱신.
@@ -1597,6 +1600,10 @@ ApplicationWindow {
         return [arr.length ? mn : 1, mx]
     }
     function openTagCloud() {
+        // ☁ 열 때마다 표본 시드의 출발점을 새로 뽑는다 — 이게 없으면 시드가 (단어, roll) 이고
+        // roll 이 항상 0부터라 앱을 재시작해도 늘 같은 사진만 나온다.
+        win._tagRollBase = Math.floor(Math.random() * 1000000)
+        win._tagRoll = win._tagRollBase
         win.showTagCloud = true
         win._loadTags(false)                           // 첫 오픈: 미리보기=최상위 단어
     }
@@ -1618,6 +1625,7 @@ ApplicationWindow {
         if (keepHover && prev)
             for (var i = 0; i < kw.length; i++) if (kw[i].word === prev) { want = prev; break }
         if (!want) want = kw.length > 0 ? kw[0].word : ""
+        if (want !== prev) win._tagRoll = win._tagRollBase   // 다른 태그로 바뀔 때만 시드 리셋(이번 오픈 기준)
         win._hoverTag = want; win._pendingTag = want
         win.refreshPreview()                           // 그리드 레이아웃 크기에 맞춰 채움
     }
@@ -1632,8 +1640,12 @@ ApplicationWindow {
     }
     function refreshPreview() {
         if (!win.showTagCloud) return                  // 닫혀 있으면(리사이즈 등) 무시
-        win.tagPreviewPaths = win._hoverTag ? controller.filesWithKeyword(win._hoverTag, win.previewLimit()) : []
+        win.tagPreviewPaths = win._hoverTag
+            ? controller.filesWithKeyword(win._hoverTag, win.previewLimit(), win._tagRoll) : []
+        win.tagPreviewTotal = win._hoverTag ? controller.keywordCount(win._hoverTag) : 0
     }
+    // ⟳ 다시 뽑기 — 같은 태그에서 다른 무작위 표본(뒤에 찍은 사진들)을 본다.
+    function rerollPreview() { win._tagRoll = win._tagRoll + 1; win.refreshPreview() }
     // 헤더/빈상태 공용 통계 문자열 (사진·인덱싱·고유 태그·좋아요)
     function tagStatsText() {
         var s = win.tagStats
@@ -1695,7 +1707,11 @@ ApplicationWindow {
         // 머무르지 않아(벗어날 때 stop) 전환 안 됨 → 썸네일로 내려가는 길에 바뀌는 문제 해결.
         Timer {
             id: tagPreviewTimer; interval: 200
-            onTriggered: { win._hoverTag = win._pendingTag; win.refreshPreview() }
+            // 태그가 실제로 바뀔 때만 표본 시드 리셋(같은 태그면 ⟳ 로 뽑은 표본 유지).
+            onTriggered: {
+                if (win._hoverTag !== win._pendingTag) win._tagRoll = win._tagRollBase
+                win._hoverTag = win._pendingTag; win.refreshPreview()
+            }
         }
 
         // ✕ 닫기 (우상단에 떠 있음, 박스 없음)
@@ -1887,15 +1903,37 @@ ApplicationWindow {
                 ColumnLayout {
                     Layout.fillWidth: true; Layout.fillHeight: true
                     spacing: 12
-                    Label {   // 미리보기 제목 (열 때 최상위 단어 자동)
+                    // 미리보기 제목 (열 때 최상위 단어 자동) + ⟳ 다시 뽑기.
+                    // 사진이 화면에 들어가는 수보다 많으면 전체에서 무작위 표본을 보여주므로,
+                    // 'n of N' 으로 일부임을 알리고 ⟳ 로 다른 사진들을 볼 수 있게 한다.
+                    RowLayout {
                         visible: win.tagCloudData.length > 0
                         Layout.fillWidth: true
-                        text: win._hoverTag
-                            ? ("“" + win._hoverTag + "”  ·  " + win.tagPreviewPaths.length
-                               + (win.tagPreviewPaths.length >= win.previewLimit() ? "+ photos" : " photos"))
-                            : "Hover a tag to preview its photos"
-                        color: win._hoverTag ? "#cfe0ff" : "#5f6b7a"
-                        font.pixelSize: 14; font.bold: win._hoverTag.length > 0
+                        spacing: 10
+                        Label {
+                            Layout.fillWidth: true
+                            text: win._hoverTag
+                                ? ("“" + win._hoverTag + "”  ·  "
+                                   + (win.tagPreviewTotal > win.tagPreviewPaths.length
+                                      ? win.tagPreviewPaths.length + " of " + win.tagPreviewTotal + " photos"
+                                      : win.tagPreviewPaths.length + " photos"))
+                                : "Hover a tag to preview its photos"
+                            color: win._hoverTag ? "#cfe0ff" : "#5f6b7a"
+                            font.pixelSize: 14; font.bold: win._hoverTag.length > 0
+                            elide: Text.ElideRight
+                        }
+                        Text {   // ⟳ 다른 무작위 표본(표본이 전체보다 적을 때만 의미 있음)
+                            visible: win.tagPreviewTotal > win.tagPreviewPaths.length
+                            text: "⟳ shuffle"
+                            color: tcRoll.hovered ? "#cfe0ff" : "#8892a0"
+                            font.pixelSize: 13
+                            HoverHandler { id: tcRoll }
+                            MouseArea {
+                                anchors.fill: parent; anchors.margins: -6
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: win.rerollPreview()
+                            }
+                        }
                     }
                     Flickable {
                         id: tcGridFlick
