@@ -602,12 +602,32 @@ ApplicationWindow {
     property var batchChecked: ({})           // path -> true (체크된 파일)
     property int batchCheckedRev: 0           // 변경 리비전(카운트/체크표시 재평가용)
     readonly property int batchCheckedCount: { batchCheckedRev; return Object.keys(batchChecked).length }
+    // shift+클릭 연속 선택의 기준 행. 인덱스가 아니라 **경로**로 들고 있는다 — 폴더 이동·검색
+    // 필터·좋아요만 보기로 explorerFiles 가 재구성되면 인덱스는 다른 파일을 가리키기 때문.
+    property string batchAnchorPath: ""
     function batchToggle(path) {
         if (batchChecked[path]) delete batchChecked[path]
         else batchChecked[path] = true
+        batchAnchorPath = path                 // 단독 클릭 = 다음 shift 범위의 기준
         batchCheckedRev++
     }
-    function batchClearChecked() { batchChecked = ({}); batchCheckedRev++ }
+    // 기준 행 ~ 클릭 행 사이를 모두 체크(폴더는 건너뜀). 체크만 하고 해제는 안 하는 **가산**이라,
+    // 기준을 그대로 둔 채 shift 를 다시 누르면 같은 시작점에서 범위를 넓혀 갈 수 있다.
+    // (범위를 줄여도 이미 체크된 건 남는다 — 빼려면 그 행을 단독 클릭해 토글)
+    function batchSelectRange(toIndex) {
+        var files = win.explorerFiles
+        var from = -1
+        for (var i = 0; i < files.length; i++)
+            if (files[i].path === win.batchAnchorPath) { from = i; break }
+        if (from < 0) from = toIndex           // 기준이 현재 목록에 없으면(필터 등) 클릭 행만
+        var a = Math.min(from, toIndex), b = Math.max(from, toIndex)
+        for (var j = a; j <= b; j++) {
+            var it = files[j]
+            if (it && !it.isDir) win.batchChecked[it.path] = true
+        }
+        batchCheckedRev++
+    }
+    function batchClearChecked() { batchChecked = ({}); batchAnchorPath = ""; batchCheckedRev++ }
 
     property bool batchActive: false
     property var batchQueue: []
@@ -2238,7 +2258,7 @@ ApplicationWindow {
                         border.color: win.batchSelectMode ? "#9fd39f" : "#555555"
                         border.width: 1
                         ToolTip.visible: smHover.hovered
-                        ToolTip.text: "Select files for batch export"
+                        ToolTip.text: "Select files for batch export  (Shift+click = range)"
                         Text {
                             anchors.centerIn: parent
                             text: "☑"
@@ -2650,7 +2670,10 @@ ApplicationWindow {
                                     if (!row.modelData.isDir)
                                         ctxMenu.popup()             // 우클릭 = 컨텍스트 메뉴
                                 } else if (win.batchSelectMode && !row.modelData.isDir) {
-                                    win.batchToggle(row.modelData.path)       // 선택 모드 = 체크 토글
+                                    if (mouse.modifiers & Qt.ShiftModifier)
+                                        win.batchSelectRange(row.index)       // shift = 기준 행부터 연속 체크
+                                    else
+                                        win.batchToggle(row.modelData.path)   // 선택 모드 = 체크 토글
                                 } else {
                                     fileListView.currentIndex = row.index     // 좌클릭 = 선택만
                                 }
