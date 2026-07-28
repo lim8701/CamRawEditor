@@ -812,6 +812,10 @@ class Controller(QObject):
         self._face_thumb_urls = []  # 얼굴 썸네일 URL(개수 = 검출 수)
         self._face_counters = [0] * MAX_FACE_SLOTS   # 썸네일별 URL 버전(캐시 무력화)
         self._face_scanning = False  # 검출 워커 진행 중 → Face 체크박스 잠깐 비활성
+        # 이 이미지에 대해 썸네일까지 만들었는지. ⚠️_face_dets 유무로 판단하면 안 된다 —
+        # 사이드카 복원은 마스크 워커가 먼저 돌아 _face_dets 만 채우므로(썸네일·notify 없음),
+        # 그 뒤 Face 탭을 열어도 requestFaces 가 '이미 있다'고 판단해 타일이 영영 안 뜬다.
+        self._face_scanned = False
         # 검출+파싱 compute-once. 사진 복원 시 applySkyEdits 가 5개 레이어의 setMaskClasses 를
         # 한 틱에 호출 → 워커 5개가 동시에 캐시 miss 를 보고 각자 파싱(얼굴당 0.8s×5)한다.
         self._face_lock = threading.Lock()
@@ -2880,7 +2884,7 @@ class Controller(QObject):
 
         부위 체크박스를 누르기 전에 얼굴 목록이 있어야 한다 — 없으면 '선택 없음 = 전체 얼굴'
         경로로 빠져서 기본값(가장 큰 얼굴 1명)이 적용되지 않는다."""
-        if self._face_scanning or self._face_dets is not None or self._proxy_img is None:
+        if self._face_scanning or self._face_scanned or self._proxy_img is None:
             return
         self._face_scanning = True
         self.facesChanged.emit()
@@ -2896,7 +2900,12 @@ class Controller(QObject):
             rgb8, _hw, _g = self._seg_input(img_gen)
             if rgb8 is None or img_gen != self._img_gen:
                 return
-            dets = face_seg.detect_faces(rgb8)
+            # 마스크 워커가 먼저 돌아 이미 검출해 뒀으면 **그 목록을 그대로 쓴다** — 다시 검출하면
+            # 새 리스트가 되어 _face_parsed 의 인덱스와 어긋날 여지가 생긴다(같은 입력이라 순서는
+            # 같겠지만, 캐시 키가 인덱스인 이상 굳이 새로 만들 이유가 없다).
+            dets = self._face_dets
+            if dets is None:
+                dets = face_seg.detect_faces(rgb8)
             thumbs = [face_seg.face_thumb(rgb8, d) for d in dets]
         except Exception as exc:
             print(f"[mask] 얼굴 검출 실패: {exc}")
@@ -2912,6 +2921,7 @@ class Controller(QObject):
             self.facesChanged.emit()
             return
         self._face_dets = dets
+        self._face_scanned = True
         urls = []
         for i, t in enumerate(thumbs[:MAX_FACE_SLOTS]):
             a = np.ascontiguousarray(t)
@@ -3278,6 +3288,7 @@ class Controller(QObject):
         # 얼굴 검출/파싱도 프록시 좌표계 기준 → 렌즈 보정·기하 변경이면 반드시 재실행
         self._face_parsed = None
         self._face_dets = None
+        self._face_scanned = False
         self._face_thumb_urls = []
         if self._face_provider is not None:
             self._face_provider.clear()

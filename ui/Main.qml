@@ -239,6 +239,31 @@ ApplicationWindow {
         win.layers[win.activeLayer].keys = a; win.layers = win.layers.slice()
         maskApplyTimer.restart()
     }
+    // 마스크 작업 진행 오버레이용 지연 플래그. 부위/얼굴 토글의 재조합은 캐시 히트라 ~50ms 라서,
+    // skyBusy 를 그대로 쓰면 누를 때마다 어두워졌다 밝아지는 깜빡임만 남는다. 실제로 오래 걸리는
+    // 작업(첫 추론 ~1s, 얼굴 파싱, 모델 다운로드)에서만 뜨도록 문턱을 둔다.
+    property bool skyBusySlow: false
+    Timer {
+        id: skyBusyDelay
+        interval: 350
+        onTriggered: win.skyBusySlow = true
+    }
+    Connections {
+        target: controller
+        function onSkyBusyChanged() {
+            if (controller.skyBusy) skyBusyDelay.restart()
+            else { skyBusyDelay.stop(); win.skyBusySlow = false }
+        }
+        // Face 탭을 열어둔 채 사진을 넘기면 탭 클릭이 없어 검출이 안 돈다 → 얼굴 줄이 빈 채로 남는다.
+        // ⚠️imageChanged 는 프록시·얼굴 캐시가 준비되기 **전에** 발화해 requestFaces 가 즉시
+        //   반환된다. 캐시 리셋 직후에 나오는 facesChanged 를 써야 한다.
+        //   재귀 걱정 없음 — requestFaces 가 _face_scanned/_face_scanning 으로 자체 차단한다.
+        function onFacesChanged() {
+            if (win.maskTab === 1 && controller.imagePath !== ""
+                    && controller.faceCount === 0 && !controller.faceScanning)
+                controller.requestFaces()
+        }
+    }
     // 사이드카 복원으로 마스크 재생성 중 — 완료 시 오버레이 자동 표시 억제(로드 시 갑자기 적색 방지).
     property bool _maskRestore: false
     function toggleMaskKey(key, on) {
@@ -4150,7 +4175,7 @@ ApplicationWindow {
             Rectangle {
                 anchors.fill: parent
                 visible: controller.exporting || win.batchActive || controller.busy
-                         || controller.skyBusy || controller.aiNrDownloading
+                         || win.skyBusySlow || controller.aiNrDownloading
                          || controller.aiNrInitializing
                 color: "#aa000000"
                 MouseArea { anchors.fill: parent }   // 진행 중 이미지 입력 차단
@@ -4343,13 +4368,13 @@ ApplicationWindow {
                     anchors.centerIn: parent
                     spacing: 12
                     BusyIndicator {
-                        running: (controller.busy || controller.skyBusy) && !controller.exporting
+                        running: (controller.busy || win.skyBusySlow) && !controller.exporting
                         Layout.alignment: Qt.AlignHCenter
                         implicitWidth: 64; implicitHeight: 64
                     }
                     Label {
                         text: controller.segStatus !== "" ? controller.segStatus
-                              : (controller.skyBusy ? "Detecting mask…" : "Processing…")
+                              : (win.skyBusySlow ? "Detecting mask…" : "Processing…")
                         color: "white"; font.pixelSize: 14
                         Layout.alignment: Qt.AlignHCenter
                     }
@@ -6073,7 +6098,7 @@ ApplicationWindow {
                                                 id: faceHover
                                                 anchors.fill: parent; hoverEnabled: true
                                                 // 부위가 없으면 고를 대상이 없다 → 클릭 무의미
-                                                enabled: !controller.skyBusy && win.hasFacePart()
+                                                enabled: !win.skyBusySlow && win.hasFacePart()
                                                 cursorShape: enabled ? Qt.PointingHandCursor
                                                                      : Qt.ArrowCursor
                                                 onClicked: win.toggleFaceKey(controller.faceKeys[index])
@@ -6102,7 +6127,9 @@ ApplicationWindow {
                                             id: maskKeyCheck
                                             // faceScanning 중 잠금(~60ms) — 검출 전에 체크하면
                                             // faceCount 가 0 이라 기본 얼굴 선택이 안 붙는다.
-                                            enabled: controller.imagePath !== "" && !controller.skyBusy
+                                            // 재조합은 ~50ms 라 그때마다 잠그면 클릭이 씹힌다
+                                            // → 실제로 오래 걸릴 때(skyBusySlow)만 비활성.
+                                            enabled: controller.imagePath !== "" && !win.skyBusySlow
                                                      && !controller.faceScanning
                                             onToggled: win.toggleMaskKey(modelData.key, checked)
                                         }
@@ -6127,7 +6154,7 @@ ApplicationWindow {
                                 enabled: controller.imagePath !== ""
                                 onClicked: win.resetSky()
                             }
-                            // 선택 진행 중/완료 상태는 이미지 위 스피너 오버레이가 표시(controller.skyBusy).
+                            // 선택 진행 중/완료 상태는 이미지 위 스피너 오버레이가 표시(win.skyBusySlow).
                             // 선택 '완료'(클리어 제외) → 마스크 오버레이 자동 표시
                             Connections {
                                 target: controller
