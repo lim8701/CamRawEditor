@@ -164,22 +164,111 @@ ApplicationWindow {
     // 합집합** — 얼굴 부위 key 는 "face:" 접두사로 구분되고 컨트롤러가 갈라서 처리한다.
     property int maskTab: 0
     // 숨은 탭의 선택이 안 보여 혼란스럽지 않도록 탭 라벨에 개수를 띄운다.
+    // ⚠️얼굴 '선택' key(face@…)는 부위가 아니라 대상이라 양쪽 카운트 모두에서 뺀다 —
+    //   안 그러면 face: 로 시작하지 않아 Scene 쪽으로 잘못 세어진다.
     function maskTabCount(tab) {
         var n = 0
-        for (var i = 0; i < win.maskKeys.length; i++)
-            if ((String(win.maskKeys[i]).indexOf("face:") === 0) === (tab === 1)) n++
+        for (var i = 0; i < win.maskKeys.length; i++) {
+            var k = String(win.maskKeys[i])
+            if (k.indexOf("face@") === 0) continue
+            if ((k.indexOf("face:") === 0) === (tab === 1)) n++
+        }
         return n
+    }
+    function _isFacePart(k) { return String(k).indexOf("face:") === 0 }
+    // 얼굴 부위가 하나라도 켜져 있는지 = 실제로 얼굴이 마스킹되는 상태인지.
+    // 타일 표시는 이걸 따라야 한다 — 부위가 없으면 마스킹되는 얼굴도 없다.
+    function hasFacePart() {
+        for (var i = 0; i < win.maskKeys.length; i++)
+            if (win._isFacePart(win.maskKeys[i])) return true
+        return false
+    }
+    function _isFaceSel(k)  { return String(k).indexOf("face@") === 0 }
+    function _hasFaceSel(a) {
+        for (var i = 0; i < a.length; i++) if (win._isFaceSel(a[i])) return true
+        return false
+    }
+    // 얼굴 선택 토글. 마지막 하나는 해제 불가 — 0개가 되면 '선택 없음 = 전체'와 구분이 안 되고
+    // 마스크가 통째로 사라진다(레이어 삭제 버튼이 최소 1개를 남기는 것과 같은 규칙).
+    function toggleFaceKey(key) {
+        var a = win.maskKeys.slice()
+        // 명시 선택이 없는 상태 = '전체 사용'이고 타일도 전부 켜져 보인다. 그 상태의 첫 클릭은
+        // '그 얼굴만 고르기'가 아니라 **'그 얼굴 빼기'** 여야 화면과 동작이 일치한다.
+        // (전부 켜진 걸 눌렀는데 그것만 남으면 반대로 동작하는 것처럼 보인다)
+        if (!win._hasFaceSel(a)) {
+            var all = controller.faceKeys
+            var added = 0
+            for (var k = 0; k < all.length; k++)
+                if (all[k] !== key) { a.push(all[k]); added++ }
+            if (added === 0) return          // 얼굴이 하나뿐 → 뺄 수 없음(줄 자체가 숨겨져 있음)
+            win._commitMaskKeys(a)
+            return
+        }
+        var i = a.indexOf(key)
+        if (i >= 0) {
+            var cnt = 0
+            for (var j = 0; j < a.length; j++) if (win._isFaceSel(a[j])) cnt++
+            if (cnt <= 1) return                  // 마지막 하나 → 무시
+            a.splice(i, 1)
+        } else {
+            a.push(key)
+        }
+        win._commitMaskKeys(a)
+    }
+    // 전부 사용 = 선택 key 를 모두 제거(= '선택 없음'). 별도 센티넬이 필요 없다.
+    function selectAllFaces() {
+        var a = []
+        for (var i = 0; i < win.maskKeys.length; i++)
+            if (!win._isFaceSel(win.maskKeys[i])) a.push(win.maskKeys[i])
+        win._commitMaskKeys(a)
+    }
+    function _commitMaskKeys(a) {
+        // 검출된 얼굴을 전부 고른 상태 == '선택 없음(전체 사용)'. 같은 화면이 두 가지로
+        // 직렬화되면 사이드카가 달라지고 되돌리기에 의미 없는 단계가 하나 끼어든다 → 정규화.
+        if (controller.faceCount > 0) {
+            var n = 0
+            for (var s = 0; s < a.length; s++) if (win._isFaceSel(a[s])) n++
+            if (n === controller.faceCount) {
+                var b = []
+                for (var t = 0; t < a.length; t++) if (!win._isFaceSel(a[t])) b.push(a[t])
+                a = b
+            }
+        }
+        a.sort()                    // 순서 차이로 같은 상태가 다르게 직렬화되는 것 방지
+        win.maskKeys = a
+        win.layers[win.activeLayer].keys = a; win.layers = win.layers.slice()
+        maskApplyTimer.restart()
     }
     // 사이드카 복원으로 마스크 재생성 중 — 완료 시 오버레이 자동 표시 억제(로드 시 갑자기 적색 방지).
     property bool _maskRestore: false
     function toggleMaskKey(key, on) {
         var a = maskKeys.slice()
+        // 기본 선택을 넣을지 판단은 **변경 전** 상태로 한다 — 얼굴 부위가 이미 하나라도
+        // 켜져 있었다면 사용자가 정한 대상(명시 선택이든 '전체'든)이 있는 것이므로 건드리면 안 된다.
+        var hadFacePart = false
+        for (var p = 0; p < a.length; p++) if (win._isFacePart(a[p])) { hadFacePart = true; break }
         var i = a.indexOf(key)
         if (on && i < 0) a.push(key)
         else if (!on && i >= 0) a.splice(i, 1)
-        maskKeys = a
-        layers[activeLayer].keys = a; layers = layers.slice()   // 활성 레이어 반영 + notify
-        maskApplyTimer.restart()   // 디바운스: 빠른 연속 토글을 한 번의 재조합으로 합침
+        // 얼굴 부위를 **처음** 켤 때만 기본 대상 = 가장 큰 얼굴 1명(faceKeys[0]).
+        // 안 하면 '선택 없음 = 전체'가 되어 배경 인물까지 딸려 들어간다.
+        // ⚠️hadFacePart 검사가 없으면 두 명을 고른 상태에서 부위를 하나 더 켜는 순간
+        //   '선택 없음'으로 보여 한 명으로 접힌다.
+        if (on && win._isFacePart(key) && !hadFacePart && !win._hasFaceSel(a)
+                && controller.faceCount > 1 && controller.faceKeys.length > 0)
+            a.push(controller.faceKeys[0])
+        // 마지막 부위를 끄면 얼굴 선택 key 도 같이 버린다 — 남겨두면 keys 가 안 비어서
+        // clearLayer 대신 setMaskClasses 가 불리고 배치 export 가 마스크를 기다린다.
+        if (!on) {
+            var part = false
+            for (var j = 0; j < a.length; j++) if (win._isFacePart(a[j])) { part = true; break }
+            if (!part) {
+                var b = []
+                for (var m = 0; m < a.length; m++) if (!win._isFaceSel(a[m])) b.push(a[m])
+                a = b
+            }
+        }
+        win._commitMaskKeys(a)     // 정렬 + 활성 레이어 반영 + 디바운스 재조합
     }
     // 체크박스 토글 코얼레싱 — 마지막 토글 후 잠깐 뒤 한 번만 세그/재조합 실행(스레드 폭증 방지).
     Timer {
@@ -5915,11 +6004,89 @@ ApplicationWindow {
                                                 id: tabHover
                                                 anchors.fill: parent; hoverEnabled: true
                                                 cursorShape: Qt.PointingHandCursor
-                                                // 탭 전환은 표시만 바꾸므로 세그 진행 중에도 허용
-                                                onClicked: win.maskTab = index
+                                                // 탭 전환은 표시만 바꾸므로 세그 진행 중에도 허용.
+                                                // Face 탭을 열 때 검출을 미리 돌린다(232KB, ~60ms) —
+                                                // 부위를 체크하는 시점에 얼굴 목록이 있어야 기본값
+                                                // (가장 큰 얼굴 1명)이 적용된다. 파싱 모델(340MB)은
+                                                // 실제로 부위를 고를 때까지 안 받는다.
+                                                onClicked: {
+                                                    win.maskTab = index
+                                                    if (index === 1 && controller.imagePath !== "")
+                                                        controller.requestFaces()
+                                                }
                                             }
                                         }
                                     }
+                                }
+                            }
+                            // ---- 얼굴 선택(2명 이상일 때만) ----
+                            // 검출된 얼굴 썸네일을 켜고/끈다. 배경 인물 제외 + 전경 특정 인물 지정용.
+                            // 1명 이하면 고를 게 없어 통째로 숨긴다(패널 공간 0).
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                visible: win.maskTab === 1 && controller.faceCount > 1
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: "FACES  " + controller.faceCount
+                                        color: "#8ab4f8"; font.pixelSize: 11; font.bold: true
+                                    }
+                                    Label {         // 전부 사용으로 되돌리기(= 선택 key 제거)
+                                        text: "All"
+                                        color: allFaceHover.containsMouse ? "#8ab4f8" : "#8a8a8a"
+                                        font.pixelSize: 11; font.underline: allFaceHover.containsMouse
+                                        MouseArea {
+                                            id: allFaceHover
+                                            anchors.fill: parent; anchors.margins: -4
+                                            hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                            onClicked: win.selectAllFaces()
+                                        }
+                                    }
+                                }
+                                Row {               // 최대 5개 상한이라 줄바꿈이 불가능 → Flow 불필요
+                                    spacing: 6
+                                    Repeater {
+                                        model: controller.faceThumbUrls
+                                        delegate: Rectangle {
+                                            width: 46; height: 46; radius: 4; clip: true
+                                            color: "#1e1e1e"
+                                            // 부위를 하나도 안 골랐으면 마스킹되는 얼굴이 없다 →
+                                            // 전부 꺼진 것으로 표시(이때 전부 켜 보이면 거짓말).
+                                            // 부위가 있고 명시 선택이 없으면 = 전체 사용.
+                                            property bool picked: win.hasFacePart()
+                                                && (!win._hasFaceSel(win.maskKeys)
+                                                    || win.maskKeys.indexOf(controller.faceKeys[index]) >= 0)
+                                            border.width: 2
+                                            border.color: picked ? "#8ab4f8"
+                                                          : (faceHover.containsMouse ? "#777" : "transparent")
+                                            Image {
+                                                anchors.fill: parent; anchors.margins: 2
+                                                source: modelData
+                                                cache: false        // 사진마다 교체됨 → 캐시 금지
+                                                fillMode: Image.PreserveAspectCrop
+                                                asynchronous: true
+                                                opacity: parent.picked ? 1.0 : 0.35
+                                            }
+                                            MouseArea {
+                                                id: faceHover
+                                                anchors.fill: parent; hoverEnabled: true
+                                                // 부위가 없으면 고를 대상이 없다 → 클릭 무의미
+                                                enabled: !controller.skyBusy && win.hasFacePart()
+                                                cursorShape: enabled ? Qt.PointingHandCursor
+                                                                     : Qt.ArrowCursor
+                                                onClicked: win.toggleFaceKey(controller.faceKeys[index])
+                                            }
+                                        }
+                                    }
+                                }
+                                Label {
+                                    Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                    text: win.hasFacePart()
+                                          ? "Click to include or exclude a face. Up to 5 largest faces."
+                                          : "Check a face part below to start. Up to 5 largest faces."
+                                    color: "#888"; font.pixelSize: 10
                                 }
                             }
                             GridLayout {
@@ -5933,7 +6100,10 @@ ApplicationWindow {
                                         Layout.fillWidth: true; spacing: 6
                                         CheckBox {
                                             id: maskKeyCheck
+                                            // faceScanning 중 잠금(~60ms) — 검출 전에 체크하면
+                                            // faceCount 가 0 이라 기본 얼굴 선택이 안 붙는다.
                                             enabled: controller.imagePath !== "" && !controller.skyBusy
+                                                     && !controller.faceScanning
                                             onToggled: win.toggleMaskKey(modelData.key, checked)
                                         }
                                         // 인라인 checked: 바인딩은 첫 클릭 시 파괴 → Clear(resetSky)

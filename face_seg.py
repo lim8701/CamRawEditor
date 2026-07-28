@@ -124,8 +124,11 @@ _GROUP_IDS = {k: ids for k, _, ids in FACE_GROUPS}
 
 
 def class_ids_for(keys):
-    """그룹 key 목록 → CelebAMask 인덱스 합집합(정렬). face: 접두사가 아닌 key 는 무시 —
-    같은 체크박스 목록에 sky_seg 의 장면 클래스가 섞여 오기 때문."""
+    """그룹 key 목록 → CelebAMask 인덱스 합집합(정렬).
+
+    ⚠️**모르는 key 를 조용히 무시하는 것이 계약이다**(dict 조회). 같은 목록에 sky_seg 의 장면
+    클래스와 얼굴 선택 key(`face@…`)가 섞여 들어오기 때문 — sky_seg.class_ids_for 도 대칭으로
+    동작한다. 셋 중 하나라도 예외를 던지게 바꾸면 마스크 워커가 통째로 깨진다."""
     out = set()
     for k in keys:
         out.update(_GROUP_IDS.get(str(k), []))
@@ -135,6 +138,72 @@ def class_ids_for(keys):
 def groups_for_qml():
     """QML 체크박스용 [{key,label}, ...] (Face 탭)."""
     return [{"key": k, "label": lbl} for k, lbl, _ in FACE_GROUPS]
+
+
+# ── 얼굴 선택 (여러 명 중 누구를 마스킹할지) ─────────────────────────────────
+# 레이어의 keys 목록에 `face@0.412,0.318`(프레임 정규화 중심좌표) 형태로 얹는다. 부위 key 와 같은
+# 목록에 넣는 이유: 사이드카·되돌리기·레이어 삭제 시 슬롯 이동이 전부 공짜로 따라오고, 무엇보다
+# setMaskClasses 의 dedup 가드가 keys 비교만 하므로 별도 리스트로 빼면 "A→B 로 선택 변경" 이
+# 감지되지 않아 마스크가 갱신되지 않는다.
+#
+# ⚠️면적순 인덱스(face#N)를 쓰지 않는 이유: 색온도 커밋·렌즈 보정 토글로 재디코딩이 일어나면
+#   세그 입력 자체가 달라져 검출 점수/개수/순서가 흔들린다. 인덱스로 저장하면 "A 를 골랐는데
+#   조용히 B 가 보정되는" 무증상 버그가 슬라이더를 놓는 것만으로 발생한다. 중심좌표는 순서 변경과
+#   개수 변경 양쪽에 강하다.
+_FACE_SEL_PREFIX = "face@"
+# 매칭 허용 반경(프레임 정규화 거리). 재디코딩으로 얼굴이 조금 움직여도 따라붙되, 다른 사람으로
+# 건너뛰지는 않을 정도. 인물 간 거리는 보통 이보다 훨씬 크다.
+FACE_MATCH_TOL = 0.08
+
+
+def face_key(cx: float, cy: float) -> str:
+    """정규화 중심좌표 → 선택 key. 소수 3자리(프록시 2560px 기준 ~2.5px 분해능)."""
+    return f"{_FACE_SEL_PREFIX}{cx:.3f},{cy:.3f}"
+
+
+def face_sel_from_keys(keys):
+    """keys → 선택된 얼굴 중심 [(cx,cy), ...]. `face@` 가 하나도 없으면 **None = 전체 얼굴**.
+
+    None 을 '전체'로 두면 얼굴 선택이 없던 시절의 사이드카가 자동으로 호환되고, UI 의 'All' 버튼도
+    key 를 지우는 것만으로 구현된다(별도 센티넬 불필요)."""
+    out = []
+    for k in keys:
+        s = str(k)
+        if not s.startswith(_FACE_SEL_PREFIX):
+            continue
+        try:
+            cx, cy = s[len(_FACE_SEL_PREFIX):].split(",")
+            out.append((float(cx), float(cy)))
+        except ValueError:
+            continue                    # 손상된 사이드카 — 조용히 건너뛴다
+    return out or None
+
+
+def det_center(det, hw):
+    """검출 결과 → 프레임 정규화 중심 (cx, cy). hw = (H, W)."""
+    x, y, w, h = det["box"]
+    return ((x + w * 0.5) / max(1, hw[1]), (y + h * 0.5) / max(1, hw[0]))
+
+
+def match_faces(sel, dets, hw):
+    """선택 중심 목록 → 현재 검출 인덱스 목록. sel 이 None 이면 전체(None 반환).
+
+    저장된 중심마다 가장 가까운 검출을 찾고, FACE_MATCH_TOL 을 넘으면 버린다. 하나도 못 찾으면
+    **가장 큰 얼굴(인덱스 0)로 폴백** — 빈 선택이면 마스크가 전부 0 이 되고, 호출측이 그걸
+    '마스크 없음'으로 바꿔 레이어가 조용히 마스크를 잃기 때문(사진을 바꿔 열었을 때 등)."""
+    if sel is None or not dets:
+        return None
+    cent = [det_center(d, hw) for d in dets]
+    out = set()
+    for (sx, sy) in sel:
+        best, bestd = -1, FACE_MATCH_TOL
+        for i, (cx, cy) in enumerate(cent):
+            d = ((cx - sx) ** 2 + (cy - sy) ** 2) ** 0.5
+            if d < bestd:
+                best, bestd = i, d
+        if best >= 0:
+            out.add(best)
+    return sorted(out) if out else [0]
 
 
 _dl_lock = threading.Lock()
@@ -193,6 +262,12 @@ def _ensure(name, url, sha256, progress=None) -> str:
 def is_ready() -> bool:
     """검출+파싱 둘 다 확보 가능한지(다운로드 불필요). 부작용 없음 — UI 스레드 안전."""
     return app_dirs.have(_DET_NAME) and app_dirs.have(_PARSE_NAME)
+
+
+def ensure_detector(progress=None) -> str:
+    """검출기(232KB)만 확보. 얼굴 목록/썸네일은 파싱 없이 만들 수 있으므로, Face 탭을 여는 것만으로
+    340MB 파싱 모델을 받게 하지 않는다."""
+    return _ensure(_DET_NAME, _DET_URL, _DET_SHA256, progress)
 
 
 def ensure_model(progress=None) -> None:
@@ -371,6 +446,24 @@ def crop_geom(det):
     return (cx - side * 0.5, cy - side * 0.5, side)
 
 
+THUMB_SCALE = 1.35      # 썸네일 크롭 배율(검출 박스 대비) — 얼굴이 꽉 차되 답답하지 않게
+THUMB_EDGE = 96         # 썸네일 한 변(px). UI 는 46px 로 표시 — 고DPI 여유
+
+
+def face_thumb(rgb_u8, det):
+    """검출 결과 → 정사각 얼굴 썸네일 (THUMB_EDGE, THUMB_EDGE, 3) uint8.
+
+    ⚠️파싱용 crop_geom(1.9배 + 위로 이동)을 재사용하면 안 된다. 그건 모델에 머리카락·목까지
+    먹이려고 넓게 잡은 값이라, 46px 로 줄이면 정작 얼굴이 ~24px 라 누군지 알아볼 수 없다.
+    입력이 중성 display sRGB(_sky_input_rgb)라 캔버스보다 밋밋해 보이는 건 정상."""
+    x, y, w, h = det["box"]
+    side = max(w, h) * THUMB_SCALE
+    geom = (x + w * 0.5 - side * 0.5, y + h * 0.5 - side * 0.5, side)
+    crop = _crop_square(rgb_u8, geom)
+    return _resize(crop, (THUMB_EDGE, THUMB_EDGE),
+                   area=crop.shape[0] > THUMB_EDGE).astype(np.uint8)
+
+
 def _crop_square(rgb_u8, geom):
     """(x0,y0,side) 정사각 크롭. 프레임을 벗어난 부분은 **edge 패딩**으로 채운다 —
     잘라내면 정사각이 깨져 512 리사이즈에서 얼굴이 찌부러진다(클로즈업에선 거의 항상 벗어남)."""
@@ -427,7 +520,10 @@ def compose_face_mask(parsed, rgb_u8, class_ids):
     """선택 부위 합산 → 프록시 해상도 soft alpha float32 [0,1]. 추론 없이 빠르게 재조합.
 
     부위 확률을 크롭 해상도로 올려 결정 곡선 → **크롭 휘도 기준** guided filter 로 엣지 정제 →
-    원위치에 np.maximum 누적. 정제를 크롭 공간에서 하는 이유는 FACE_GUIDED_R 주석 참조."""
+    원위치에 np.maximum 누적. 정제를 크롭 공간에서 하는 이유는 FACE_GUIDED_R 주석 참조.
+
+    parsed 에 들어온 얼굴을 **전부** 합친다 — 어떤 얼굴을 쓸지는 호출측이 골라서 넘긴다
+    (선택된 얼굴만 파싱하므로 여기서 다시 거를 이유가 없다)."""
     h, w = rgb_u8.shape[:2]
     canvas = np.zeros((h, w), np.float32)
     if not class_ids or not parsed:

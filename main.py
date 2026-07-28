@@ -82,6 +82,10 @@ LIKES_FILE_NAME = ".filmrawsterylikes.json"
 CAPTIONS_FILE_NAME = ".filmrawsterycaptions.json"
 _OLD_SIDECARS = [(".camrawedits", EDITS_DIR_NAME), (".camrawlikes.json", LIKES_FILE_NAME)]
 
+# 얼굴 썸네일 슬롯 수. face_seg.MAX_FACES 와 같아야 하지만 face_seg 는 지연 import(무거움)라
+# 프로바이더 생성 시점에 못 읽는다 — 값이 갈리면 초과분 썸네일이 조용히 버려진다.
+MAX_FACE_SLOTS = 5
+
 
 def _atomic_write_json(path, data) -> None:
     """사이드카 JSON 원자적 쓰기(tmp→os.replace). open("w") 직접 쓰기는 truncate 후
@@ -417,6 +421,35 @@ class SkyMaskProvider(QQuickImageProvider):
         return self._imgs[i] if 0 <= i < len(self._imgs) else self._imgs[0]
 
 
+class FaceThumbProvider(QQuickImageProvider):
+    """검출된 얼굴 썸네일을 'image://facethumb/<i>?v=N' 로 제공(SkyMaskProvider 와 동형).
+
+    Masking 패널의 얼굴 선택 타일용. 이미지가 바뀔 때마다 통째로 교체되므로 QML 쪽은
+    cache: false 필수(?v= 만으로는 Qt 가 옛 텍스처를 재사용할 수 있음)."""
+
+    def __init__(self):
+        super().__init__(QQuickImageProvider.ImageType.Image)
+        self._imgs = [None] * MAX_FACE_SLOTS
+
+    def set_image(self, i: int, img) -> None:
+        if 0 <= i < len(self._imgs):
+            self._imgs[i] = img
+
+    def clear(self) -> None:
+        self._imgs = [None] * len(self._imgs)
+
+    def requestImage(self, image_id, size, requested_size):  # noqa: N802
+        try:
+            i = int(image_id.split("?", 1)[0])
+        except ValueError:
+            i = -1
+        im = self._imgs[i] if 0 <= i < len(self._imgs) else None
+        if im is None:                       # 아직 없음 → 유효한 1x1(깨진 이미지 아이콘 방지)
+            im = QImage(1, 1, QImage.Format.Format_RGB888)
+            im.fill(0x2b2b2b)
+        return im
+
+
 class NrBaseProvider(QQuickImageProvider):
     """디노이즈드 중성 베이스(프록시 해상도 RGBA64)를 'image://nrbase/...' 로 제공.
     가이디드=luma 복제 그레이, AI=RGB(크로마 포함 — 셰이더 nrChroma 게이트로 구분).
@@ -676,6 +709,7 @@ class Controller(QObject):
     skySelected = Signal()       # 하늘 마스크 '생성 완료'만(클리어 제외) → QML 이 오버레이 자동 표시
     skyBusyChanged = Signal()    # 하늘 세그멘테이션(추론) 진행 중 표시
     segStatusChanged = Signal()  # 세그 상태 문구(예: 모델 다운로드 중) 갱신 알림
+    facesChanged = Signal()      # 얼굴 검출 결과/썸네일/스캔 상태 갱신 알림
     modelsChanged = Signal()     # AI 모델 설치 상태 변화(다운로드 시작/완료) — 목록 재평가
     # ⚠️진행률은 별도 시그널 — modelsChanged 로 묶으면 틱마다 modelCatalog 가 새 리스트를
     #   반환해 Repeater 가 델리게이트를 전부 재생성한다(1GB 다운로드 = 200회, 버튼 깜빡임·클릭 유실).
@@ -694,6 +728,10 @@ class Controller(QObject):
     _segStatusSig = Signal(str)  # (내부) 세그 워커 -> 메인 스레드 상태 문구 전달
     _segDlSig = Signal(object)   # (내부) 세그 워커 -> 메인 스레드 (downloading, 진행률 0..1)
     _modelDlSig = Signal(object)  # (내부) AI Models 수동 다운로드 워커 -> 메인 (key, 0..1, state)
+    # (내부) 얼굴 검출 워커 -> 메인 (img_gen, dets, thumbs). ⚠️_skyReady 재사용 금지 —
+    # 그쪽은 _mask_ran 을 세워 maskSettled 를 참으로 만들고, 배치 export 가 그걸 기다린다.
+    # 검출만 끝난 걸 '마스크 준비 완료'로 오해해 마스크 없이 저장되는 사고가 난다.
+    _facesReady = Signal(object)
     _exportProgressSig = Signal(float)  # (내부) export 워커 -> 메인 스레드 진행률(0..1)
     _hazeReady = Signal(object)  # (내부) 디헤이즈 추정 워커 -> 메인 스레드 (seq, (t, A, conf))
     _nrReady = Signal(object)    # (내부) NR 베이스 워커 -> 메인 스레드 (seq, 디노이즈드 luma)
@@ -711,8 +749,10 @@ class Controller(QObject):
                  sky_provider: "SkyMaskProvider" = None,
                  cm_provider: "DisplayCmProvider" = None,
                  haze_provider: "HazeProvider" = None,
-                 nr_provider: "NrBaseProvider" = None):
+                 nr_provider: "NrBaseProvider" = None,
+                 face_provider: "FaceThumbProvider" = None):
         super().__init__()
+        self._face_provider = face_provider      # 얼굴 선택 타일 썸네일
         self._provider = provider
         self._cm_provider = cm_provider          # 디스플레이 색관리 LUT(프리뷰 전용)
         self._cm_n = 0                           # CM LUT 한 변 N (0=미적용)
@@ -768,6 +808,10 @@ class Controller(QObject):
         self._mask_ran = False      # 이 이미지에서 마스크 워커가 한 번이라도 끝났는지(maskSettled)
         self._seg_rgb8 = None       # 캐시된 세그 입력(중성 display sRGB) — 장면/얼굴 공용
         self._face_parsed = None    # 캐시된 얼굴별 파싱 확률맵 [(geom, probs19)] — 약 1.2MB/얼굴
+        self._face_dets = None      # 캐시된 검출 결과(썸네일·선택 매칭용) — 파싱보다 훨씬 쌈
+        self._face_thumb_urls = []  # 얼굴 썸네일 URL(개수 = 검출 수)
+        self._face_counters = [0] * MAX_FACE_SLOTS   # 썸네일별 URL 버전(캐시 무력화)
+        self._face_scanning = False  # 검출 워커 진행 중 → Face 체크박스 잠깐 비활성
         # 검출+파싱 compute-once. 사진 복원 시 applySkyEdits 가 5개 레이어의 setMaskClasses 를
         # 한 틱에 호출 → 워커 5개가 동시에 캐시 miss 를 보고 각자 파싱(얼굴당 0.8s×5)한다.
         self._face_lock = threading.Lock()
@@ -851,6 +895,7 @@ class Controller(QObject):
         self._segStatusSig.connect(self._on_seg_status)
         self._segDlSig.connect(self._on_seg_dl)
         self._modelDlSig.connect(self._on_model_dl)
+        self._facesReady.connect(self._on_faces_ready)
         self._exportProgressSig.connect(self._on_export_progress)
         self._hazeReady.connect(self._on_haze_ready)
         self._nrReady.connect(self._on_nr_ready)
@@ -2811,6 +2856,97 @@ class Controller(QObject):
                 self._segDlSig.emit((True, f))
         return _cb
 
+    def _seg_input(self, img_gen: int):
+        """세그 입력 3종 스냅샷 (rgb8, hw, guide). 이미지 전환 중이면 (None, None, None).
+
+        마스크 워커와 얼굴 검출 워커가 공유한다. ⚠️세 값을 한 번에 잡되 **셋 다** 검사한다 —
+        메인 스레드가 이미지 전환으로 캐시를 비우는 중이면(_on_render_ready 가 guide→size→rgb8
+        순으로 None 대입) rgb8 만 살아 있는 찢긴 조합을 읽을 수 있다. 하나라도 비면 다시 만든다."""
+        import numpy as np
+        import sky_seg
+        rgb8, hw, guide = self._seg_rgb8, self._seg_size, self._seg_guide
+        if rgb8 is None or hw is None or guide is None:
+            rgb8 = self._sky_input_rgb()
+            hw = tuple(rgb8.shape[:2])
+            guide = (rgb8.astype(np.float32) / 255.0) @ sky_seg._LUMA
+            if img_gen != self._img_gen:             # 준비 중 이미지 전환 → 캐시 안 함(stale)
+                return None, None, None
+            self._seg_rgb8, self._seg_size, self._seg_guide = rgb8, hw, guide
+        return rgb8, hw, guide
+
+    @Slot()
+    def requestFaces(self) -> None:  # noqa: N802 (QML 슬롯) — Face 탭을 열 때 호출
+        """얼굴 **검출만** 백그라운드 실행(~60ms, 232KB 모델). 340MB 파싱 모델은 안 건드린다.
+
+        부위 체크박스를 누르기 전에 얼굴 목록이 있어야 한다 — 없으면 '선택 없음 = 전체 얼굴'
+        경로로 빠져서 기본값(가장 큰 얼굴 1명)이 적용되지 않는다."""
+        if self._face_scanning or self._face_dets is not None or self._proxy_img is None:
+            return
+        self._face_scanning = True
+        self.facesChanged.emit()
+        threading.Thread(target=self._face_scan_worker, args=(self._img_gen,),
+                         daemon=True).start()
+
+    def _face_scan_worker(self, img_gen: int) -> None:
+        dets, thumbs = [], []
+        try:
+            import face_seg
+            # 검출기(232KB)만 확보 — 파싱 모델(340MB)은 실제로 부위를 고를 때 받는다.
+            face_seg.ensure_detector()
+            rgb8, _hw, _g = self._seg_input(img_gen)
+            if rgb8 is None or img_gen != self._img_gen:
+                return
+            dets = face_seg.detect_faces(rgb8)
+            thumbs = [face_seg.face_thumb(rgb8, d) for d in dets]
+        except Exception as exc:
+            print(f"[mask] 얼굴 검출 실패: {exc}")
+        finally:
+            self._facesReady.emit((img_gen, dets, thumbs))
+
+    @Slot(object)
+    def _on_faces_ready(self, payload) -> None:
+        import numpy as np
+        img_gen, dets, thumbs = payload
+        self._face_scanning = False
+        if img_gen != self._img_gen:        # 이전 이미지의 늦은 결과 → 버림
+            self.facesChanged.emit()
+            return
+        self._face_dets = dets
+        urls = []
+        for i, t in enumerate(thumbs[:MAX_FACE_SLOTS]):
+            a = np.ascontiguousarray(t)
+            h, w = a.shape[:2]
+            qi = QImage(a.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+            if self._face_provider is not None:
+                self._face_provider.set_image(i, qi)
+            self._face_counters[i] += 1
+            urls.append(f"image://facethumb/{i}?v={self._face_counters[i]}")
+        self._face_thumb_urls = urls
+        self.facesChanged.emit()
+
+    def _face_keys(self):
+        """검출 결과 → 선택 key 목록. **QML 이 좌표를 직접 포맷하지 않게** 여기서 만든다 —
+        JS toFixed 와 파이썬 f-string 의 반올림이 경계값에서 갈리면 매칭이 조용히 어긋난다."""
+        if not self._face_dets or not self._seg_size:
+            return []
+        import face_seg
+        return [face_seg.face_key(*face_seg.det_center(d, self._seg_size))
+                for d in self._face_dets]
+
+    def _get_face_count(self) -> int:
+        return len(self._face_dets or [])
+
+    def _get_face_thumb_urls(self):
+        return list(self._face_thumb_urls)
+
+    def _get_face_scanning(self) -> bool:
+        return self._face_scanning
+
+    faceCount = Property(int, _get_face_count, notify=facesChanged)
+    faceThumbUrls = Property("QVariantList", _get_face_thumb_urls, notify=facesChanged)
+    faceKeys = Property("QVariantList", _face_keys, notify=facesChanged)
+    faceScanning = Property(bool, _get_face_scanning, notify=facesChanged)
+
     def _mask_worker(self, img_gen: int, layer: int, lseq: int, keys) -> None:
         """레이어 마스크 생성. keys 는 장면(sky_seg)·얼굴(face_seg) 그룹이 섞여 올 수 있고,
         각 소스가 만든 알파를 np.maximum 으로 합집합한다. 추론 결과는 이미지당 캐시 —
@@ -2834,15 +2970,10 @@ class Controller(QObject):
             # ⚠️세 값을 한 번에 스냅샷하되 **셋 다** 검사한다 — 메인 스레드가 이미지 전환으로
             #   캐시를 비우는 중이면(_on_render_ready 가 guide→size→rgb8 순으로 None 대입)
             #   rgb8 만 살아 있는 찢긴 조합을 읽을 수 있다. 하나라도 비면 다시 만든다.
-            rgb8, hw, guide = self._seg_rgb8, self._seg_size, self._seg_guide
-            if rgb8 is None or hw is None or guide is None:
-                rgb8 = self._sky_input_rgb()
-                hw = tuple(rgb8.shape[:2])
-                guide = (rgb8.astype(np.float32) / 255.0) @ sky_seg._LUMA
-                if img_gen != self._img_gen:         # 준비 중 이미지 전환 → 캐시 안 함(stale)
-                    self._skyReady.emit((img_gen, layer, lseq, None))
-                    return
-                self._seg_rgb8, self._seg_size, self._seg_guide = rgb8, hw, guide
+            rgb8, hw, guide = self._seg_input(img_gen)
+            if rgb8 is None:                         # 준비 중 이미지 전환 → stale
+                self._skyReady.emit((img_gen, layer, lseq, None))
+                return
 
             if ade_ids:
                 if self._seg_probs is None:              # 이미지당 추론 1회 → 캐시
@@ -2872,27 +3003,45 @@ class Controller(QObject):
                     mask = sky_seg.compose_mask(probs, hw, ade_ids, guide)
 
             if face_ids:
-                # 검출+파싱은 얼굴당 ~0.8s 로 비싸다 → 락으로 이미지당 1회만(레이어 5개가
-                # 동시에 복원돼도 중복 추론 없음). 부위 조합 변경은 락 밖 recompose(~10ms).
+                # 파싱은 얼굴당 ~0.8s 로 비싸다 → 락으로 이미지당 1회만(레이어 5개가 동시에
+                # 복원돼도 중복 추론 없음). 부위 조합 변경은 락 밖 recompose(~10ms).
+                # ⚠️**선택된 얼굴만 파싱**한다. 기본값이 '가장 큰 얼굴 1명'이라 5인 사진에서
+                #   전부 파싱하면 4초, 필요한 것만 하면 0.8초다. 캐시는 인덱스별 dict.
                 with self._face_lock:
-                    if self._face_parsed is None:
-                        if not face_seg.is_ready():      # 최초 1회 다운로드(~340MB)
-                            try:
-                                face_seg.ensure_model(self._dl_progress_cb())
-                            finally:
-                                self._segDlSig.emit((False, 1.0))
-                        else:
-                            face_seg.ensure_model()      # legacy 복사(순간, 표시 없음)
+                    if not face_seg.is_ready():          # 최초 1회 다운로드(~340MB)
+                        try:
+                            face_seg.ensure_model(self._dl_progress_cb())
+                        finally:
+                            self._segDlSig.emit((False, 1.0))
+                    else:
+                        face_seg.ensure_model()          # legacy 복사(순간, 표시 없음)
+                    dets = self._face_dets
+                    if dets is None:                     # Face 탭을 안 거치고 왔으면 여기서 검출
                         dets = face_seg.detect_faces(rgb8)
-                        if dets:
-                            status_set = True
-                            self._segStatusSig.emit(f"Analyzing {len(dets)} face(s)…")
-                        parsed = face_seg.parse_faces(rgb8, dets)
+                    cache = self._face_parsed if isinstance(self._face_parsed, dict) else {}
+                    # 얼굴 선택: keys 의 face@ 중심좌표를 현재 검출에 최근접 매칭(None = 전체).
+                    # 인덱스가 아니라 좌표인 이유는 face_seg.face_key 주석 참조.
+                    sel = face_seg.match_faces(face_seg.face_sel_from_keys(keys), dets, hw)
+                    want = list(range(len(dets))) if sel is None else list(sel)
+                    todo = [i for i in want if i not in cache]
+                    if todo:
+                        status_set = True
+                        n = len(todo)
+
+                        def _fp(i, _n, _n_total=n):
+                            self._segStatusSig.emit(
+                                f"Analyzing face {i + 1} of {_n_total}…")
+                        fresh = face_seg.parse_faces(rgb8, [dets[i] for i in todo], on_face=_fp)
                         if img_gen != self._img_gen:     # 파싱 중 이미지 전환 → 캐시 안 함
                             self._skyReady.emit((img_gen, layer, lseq, None))
                             return
-                        self._face_parsed = parsed       # 빈 리스트(얼굴 없음)도 캐시 — 재검출 방지
-                    parsed = self._face_parsed
+                        for i, pr in zip(todo, fresh):
+                            cache[i] = pr
+                    self._face_dets = dets
+                    self._face_parsed = cache            # 빈 dict(얼굴 없음)도 캐시 — 재검출 방지
+                    # ⚠️락 안에서 지역 리스트로 잡고 나간다. 메인 스레드가 이미지 전환 시 락 없이
+                    #   재바인딩하므로, 나간 뒤 self. 로 다시 읽으면 옛 이미지 좌표가 섞인다.
+                    parsed = [cache[i] for i in want if i in cache]
                 fm = face_seg.compose_face_mask(parsed, rgb8, face_ids)
                 mask = fm if mask is None else np.maximum(mask, fm)
             # 전부 0(예: 얼굴 없는 사진에 Face 선택) → 마스크 없음으로 되돌린다. 안 그러면
@@ -3128,6 +3277,11 @@ class Controller(QObject):
         self._seg_guide = self._seg_size = self._seg_rgb8 = None
         # 얼굴 검출/파싱도 프록시 좌표계 기준 → 렌즈 보정·기하 변경이면 반드시 재실행
         self._face_parsed = None
+        self._face_dets = None
+        self._face_thumb_urls = []
+        if self._face_provider is not None:
+            self._face_provider.clear()
+        self.facesChanged.emit()
         self._mask_ran = False           # 새 프록시 → 마스크 요청 결과 '아직 없음'
         self.skyBusyChanged.emit()       # maskSettled 의 notify — 값은 그대로여도 재평가시킨다
         prev_layer_keys = [list(k) for k in self._layer_keys]   # 레이어별 선택 스냅샷(재정렬용)
@@ -3505,8 +3659,12 @@ def main() -> int:
     nr_provider = NrBaseProvider()
     engine.addImageProvider("nrbase", nr_provider)
 
+    face_provider = FaceThumbProvider()
+    engine.addImageProvider("facethumb", face_provider)
+
     controller = Controller(provider, curve_provider, stamp_provider, full_provider,
-                            sky_provider, cm_provider, haze_provider, nr_provider)
+                            sky_provider, cm_provider, haze_provider, nr_provider,
+                            face_provider)
     ctx = engine.rootContext()
     ctx.setContextProperty("controller", controller)
     ctx.setContextProperty("lutN", lut_provider.size)
