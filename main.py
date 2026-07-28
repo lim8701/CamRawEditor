@@ -1892,7 +1892,12 @@ class Controller(QObject):
             arr = (np.frombuffer(im.constBits(), np.uint8)
                    .reshape(h, im.bytesPerLine())[:, :w * 3].reshape(h, w, 3))
             step = max(1, max(h, w) // 128)          # 히스토그램용 소형 축소본(드래그 중 가벼움)
-            small = arr[::step, ::step].astype(np.float32) / 255.0
+            small = arr[::step, ::step].astype(np.float32)
+            # ±0.5LSB 디더: 프록시는 8bit(코드 256단계)라 그대로 비닝하면, 기울기>1 인 구간
+            # (filmic 그림자부·필름시뮬 LUT)에서 입력 단계가 벌어져 빈 bin 이 생긴다 = 빗살 스파이크.
+            # 양자화 전 연속 분포를 복원해 준다. 고정 시드 + 로드 시 1회 → 드래그 중 깜빡임 없음.
+            small += np.random.default_rng(0).uniform(-0.5, 0.5, small.shape).astype(np.float32)
+            small = np.clip(small, 0.0, 255.0) / 255.0
             self._proxy_small = self._native_to_scenelinear(small)   # scene-linear sRGB
             self._histogram = self._hist_of(wb.filmic(self._proxy_small))  # 기준(노출0) display
         self.histogramChanged.emit()
@@ -1916,10 +1921,18 @@ class Controller(QObject):
     @staticmethod
     def _hist_of(c) -> list:
         """R/G/B 3채널 히스토그램(각 256-bin)을 공통 최대값으로 정규화해 [R,G,B] 반환.
-        공통 정규화라 채널 간 상대 크기 비교 가능(라이트룸식 중첩 표시)."""
+        공통 정규화라 채널 간 상대 크기 비교 가능(라이트룸식 중첩 표시).
+
+        표본이 소형 축소본(~1만 px)이라 bin 당 계수가 40 내외 → 포아송 잡음(±15%)이 그대로
+        뾰족한 스파이크로 보인다. 내부 bin 만 가우시안(σ=1.5bin)으로 평활해 분포 추정치로 표시.
+        0/255 는 클리핑 경고라 평활 대상에서 제외(끝단 스파이크 보존, 안쪽으로 번지지도 않음)."""
         import numpy as np
         hists = [np.histogram(c[..., ch], bins=256, range=(0.0, 1.0))[0].astype(np.float32)
                  for ch in range(3)]
+        k = np.exp(-0.5 * (np.arange(-5, 6, dtype=np.float32) / 1.5) ** 2)
+        k /= k.sum()
+        for hh in hists:
+            hh[1:255] = np.convolve(np.pad(hh[1:255], 5, mode="edge"), k, "valid")
         m = max(float(h.max()) for h in hists)
         return [(h / m).tolist() for h in hists] if m > 0 else []
 
