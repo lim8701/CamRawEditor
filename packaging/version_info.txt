@@ -8,8 +8,8 @@
 #    수동으로 함께 맞출 것(이 파일은 정적 리터럴이라 APP_VERSION 을 import 해 오지 못함).
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 6, 0, 0),
-    prodvers=(1, 6, 0, 0),
+    filevers=(1, 6, 1, 0),
+    prodvers=(1, 6, 1, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -24,12 +24,12 @@ VSVersionInfo(
         u'040904B0',
         [StringStruct(u'CompanyName', u'lim.sungjune'),
         StringStruct(u'FileDescription', u'Film Rawstery — Fujifilm RAF developer'),
-        StringStruct(u'FileVersion', u'1.6.0.0'),
+        StringStruct(u'FileVersion', u'1.6.1.0'),
         StringStruct(u'InternalName', u'FilmRawstery'),
         StringStruct(u'LegalCopyright', u'MIT License — Copyright (c) 2026 lim.sungjune'),
         StringStruct(u'OriginalFilename', u'FilmRawstery.exe'),
         StringStruct(u'ProductName', u'Film Rawstery'),
-        StringStruct(u'ProductVersion', u'1.6.0.0')])
+        StringStruct(u'ProductVersion', u'1.6.1.0')])
       ]),
     VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
   ]
