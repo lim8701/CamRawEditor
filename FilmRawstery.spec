@@ -13,6 +13,7 @@ datas = [(os.path.join("ui", q), "ui") for q in QML]
 datas += [
     ("shaders", "shaders"),   # .frag + 미리 컴파일된 .qsb (frozen 은 런타임 재컴파일 안 함)
     ("fonts", "fonts"),       # DSEG7Classic-Bold.ttf
+    ("assets", "assets"),     # 후원 팝업의 카카오페이 QR (Main.qml 이 ../assets 로 참조)
     # 라이선스/고지(비상업 배포 시 동봉 의무) — MIT + 제3자 라이선스 + 종합 NOTICE.
     ("LICENSE", "."),
     ("NOTICE.txt", "."),

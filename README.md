@@ -222,7 +222,7 @@ Runs from source with the common setup above — all dependencies ship prebuilt 
 
 [![KakaoPay](https://img.shields.io/badge/KakaoPay-donate%20%C2%B7%20%ED%9B%84%EC%9B%90-FFCD00?style=flat-square&logo=kakaotalk&logoColor=3C1E1E)](https://qr.kakaopay.com/281006011121697761001224)
 
-<a href="https://qr.kakaopay.com/281006011121697761001224"><img src="docs/donate_kakaopay.jpg" width="180" alt="KakaoPay donation QR"></a>
+<a href="https://qr.kakaopay.com/281006011121697761001224"><img src="assets/donate_kakaopay.jpg" width="180" alt="KakaoPay donation QR"></a>
 
 *KakaoPay (Korea) — mobile only. On a desktop, scan the QR with your phone; on a phone, tap the badge.*
 *카카오페이는 모바일 전용입니다. PC에서는 휴대폰으로 QR을 찍고, 휴대폰에서는 위 배지를 눌러주세요.*

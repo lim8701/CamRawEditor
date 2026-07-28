@@ -1414,6 +1414,98 @@ ApplicationWindow {
         }
     }
 
+    // 후원 대화상자 (우측 패널 하단 ♥ Support → 카카오페이 QR + 용도 안내).
+    // 종료/CPU 대화상자와 동일 컨셉(다크 + 필름 퍼포레이션 + 앰버 강조).
+    Popup {
+        id: donateDialog
+        modal: true
+        dim: true
+        width: 440        // QR 을 크게 보여주려 종료/CPU 대화상자(380)보다 넓게
+        padding: 0
+        anchors.centerIn: Overlay.overlay
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Overlay.modal: Rectangle { color: "#000000"; opacity: 0.55 }
+        background: Rectangle {
+            color: "#232325"; radius: 16
+            border.color: "#3d3d40"; border.width: 1
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 0
+
+            FilmStrip {
+                Layout.fillWidth: true
+                Layout.leftMargin: 16; Layout.rightMargin: 16
+                Layout.preferredHeight: 26
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.margins: 24
+                spacing: 10
+
+                Label {
+                    text: "Support / 후원"
+                    color: "#f2f2f2"; font.pixelSize: 18; font.bold: true
+                    Layout.alignment: Qt.AlignHCenter
+                }
+                Label {
+                    text: "Donations go toward buying a MacBook, so macOS can actually be tested instead of only being written to be platform-clean."
+                    color: "#9a9a9a"; font.pixelSize: 12
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
+                }
+                Label {
+                    text: "후원금은 맥북을 구입하는 데 사용하려 합니다. 개발은 Windows에서만 진행하고 있어 macOS는 한 번도 제대로 테스트해 보지 못했습니다. 물론 이와 상관없이 개발은 그대로 계속 이어집니다. :)"
+                    color: "#9a9a9a"; font.pixelSize: 12
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
+                }
+
+                // 카카오페이 수신 QR — 링크는 모바일 전용이라 스캔이 유일한 데스크톱 경로.
+                Image {
+                    source: "../assets/donate_kakaopay.jpg"
+                    Layout.alignment: Qt.AlignHCenter
+                    Layout.topMargin: 4
+                    Layout.preferredWidth: 260
+                    Layout.preferredHeight: 260 * (sourceSize.height / Math.max(1, sourceSize.width))
+                    fillMode: Image.PreserveAspectFit
+                    smooth: true
+                }
+                Label {
+                    text: "KakaoPay — scan with your phone\n카카오페이로 QR을 스캔해주세요"
+                    color: "#6a6a6a"; font.pixelSize: 11
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignHCenter
+                }
+
+                Rectangle {        // Close (앰버 강조)
+                    Layout.fillWidth: true
+                    Layout.topMargin: 6
+                    Layout.preferredHeight: 40; radius: 8
+                    color: donateCloseMA.containsMouse ? "#f0b945" : "#E0A226"
+                    Label {
+                        anchors.centerIn: parent; text: "Close"
+                        color: "#1a1a1a"; font.pixelSize: 13; font.bold: true
+                    }
+                    MouseArea {
+                        id: donateCloseMA; anchors.fill: parent; hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: donateDialog.close()
+                    }
+                }
+            }
+
+            FilmStrip {
+                Layout.fillWidth: true
+                Layout.leftMargin: 16; Layout.rightMargin: 16
+                Layout.preferredHeight: 26
+            }
+        }
+    }
+
     // 프리뷰 모드 오버레이(탐색기에서 RAW 우클릭 → 메뉴 Preview 로 염). 메인 창 위를 꽉 덮음.
     // 닫으면 마지막으로 보던 사진을 탐색기에서 선택(하이라이트+스크롤)만 한다 — 로드는 안 함.
     PreviewWindow {
@@ -5945,6 +6037,32 @@ ApplicationWindow {
                         ToolTip.text: modelData.tip + "  (" + modelData.key + ")"
                     }
                 }
+            }
+
+            // ── 후원 버튼: 셀렉터 바 맨 하단(패널 선택과 무관 → 위쪽 그룹과 떨어뜨림) ──
+            Rectangle {
+                width: 40; height: 40
+                radius: 6
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 8
+                anchors.horizontalCenter: parent.horizontalCenter
+                color: donateMouse.containsMouse ? "#33373f" : "transparent"
+                Label {
+                    anchors.centerIn: parent
+                    text: "♥"
+                    color: donateMouse.containsMouse ? "#E0A226" : "#8a8a8a"
+                    font.pixelSize: 24
+                }
+                MouseArea {
+                    id: donateMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: donateDialog.open()
+                }
+                ToolTip.visible: donateMouse.containsMouse
+                ToolTip.delay: 1500
+                ToolTip.text: "Support this project — saving for a Mac"
             }
         }
     }
