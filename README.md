@@ -50,7 +50,8 @@ Any Fujifilm body works out of the box (everything is driven by per-file metadat
 ### Masking (local adjustments)
 - **AI selection, two families** — a **Scene** tab (SegFormer-B2 / ADE20K) and a **Face** tab; models auto-download on first use
   - **Scene** — tick any combination of **Sky / Vegetation / Building / Ground / Water / Mountain / Person**
-  - **Face** — pixel-precise face parts: **Skin / Nose / Eyes / Brows / Glasses / Lips / Mouth / Ears / Hair / Hat / Neck**, for up to 5 faces per photo
+  - **Face** — pixel-precise face parts: **Skin / Nose / Eyes / Brows / Glasses / Lips / Mouth / Ears / Hair / Hat / Neck**
+- **Pick which face** — the Face tab shows a thumbnail of every detected face (up to the 5 largest); click one to include or exclude it. Defaults to the largest face alone, so someone walking past in the background never gets your subject's skin correction. The choice is per layer, so one layer can brighten person A while another warms person B.
 - **Composite** — the mask is the union of everything ticked across both tabs, recomposed live from cached inference (switching parts is instant; no re-inference)
 - **Up to 5 layers** — create and delete mask layers, each with its own mask *and* its own adjustments (e.g. sky brighter, skin warmer, mountains darker in one photo)
 - **Edge-refined soft mask** — guided-filter refinement against image luminance for clean branch/hairline boundaries, plus invert and a red mask overlay
@@ -60,7 +61,9 @@ Any Fujifilm body works out of the box (everything is driven by per-file metadat
 Face masking is two models working together: **YuNet** locates faces (232 KB), then **SegFormer-B5
 trained on CelebAMask-HQ** parses each face crop into 19 classes. The detector only decides where to
 crop — boundary precision comes from parsing plus the guided filter, so masks follow the real hairline
-and jaw rather than a box. Detection takes ~60 ms, parsing ~0.8 s per face, and part toggles ~10 ms.
+and jaw rather than a box. Opening the Face tab runs detection alone (~60 ms) so the thumbnails appear
+before the 340 MB parser is ever fetched; only the faces you actually select are parsed (~0.8 s each),
+and part toggles after that are ~10 ms.
 
 ### AI Caption
 - **On-device English captions** — Microsoft **Florence-2** running locally via ONNX (MIT-licensed model); no cloud, no account
