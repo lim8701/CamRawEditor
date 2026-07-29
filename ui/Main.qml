@@ -6101,7 +6101,12 @@ ApplicationWindow {
                                                 enabled: !win.skyBusySlow && win.hasFacePart()
                                                 cursorShape: enabled ? Qt.PointingHandCursor
                                                                      : Qt.ArrowCursor
-                                                onClicked: win.toggleFaceKey(controller.faceKeys[index])
+                                                // faceKeys 와 썸네일 개수가 어긋난 순간(이미지
+                                                // 전환 중 등)에 undefined 를 keys 에 넣지 않게 방어
+                                                onClicked: {
+                                                    var k = controller.faceKeys[index]
+                                                    if (k) win.toggleFaceKey(k)
+                                                }
                                             }
                                         }
                                     }

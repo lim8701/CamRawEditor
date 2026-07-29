@@ -2892,7 +2892,10 @@ class Controller(QObject):
                          daemon=True).start()
 
     def _face_scan_worker(self, img_gen: int) -> None:
-        dets, thumbs = [], []
+        # ⚠️dets=None 은 '실패/중단'을 뜻한다. 빈 리스트([])는 '검출했는데 얼굴이 없음'이라
+        #   캐시해도 되지만, 실패를 []로 캐시하면 얼굴 없는 사진으로 굳어져 이 사진에서는
+        #   얼굴 마스킹이 영영 안 된다(네트워크가 잠깐 끊겨 모델을 못 받은 경우 등).
+        dets, thumbs = None, []
         try:
             import face_seg
             # 검출기(232KB)만 확보 — 파싱 모델(340MB)은 실제로 부위를 고를 때 받는다.
@@ -2903,10 +2906,11 @@ class Controller(QObject):
             # 마스크 워커가 먼저 돌아 이미 검출해 뒀으면 **그 목록을 그대로 쓴다** — 다시 검출하면
             # 새 리스트가 되어 _face_parsed 의 인덱스와 어긋날 여지가 생긴다(같은 입력이라 순서는
             # 같겠지만, 캐시 키가 인덱스인 이상 굳이 새로 만들 이유가 없다).
-            dets = self._face_dets
-            if dets is None:
-                dets = face_seg.detect_faces(rgb8)
-            thumbs = [face_seg.face_thumb(rgb8, d) for d in dets]
+            found = self._face_dets
+            if found is None:
+                found = face_seg.detect_faces(rgb8)
+            thumbs = [face_seg.face_thumb(rgb8, d) for d in found]
+            dets = found
         except Exception as exc:
             print(f"[mask] 얼굴 검출 실패: {exc}")
         finally:
@@ -2920,8 +2924,15 @@ class Controller(QObject):
         if img_gen != self._img_gen:        # 이전 이미지의 늦은 결과 → 버림
             self.facesChanged.emit()
             return
-        self._face_dets = dets
+        # 성공·실패 모두 scanned 를 세운다 — QML 이 facesChanged 마다 재시도하므로 안 세우면
+        # 실패가 무한 재시도 루프가 된다(매번 다운로드 타임아웃).
         self._face_scanned = True
+        if dets is None:                    # 실패 → _face_dets 는 None 그대로 둔다.
+            # 썸네일은 못 띄우지만, 부위를 체크하면 마스크 워커가 스스로 다시 검출을 시도한다.
+            # 여기서 []로 캐시하면 '얼굴 없는 사진'으로 굳어 마스킹 자체가 막힌다.
+            self.facesChanged.emit()
+            return
+        self._face_dets = dets
         urls = []
         for i, t in enumerate(thumbs[:MAX_FACE_SLOTS]):
             a = np.ascontiguousarray(t)
@@ -3036,11 +3047,9 @@ class Controller(QObject):
                     todo = [i for i in want if i not in cache]
                     if todo:
                         status_set = True
-                        n = len(todo)
 
-                        def _fp(i, _n, _n_total=n):
-                            self._segStatusSig.emit(
-                                f"Analyzing face {i + 1} of {_n_total}…")
+                        def _fp(i, n):
+                            self._segStatusSig.emit(f"Analyzing face {i + 1} of {n}…")
                         fresh = face_seg.parse_faces(rgb8, [dets[i] for i in todo], on_face=_fp)
                         if img_gen != self._img_gen:     # 파싱 중 이미지 전환 → 캐시 안 함
                             self._skyReady.emit((img_gen, layer, lseq, None))
