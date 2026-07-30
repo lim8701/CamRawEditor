@@ -412,18 +412,10 @@ def _resize(a, out_hw, area=False):
 
 
 def _guided(guide, src, radius, eps):
-    """He et al. guided filter (cv2.boxFilter 판). sky_seg._guided_filter 와 동일 수식."""
-    import cv2
-    k = (2 * max(1, int(radius)) + 1,) * 2
-
-    def bf(x):
-        return cv2.boxFilter(x, -1, k, borderType=cv2.BORDER_REFLECT)
-
-    mean_g, mean_s = bf(guide), bf(src)
-    cov = bf(guide * src) - mean_g * mean_s
-    var = bf(guide * guide) - mean_g * mean_g
-    a = cov / (var + eps)
-    return bf(a) * guide + bf(mean_s - a * mean_g)
+    """sky_seg._guided_filter 로 위임. 예전엔 여기에 cv2 판을 따로 뒀는데(sky_seg 가 scipy
+    uniform_filter 를 써서 느렸다), 이제 sky_seg 쪽이 cv2.boxFilter 를 쓰므로 사본이 불필요하다.
+    호출측 이름을 유지하기 위해 얇은 별칭만 남긴다."""
+    return sky_seg._guided_filter(guide, src, radius, eps)
 
 
 def _border_ramp(si):

@@ -45,6 +45,13 @@ Components and licenses
     is NON-COMMERCIAL research use only.
     https://github.com/switchablenorms/CelebAMask-HQ — see models/README.md.
 
+3d. Depth-estimation ONNX model — Depth Anything V3 Small
+    (downloaded at runtime; NOT in this package)
+    Apache License 2.0 — commercial use permitted, unlike 3 and 3c above.
+    Source: https://github.com/ByteDance-Seed/Depth-Anything-3
+    ONNX export: onnx-community/depth-anything-v3-small — see models/README.md.
+    NOTE: only the Small variant is Apache-2.0; Base/Large are CC-BY-NC-4.0.
+
 4. PySide6 / Qt 6
    GNU LGPL v3. Copyright (c) The Qt Company Ltd.
    https://www.qt.io  ·  License text: https://www.gnu.org/licenses/lgpl-3.0.html

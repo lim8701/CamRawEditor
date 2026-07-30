@@ -48,15 +48,21 @@ Any Fujifilm body works out of the box (everything is driven by per-file metadat
 - **Highlight reconstruction** — hue-aware desaturation that neutralizes clipped-highlight color casts (e.g. a fire core) while preserving saturated colored light sources (neon, signs)
 
 ### Masking (local adjustments)
-- **AI selection, two families** — a **Scene** tab (SegFormer-B2 / ADE20K) and a **Face** tab; models auto-download on first use
+- **AI selection, three families** — a **Scene** tab (SegFormer-B2 / ADE20K), a **Face** tab, and a **Depth** tab; models auto-download on first use
   - **Scene** — tick any combination of **Sky / Vegetation / Building / Ground / Water / Mountain / Person**
   - **Face** — pixel-precise face parts: **Skin / Nose / Eyes / Brows / Glasses / Lips / Mouth / Ears / Hair / Hat / Neck**
+  - **Depth** — select by **distance** instead of by what a thing is: a Near/Far range with adjustable feather, from a monocular depth estimate (Depth Anything V3 Small). This is the axis semantic segmentation can't reach — *the front leaves of the same bush*, *everything behind the subject*, *only the far end of a receding wall*. Ticking it on **seeds the range from that photo's own distance histogram** and starts on the background, because a fixed default can't work: the distance distribution differs from shot to shot even after normalization. The red overlay stays on while you drag so you can see the range land. Distance is **relative per photo**, so the same Near/Far falls differently on another shot — pasted edits may need a nudge.
 - **Pick which face** — the Face tab shows a thumbnail of every detected face (up to the 5 largest); click one to include or exclude it. Defaults to the largest face alone, so someone walking past in the background never gets your subject's skin correction. The choice is per layer, so one layer can brighten person A while another warms person B.
 - **Composite** — the mask is the union of everything ticked across both tabs, recomposed live from cached inference (switching parts is instant; no re-inference)
 - **Up to 5 layers** — create and delete mask layers, each with its own mask *and* its own adjustments (e.g. sky brighter, skin warmer, mountains darker in one photo)
 - **Edge-refined soft mask** — guided-filter refinement against image luminance for clean branch/hairline boundaries, plus invert and a red mask overlay
 - **Per-mask develop** — Exposure / Temp / Tint / Contrast / Highlights / Shadows / Texture / Clarity / Dehaze / Saturation, applied only to the masked region in both preview and export
 - Masks persist per-image (regenerated from the saved classes on reopen)
+
+Depth masking runs at ~0.75 s per photo (GPU via DirectML; ~1.2 s on CPU), and after that dragging
+the Near/Far range updates continuously at ~100 ms because only the band-pass is recomputed — the
+depth map itself is estimated once and cached per image. See
+[`docs/depth_masking.md`](docs/depth_masking.md).
 
 Face masking is two models working together: **YuNet** locates faces (232 KB), then **SegFormer-B5
 trained on CelebAMask-HQ** parses each face crop into 19 classes. The detector only decides where to
@@ -150,7 +156,7 @@ Key design decisions:
 - `PySide6`, `rawpy`, `numpy`, `scipy`, `exifread`, `opencv-python-headless`, `onnxruntime-directml` (Windows; plain `onnxruntime` elsewhere — see [`requirements.txt`](requirements.txt))
   - ⚠️ OpenCV must be **`headless` and 5.0+**: the full package ships its own Qt plugins and clashes with PySide6, and 4.x pins `numpy<2.3` so it would downgrade the project's numpy. It is used only for face detection and mask resampling.
 - A GPU/driver supporting the Qt RHI (OpenGL / Direct3D / Metal / Vulkan)
-- AI models download on first use into a per-user data folder that survives app updates (`%LOCALAPPDATA%\FilmRawstery\models` on Windows) — needs an internet connection the first time. Scene masking (SegFormer-B2, ~105 MB), face masking (YuNet + SegFormer-B5, ~341 MB) and AI denoise (NAFNet, ~117 MB) fetch automatically when you first use the feature; the caption model (Florence-2, ~1.1 GB) **only after an explicit in-app opt-in**. The **AI Models** screen (left panel footer) shows what is installed and lets you pre-download any of them (see [`models/README.md`](models/README.md))
+- AI models download on first use into a per-user data folder that survives app updates (`%LOCALAPPDATA%\FilmRawstery\models` on Windows) — needs an internet connection the first time. Scene masking (SegFormer-B2, ~105 MB), face masking (YuNet + SegFormer-B5, ~341 MB), depth masking (Depth Anything V3 Small, ~105 MB) and AI denoise (NAFNet, ~117 MB) fetch automatically when you first use the feature; the caption model (Florence-2, ~1.1 GB) **only after an explicit in-app opt-in**. The **AI Models** screen (left panel footer) shows what is installed and lets you pre-download any of them (see [`models/README.md`](models/README.md))
 
 ## Install & Run
 
@@ -202,6 +208,7 @@ Runs from source with the common setup above — all dependencies ship prebuilt 
 | `pipeline.py` | Full-resolution export — numpy reproduction of the shader pipeline |
 | `sky_seg.py` | Scene masking engine — ONNX SegFormer multi-class segmentation → composite soft mask |
 | `face_seg.py` | Face masking engine — YuNet detection (OpenCV DNN) + ONNX SegFormer face parsing → per-part soft mask |
+| `depth.py` | Depth masking engine — ONNX Depth Anything V3 Small → log-depth distance map → Near/Far band mask |
 | `ai_denoise.py` | AI denoise engine — ONNX NAFNet tiled inference, DirectML-accelerated (luminance NR base) |
 | `caption.py` | AI caption engine — ONNX Florence-2 on-device English captions (self-contained BPE tokenizer) |
 | `app_dirs.py` | Per-OS user-data model store (survives updates; migrates legacy downloads by copy) |

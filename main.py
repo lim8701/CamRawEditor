@@ -722,11 +722,15 @@ class Controller(QObject):
     searchChanged = Signal()     # 탐색기 캡션 검색어 변경 알림(explorerFiles 재평가)
     indexChanged = Signal()      # 폴더 배치 인덱싱 busy/진행/상태 갱신
     updateChanged = Signal()     # 새 버전 발견 알림(updateVersion/updateUrl 갱신)
+    # 깊이 범위 자동 시드 확정 → QML 이 'depth@auto' 센티넬을 실제 값으로 교체하고 슬라이더에 반영.
+    # (켜는 순간엔 거리 맵이 없어 범위를 정할 수 없다 — 맵이 나온 뒤에야 분포에서 시드된다)
+    depthAutoResolved = Signal(int, float, float, float)   # layer, near, far, feather
     _renderReady = Signal(object)  # (내부) 워커 스레드 -> 메인 스레드 결과 전달
     _fullDecoded = Signal(bool)  # (내부) 풀해상도 디코드 워커 -> 메인 스레드
     _skyReady = Signal(object)   # (내부) 마스크 워커 -> 메인 스레드 (img_gen, layer, lseq, mask)
     _segStatusSig = Signal(str)  # (내부) 세그 워커 -> 메인 스레드 상태 문구 전달
     _segDlSig = Signal(object)   # (내부) 세그 워커 -> 메인 스레드 (downloading, 진행률 0..1)
+    _depthAutoSig = Signal(object)  # (내부) 마스크 워커 -> 메인 (img_gen, layer, near, far, feather)
     _modelDlSig = Signal(object)  # (내부) AI Models 수동 다운로드 워커 -> 메인 (key, 0..1, state)
     # (내부) 얼굴 검출 워커 -> 메인 (img_gen, dets, thumbs). ⚠️_skyReady 재사용 금지 —
     # 그쪽은 _mask_ran 을 세워 maskSettled 를 참으로 만들고, 배치 export 가 그걸 기다린다.
@@ -806,7 +810,19 @@ class Controller(QObject):
         self._seg_size = None       # 캐시된 마스크 출력 크기(H,W)
         self._layer_keys = [[] for _ in range(5)]  # 레이어별 선택 클래스 그룹 key 목록
         self._mask_ran = False      # 이 이미지에서 마스크 워커가 한 번이라도 끝났는지(maskSettled)
-        self._seg_rgb8 = None       # 캐시된 세그 입력(중성 display sRGB) — 장면/얼굴 공용
+        self._seg_rgb8 = None       # 캐시된 세그 입력(중성 display sRGB) — 장면/얼굴/깊이 공용
+        # 캐시된 거리 맵(프록시 해상도 float32, 정제 완료) — 이미지당 추론 1회(레이어 5개 공유).
+        # near/far 슬라이더는 이 맵에 밴드패스만 걸어(~46ms) 재추론하지 않는다.
+        self._depth_map = None
+        self._depth_lock = threading.Lock()   # 레이어 동시 복원 시 중복 추론 방지(face 와 같은 이유)
+        # 레이어별 Scene∪Face 마스크 캐시(깊이 제외) + 그것을 만든 비-깊이 key 목록.
+        # ⚠️깊이 범위 슬라이더는 깊이 성분만 바꾸는데, 캐시가 없으면 매 커밋이 sky_seg.compose_mask
+        #   (프록시 전체 scipy 가이디드필터+fill_holes = ~870ms)를 통째로 다시 돌려 드래그마다
+        #   dim(350ms 문턱)이 떴다. 실측: Depth+Scene 947ms → 캐시 후 ~70ms.
+        # 메모리: 레이어당 프록시 float32 1장(2560×1709 ≈ 17.6MB) → 5레이어 다 쓰면 최대 ~88MB.
+        # (_layer_masks 가 이미 같은 규모를 들고 있고, 깊이 없는 레이어는 두 배열이 같은 객체다)
+        self._layer_segmask = [None] * 5
+        self._layer_segkeys = [None] * 5
         self._face_parsed = None    # 캐시된 얼굴별 파싱 확률맵 [(geom, probs19)] — 약 1.2MB/얼굴
         self._face_dets = None      # 캐시된 검출 결과(썸네일·선택 매칭용) — 파싱보다 훨씬 쌈
         self._face_thumb_urls = []  # 얼굴 썸네일 URL(개수 = 검출 수)
@@ -898,6 +914,7 @@ class Controller(QObject):
         self._skyReady.connect(self._on_sky_ready)
         self._segStatusSig.connect(self._on_seg_status)
         self._segDlSig.connect(self._on_seg_dl)
+        self._depthAutoSig.connect(self._on_depth_auto)
         self._modelDlSig.connect(self._on_model_dl)
         self._facesReady.connect(self._on_faces_ready)
         self._exportProgressSig.connect(self._on_export_progress)
@@ -1973,8 +1990,13 @@ class Controller(QObject):
             self._histogram = self._hist_of(wb.filmic(self._proxy_small))  # 기준(노출0) display
         self.histogramChanged.emit()
 
-    def _native_to_scenelinear(self, arr):
+    def _native_to_scenelinear(self, arr, u8=None):
         """헤드룸 인코딩 카메라네이티브(0..1) → scene-linear sRGB(filmic 전). 셰이더 프론트엔드와 동일.
+
+        u8: arr 의 원본 uint8 배열(있으면 arr 은 무시 가능). 프록시는 8bit 라 srgb_to_linear 의
+        입력이 256가지뿐이므로 `raw_loader._srgb2lin_lut()` 조회로 대체한다 — 프록시 전체 기준
+        float 변환+pow 273ms → LUT 76ms 이고 **오차 0**이다(LUT 은 srgb_to_linear(i/65535) 이고
+        u8*257/65535 == u8/255 가 정확히 성립 — 257×255 = 65535).
 
         ⚠️ as-shot 게인은 반드시 **tint 포함**(convert.frag 의 relR/G/B = wbPreview(asShotKelvin,
         asShotTint) 와 일치). 과거 tint=0 으로 계산해 off-locus 광원(tint≠0)에서 이 함수의 결과와
@@ -1982,11 +2004,16 @@ class Controller(QObject):
         컬러 NR 에서 청록 캐스트로 드러났음(pipeline 의 neutral_disp 는 원래 tint 포함 — export 정상)."""
         import numpy as np
         if not self._cam2srgb or not self._cam or not self._ref:
-            return arr
+            return arr if arr is not None else (u8.astype(np.float32) / 255.0)
         M = np.asarray(self._cam2srgb, float).reshape(3, 3)
         cam = np.asarray(self._cam, float).reshape(3, 3)
         rel = wb.rel_gain(cam, np.asarray(self._ref, float), self._asshot, self._asshot_tint)
-        lin = wb.srgb_to_linear(arr) * PROXY_HEADROOM * rel    # 헤드룸 디코드 + as-shot WB
+        if u8 is not None:                                    # 8bit 입력 → LUT 조회(오차 0, 3.6×)
+            import raw_loader                                 # 모듈 레벨 import 아님(_load_heavy_modules)
+            lin0 = raw_loader._srgb2lin_lut()[u8.astype(np.uint16) * 257]
+        else:
+            lin0 = wb.srgb_to_linear(arr)
+        lin = lin0 * PROXY_HEADROOM * rel                     # 헤드룸 디코드 + as-shot WB
         return (lin @ M.T).astype(np.float32)                 # scene-linear sRGB
 
     @staticmethod
@@ -2345,7 +2372,7 @@ class Controller(QObject):
     # 순간에만 암묵적으로 일어난다. 여기서 현황을 모아 보여주고 미리 받을 수 있게 한다.
     # ⚠️크기·파일명·설명은 각 엔진 모듈이 소유한다(MODEL_LABEL/NOTE/FILES/TOTAL_BYTES).
     #   여기에 복제하면 모델을 교체할 때 한쪽만 고쳐져 표시가 어긋난다.
-    MODEL_MODULES = ("sky_seg", "face_seg", "ai_denoise", "caption")
+    MODEL_MODULES = ("sky_seg", "face_seg", "depth", "ai_denoise", "caption")
 
     @staticmethod
     def _fmt_bytes(n: int) -> str:
@@ -2521,10 +2548,13 @@ class Controller(QObject):
                 .reshape(h, im.bytesPerLine())[:, :w * 3].reshape(h, w, 3).copy())
 
     def _sky_input_rgb(self):
-        """프록시(헤드룸 카메라네이티브) → 중성(노출0·as-shot WB) display sRGB uint8. 세그 입력."""
+        """프록시(헤드룸 카메라네이티브) → 중성(노출0·as-shot WB) display sRGB uint8. 세그 입력.
+
+        Scene/Face/Depth 세 소스가 공유하며 마스크 캐시 미스마다 다시 만든다(실측 785~1190ms)
+        → uint8 을 그대로 넘겨 srgb_to_linear 를 LUT 조회로 대체한다(_native_to_scenelinear 참조)."""
         import numpy as np
-        arr = self._qimage_to_rgb(self._proxy_img).astype(np.float32) / 255.0
-        disp = np.clip(wb.filmic(self._native_to_scenelinear(arr)), 0.0, 1.0)
+        u8 = self._qimage_to_rgb(self._proxy_img)
+        disp = np.clip(wb.filmic(self._native_to_scenelinear(None, u8=u8)), 0.0, 1.0)
         return (disp * 255.0 + 0.5).astype(np.uint8)
 
     # ---------- 디헤이즈 물리(DCP): 이미지당 1회 투과율/대기광 추정 ----------
@@ -2535,9 +2565,10 @@ class Controller(QObject):
         import haze
         res = None
         try:
-            arr = self._qimage_to_rgb(self._proxy_img).astype(np.float32) / 255.0
-            step = max(1, max(arr.shape[:2]) // 640)   # 추정은 소형으로 충분(속도)
-            disp = np.clip(wb.filmic(self._native_to_scenelinear(arr[::step, ::step])), 0.0, 1.0)
+            u8 = self._qimage_to_rgb(self._proxy_img)
+            step = max(1, max(u8.shape[:2]) // 640)    # 추정은 소형으로 충분(속도)
+            disp = np.clip(wb.filmic(self._native_to_scenelinear(None, u8=u8[::step, ::step])),
+                           0.0, 1.0)
             res = haze.estimate(disp)
         except Exception as exc:
             print(f"[haze] 추정 실패(톤모델 폴백): {exc}")
@@ -2589,8 +2620,8 @@ class Controller(QObject):
         from sky_seg import _guided_filter
         res = None
         try:
-            arr = self._qimage_to_rgb(self._proxy_img).astype(np.float32) / 255.0
-            disp = np.clip(wb.filmic(self._native_to_scenelinear(arr)), 0.0, 1.0)
+            u8 = self._qimage_to_rgb(self._proxy_img)      # LUT 경로(_sky_input_rgb 와 동일, 오차 0)
+            disp = np.clip(wb.filmic(self._native_to_scenelinear(None, u8=u8)), 0.0, 1.0)
             lum = (disp @ np.array([0.299, 0.587, 0.114], np.float32)).astype(np.float32)
             res = np.clip(_guided_filter(lum, lum, coeffs.NR_RADIUS, coeffs.NR_EPS), 0.0, 1.0)
         except Exception as exc:
@@ -2756,8 +2787,8 @@ class Controller(QObject):
         import numpy as np
         import ai_denoise
         try:
-            arr = self._qimage_to_rgb(self._proxy_img).astype(np.float32) / 255.0
-            disp = np.clip(wb.filmic(self._native_to_scenelinear(arr)), 0.0, 1.0)
+            u8 = self._qimage_to_rgb(self._proxy_img)      # LUT 경로(_sky_input_rgb 와 동일, 오차 0)
+            disp = np.clip(wb.filmic(self._native_to_scenelinear(None, u8=u8)), 0.0, 1.0)
             if not ai_denoise.model_available():
                 # 다운로드 중엔 이미지 영역 차단 오버레이 + 프로그레스바(하늘 모델과 동일 UX).
                 # reporthook 은 8KB 단위(~1.4만 회)라 1% 단위로 스로틀해 시그널 폭주 방지.
@@ -2969,20 +3000,23 @@ class Controller(QObject):
     faceScanning = Property(bool, _get_face_scanning, notify=facesChanged)
 
     def _mask_worker(self, img_gen: int, layer: int, lseq: int, keys) -> None:
-        """레이어 마스크 생성. keys 는 장면(sky_seg)·얼굴(face_seg) 그룹이 섞여 올 수 있고,
-        각 소스가 만든 알파를 np.maximum 으로 합집합한다. 추론 결과는 이미지당 캐시 —
-        체크박스 재조합만으로는 재추론하지 않는다."""
+        """레이어 마스크 생성. keys 는 장면(sky_seg)·얼굴(face_seg) 그룹과 깊이 범위
+        (depth `depth@near,far,feather`)가 섞여 올 수 있고, 각 소스가 만든 알파를
+        np.maximum 으로 합집합한다. 추론 결과는 이미지당 캐시 —
+        체크박스/슬라이더 재조합만으로는 재추론하지 않는다."""
         mask = None
         status_set = False
         try:
             # ⚠️import 는 반드시 try 안에서 — 여기서 예외가 나면 _skyReady 가 발화하지 않아
             #   _sky_pending 이 영영 안 줄고 UI 가 busy 로 굳는다(스피너·체크박스 잠김).
             import numpy as np
+            import depth
             import face_seg
             import sky_seg
             ade_ids = sky_seg.class_ids_for(keys)
             face_ids = face_seg.class_ids_for(keys)
-            if not ade_ids and not face_ids:
+            drange = depth.range_from_keys(keys)
+            if not ade_ids and not face_ids and drange is None:
                 self._skyReady.emit((img_gen, layer, lseq, None))
                 return
 
@@ -2995,6 +3029,19 @@ class Controller(QObject):
             if rgb8 is None:                         # 준비 중 이미지 전환 → stale
                 self._skyReady.emit((img_gen, layer, lseq, None))
                 return
+
+            # ── Scene∪Face 성분 캐시 ──────────────────────────────────────────
+            # 깊이 범위 슬라이더는 깊이 성분만 바꾼다. 그런데 마스크가 합집합이라 캐시가 없으면
+            # 매 커밋이 sky_seg.compose_mask 를 통째로 다시 돌린다(프록시 전체 scipy 가이디드필터
+            # + binary_fill_holes = ~870ms) → 드래그마다 dim. 비-깊이 key 가 그대로면 재사용한다.
+            # ⚠️캐시 배열을 그대로 mask 에 대입하고 아래에서 np.maximum 으로 합치는데,
+            #   np.maximum 은 새 배열을 반환하므로 캐시가 오염되지 않는다.
+            seg_keys = sorted(str(k) for k in keys if not str(k).startswith("depth@"))
+            seg_cached = (self._layer_segkeys[layer] == seg_keys
+                          and self._layer_segmask[layer] is not None)
+            if seg_cached:
+                mask = self._layer_segmask[layer]
+                ade_ids = face_ids = []              # 재계산 건너뛰기
 
             if ade_ids:
                 if self._seg_probs is None:              # 이미지당 추론 1회 → 캐시
@@ -3063,6 +3110,47 @@ class Controller(QObject):
                     parsed = [cache[i] for i in want if i in cache]
                 fm = face_seg.compose_face_mask(parsed, rgb8, face_ids)
                 mask = fm if mask is None else np.maximum(mask, fm)
+
+            # 방금 만든 Scene∪Face 성분을 캐시(깊이 합집합 **전** 상태여야 재사용 가능).
+            # ⚠️img_gen 가드 — 합성 중 이미지가 바뀌면 이전 이미지 성분을 되살리게 된다(_seg_probs 와 동일).
+            if not seg_cached and seg_keys:
+                if img_gen != self._img_gen:
+                    self._skyReady.emit((img_gen, layer, lseq, None))
+                    return
+                self._layer_segmask[layer] = mask
+                self._layer_segkeys[layer] = seg_keys
+                # ⚠️깊이 없는 레이어에서는 이 배열이 _layer_masks[layer] 와 **같은 객체**가 된다
+                #   (아래 깊이 합집합이 없으면 mask 가 그대로 전달됨). 소비측이 전부 새 배열을
+                #   만들어 쓰므로(_set_layer_mask 의 clip/astype, pipeline 의 zoom/clip/1-sm)
+                #   현재는 안전하지만, 마스크를 in-place 로 고치는 코드를 추가하면 캐시가 오염된다.
+
+            if drange is not None:
+                # 거리 맵은 이미지당 1회(추론+정제 ~0.65s) → 락으로 레이어 동시 복원 시 중복 방지.
+                # 범위 슬라이더 드래그는 락 밖 밴드패스(~46ms)라 재추론이 없다.
+                with self._depth_lock:
+                    if self._depth_map is None:
+                        if not depth.is_ready():         # 최초 1회 다운로드(~105MB, 2파일)
+                            try:
+                                depth.ensure_model(self._dl_progress_cb())
+                            finally:
+                                self._segDlSig.emit((False, 1.0))   # 실패해도 반드시 해제
+                        else:
+                            depth.ensure_model()         # legacy 복사(순간, 표시 없음)
+                        dm = depth.infer_distance(rgb8, guide)
+                        # ⚠️캐시 쓰기 세대 가드 — sky_seg 캐시와 같은 레이스(추론 중 이미지 전환 시
+                        #   이전 이미지의 거리 맵을 되살려 다음 워커가 현재 이미지에 합성).
+                        if img_gen != self._img_gen:
+                            self._skyReady.emit((img_gen, layer, lseq, None))
+                            return
+                        self._depth_map = dm
+                    dm = self._depth_map
+                if drange == depth.AUTO:
+                    # 켤 때는 범위를 정할 근거(거리 맵)가 아직 없었다 → 지금 분포에서 시드하고
+                    # 메인 스레드가 센티넬 키를 실제 값으로 교체한다(다음 재조합부터 고정).
+                    drange = depth.auto_range(dm)
+                    self._depthAutoSig.emit((img_gen, layer) + tuple(drange))
+                dmask = depth.compose_mask(dm, *drange)
+                mask = dmask if mask is None else np.maximum(mask, dmask)
             # 전부 0(예: 얼굴 없는 사진에 Face 선택) → 마스크 없음으로 되돌린다. 안 그러면
             # 레이어에 ● 가 붙고 빈 오버레이가 번쩍이며 export 가 0 배열을 들고 다닌다.
             if mask is not None and not mask.any():
@@ -3075,6 +3163,29 @@ class Controller(QObject):
             if status_set:
                 self._segStatusSig.emit("")
         self._skyReady.emit((img_gen, layer, lseq, mask))
+
+    @Slot(object)
+    def _on_depth_auto(self, payload) -> None:
+        """자동 시드된 범위를 확정: `depth@auto` 센티넬 → 실제 값 키로 교체 후 QML 에 통보.
+
+        ⚠️컨트롤러의 _layer_keys 도 **같이** 갱신해야 한다 — QML 쪽만 바꾸면 저장된 키가
+        여전히 'auto' 라서, 같은 값으로 다시 오는 setMaskClasses 가 no-op 으로 걸러지지 않고
+        워커를 한 번 더 돈다(마스크는 같으므로 무해하지만 낭비)."""
+        import depth
+        img_gen, layer, near, far, feather = payload
+        if img_gen != self._img_gen or not (0 <= layer < 5):
+            return                          # 이미지 전환 중 도착 → 폐기
+        # ⚠️센티넬이 **아직 그대로일 때만** 적용한다. 첫 사용 추론(0.7~6s)이 도는 동안 사용자가
+        #   슬라이더를 움직이면 keys 는 이미 수동값(depth@0.30,…)으로 바뀌어 있다 — 그때 이 늦은
+        #   시드가 덮어쓰면 방금 조작한 슬라이더가 시드값으로 '튕겨 돌아가고', 마스크(lseq 가드로
+        #   수동값 워커가 만든 것)와 keys 가 어긋난다. img_gen 가드로는 못 막는다(같은 이미지).
+        if "depth@auto" not in (str(k) for k in self._layer_keys[layer]):
+            return
+        keys = [k for k in self._layer_keys[layer] if not str(k).startswith("depth@")]
+        keys.append(depth.range_key(near, far, feather))
+        keys.sort()                         # QML _commitMaskKeys 와 같은 정규화(직렬화 일치)
+        self._layer_keys[layer] = keys
+        self.depthAutoResolved.emit(layer, float(near), float(far), float(feather))
 
     @Slot(object)
     def _on_sky_ready(self, payload) -> None:
@@ -3294,6 +3405,9 @@ class Controller(QObject):
         self._proxy_img = img            # 세그 입력 디코드용(display sRGB 변환 base)
         self._seg_probs = None           # 프록시 바뀜 → 추론 캐시 무효화(재추론 필요)
         self._seg_guide = self._seg_size = self._seg_rgb8 = None
+        self._depth_map = None           # 거리 맵도 프록시 좌표계 기준 → 같이 무효화
+        self._layer_segmask = [None] * 5  # Scene∪Face 성분 캐시도 프록시 기준
+        self._layer_segkeys = [None] * 5
         # 얼굴 검출/파싱도 프록시 좌표계 기준 → 렌즈 보정·기하 변경이면 반드시 재실행
         self._face_parsed = None
         self._face_dets = None

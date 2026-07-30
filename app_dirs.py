@@ -90,7 +90,9 @@ def materialize(name: str) -> bool:
         return False
     with _copy_lock:
         if not os.path.exists(path):
-            os.makedirs(MODELS_DIR, exist_ok=True)
+            # dirname(=MODELS_DIR 또는 그 하위) — 외부 데이터를 쓰는 모델은 하위 폴더에 받는다
+            # (depth: `model.onnx_data` 이름이 프로토에 박혀 있어 플랫 저장 시 충돌).
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             tmp = path + ".part"
             shutil.copyfile(legacy, tmp)
             os.replace(tmp, path)         # 원자적(복사 중 크래시 시 부분파일 방지)

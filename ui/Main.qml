@@ -167,10 +167,12 @@ ApplicationWindow {
     // ⚠️얼굴 '선택' key(face@…)는 부위가 아니라 대상이라 양쪽 카운트 모두에서 뺀다 —
     //   안 그러면 face: 로 시작하지 않아 Scene 쪽으로 잘못 세어진다.
     function maskTabCount(tab) {
+        if (tab === 2) return win.depthOn ? 1 : 0     // 깊이는 항목이 하나(범위) — 켜짐/꺼짐
         var n = 0
         for (var i = 0; i < win.maskKeys.length; i++) {
             var k = String(win.maskKeys[i])
-            if (k.indexOf("face@") === 0) continue
+            // face@(얼굴 선택)·depth@(거리 범위)는 '클래스'가 아니라 대상/범위 → 양쪽 카운트에서 뺀다.
+            if (k.indexOf("face@") === 0 || win._isDepth(k)) continue
             if ((k.indexOf("face:") === 0) === (tab === 1)) n++
         }
         return n
@@ -187,6 +189,111 @@ ApplicationWindow {
     function _hasFaceSel(a) {
         for (var i = 0; i < a.length; i++) if (win._isFaceSel(a[i])) return true
         return false
+    }
+    // ---- Depth 탭: 거리 범위 마스크 ----
+    // 상태의 단일 진실원은 **maskKeys 안의 `depth@near,far,feather` 항목 하나**다(face@ 가 얼굴
+    // 선택을 좌표로 담는 것과 같은 방식). 아래 4개는 슬라이더 표시용 미러 — 이렇게 두면 사이드카
+    // 저장·undo·재오픈 복원이 기존 keys 직렬화에 그대로 얹혀 새 필드가 필요 없다.
+    // 기본값은 **배경 방향**(near=경계, far=1). '배경만 손보기'가 가장 흔한 의도이고,
+    // 실제 값은 켜는 순간 이미지 히스토그램에서 자동 시드된다(depth.auto_range) — 정규화 후에도
+    // 분포가 장면마다 크게 달라(실측 평균 0.478~0.679) 고정 상수는 원리적으로 맞을 수 없다.
+    property bool depthOn: false
+    property real depthNear: 0.5
+    property real depthFar: 1.0
+    property real depthFeather: 0.10
+    function _isDepth(k) { return String(k).indexOf("depth@") === 0 }
+    // maskKeys → 미러 갱신. keys 가 통째로 바뀌는 자리(레이어 전환·사이드카 복원)에서 호출.
+    function _syncDepthFromKeys() {
+        win.depthOn = false
+        for (var i = 0; i < win.maskKeys.length; i++) {
+            var k = String(win.maskKeys[i])
+            if (!win._isDepth(k)) continue
+            var payload = k.substring(6)
+            if (payload === "auto") { win.depthOn = true; break }   // 확정 전 — 값은 그대로 두고 기다린다
+            var v = payload.split(",")
+            if (v.length !== 3) continue          // 손상된 사이드카 — 조용히 무시
+            win.depthNear = parseFloat(v[0]); win.depthFar = parseFloat(v[1])
+            win.depthFeather = parseFloat(v[2]); win.depthOn = true
+            break
+        }
+    }
+    // 미러 → maskKeys(depth 항목 교체) + 스로틀 재조합. 슬라이더 드래그마다 호출된다.
+    // ⚠️소수 4자리 고정 — depth.range_key 와 같은 포맷이어야 setMaskClasses 의 no-op 이 동작한다.
+    function _commitDepth() {
+        if (win._loadingLayer) return
+        win._commitMaskKeys(win._keysWithDepth(
+            win.depthOn ? ("depth@" + win.depthNear.toFixed(4) + "," + win.depthFar.toFixed(4)
+                           + "," + win.depthFeather.toFixed(4)) : ""), true)
+    }
+    // 켤 때는 아직 거리 맵이 없어 범위를 정할 수 없다 → 센티넬을 보내고, 워커가 맵을 만든 뒤
+    // 분포에서 시드해 depthAutoResolved 로 실제 값이 돌아온다.
+    // ⚠️depthOn 을 스스로 세운다 — 호출자(체크박스)가 먼저 세우는 것에 의존하면 다른 경로에서
+    //   센티넬만 들어가고 UI 는 꺼진 상태로 남는다.
+    function _commitDepthAuto() {
+        win.depthOn = true
+        win._commitMaskKeys(win._keysWithDepth("depth@auto"), true)
+    }
+    // 현재 keys 에서 depth 항목만 교체(빈 문자열 = 제거).
+    function _keysWithDepth(key) {
+        var a = []
+        for (var i = 0; i < win.maskKeys.length; i++)
+            if (!win._isDepth(win.maskKeys[i])) a.push(win.maskKeys[i])
+        if (key !== "") a.push(key)
+        return a
+    }
+    // ---- 깊이 범위 재조합 스로틀 ----
+    // 깊이 범위는 **연속 값**이라 디바운스(멈춘 뒤 발화)가 구조적으로 안 맞는다 — 드래그 중엔
+    // 아무 것도 안 보이고 손을 놓아야 갱신돼 실시간으로 느껴질 수 없다(220ms 가 체감 지연의 74%).
+    // 대신 즉시 한 번 보내고, 이후에는 **워커가 끝나는 대로 가장 최신 값만** 보낸다:
+    // 스레드가 쌓이지 않고 갱신 주기가 실제 비용(밴드패스 46ms + uint8/QImage 30ms)에 스스로 맞춰진다.
+    readonly property int _depthThrottleMs: 60
+    property double _depthLastMs: 0
+    function _throttleMask() {
+        if (controller.skyBusy || Date.now() - win._depthLastMs < win._depthThrottleMs) {
+            // ⚠️running 검사 없이 restart() 하면 드래그가 이어지는 동안 계속 밀려 디바운스로 되돌아간다.
+            if (!depthTrailTimer.running) depthTrailTimer.start()
+            return
+        }
+        maskApplyTimer.stop()          // 체크박스 디바운스 예약이 남아 있으면 중복 발화 방지
+        win._depthLastMs = Date.now()
+        controller.setMaskClasses(win.activeLayer, win.maskKeys)
+    }
+    Timer {
+        id: depthTrailTimer
+        interval: win._depthThrottleMs
+        onTriggered: {
+            if (controller.skyBusy) { restart(); return }   // 워커 진행 중 → 끝나면 최신 값으로
+            win._depthLastMs = Date.now()
+            controller.setMaskClasses(win.activeLayer, win.maskKeys)
+        }
+    }
+    // 자동 시드 확정 → 센티넬을 실제 값으로 교체. 마스크는 이미 이 값으로 만들어졌고 컨트롤러의
+    // _layer_keys 도 같이 갱신됐으므로, 재조합을 유발하지 않도록 _commitMaskKeys 를 거치지 않는다.
+    Connections {
+        target: controller
+        function onDepthAutoResolved(layer, near, far, feather) {
+            // ⚠️QML 쪽 키에도 센티넬이 남아 있을 때만 적용. 추론 중(skyBusy)의 수동 드래그는
+            //   트레일링 타이머에 걸려 컨트롤러에 아직 안 갔을 수 있다 — 컨트롤러 가드만으로는
+            //   그 틈의 시드가 방금 조작한 값을 덮는다(수동값이 통째로 사라짐).
+            if (win.layers[layer].keys.indexOf("depth@auto") < 0) return
+            var ls = win.layers.slice()
+            var a = []
+            for (var i = 0; i < ls[layer].keys.length; i++)
+                if (!win._isDepth(ls[layer].keys[i])) a.push(ls[layer].keys[i])
+            a.push("depth@" + near.toFixed(4) + "," + far.toFixed(4) + "," + feather.toFixed(4))
+            a.sort()                      // 컨트롤러 쪽 정규화와 일치(직렬화 동일)
+            ls[layer].keys = a
+            win.layers = ls
+            if (layer !== win.activeLayer) return
+            win._loadingLayer = true      // 슬라이더 대입이 _commitDepth 를 다시 부르지 않게
+            win.maskKeys = a
+            win.depthOn = true
+            win.depthNear = near; win.depthFar = far; win.depthFeather = feather
+            depthNearSlider.value = near
+            depthFarSlider.value = far
+            depthFeatherSlider.value = feather
+            win._loadingLayer = false
+        }
     }
     // 얼굴 선택 토글. 마지막 하나는 해제 불가 — 0개가 되면 '선택 없음 = 전체'와 구분이 안 되고
     // 마스크가 통째로 사라진다(레이어 삭제 버튼이 최소 1개를 남기는 것과 같은 규칙).
@@ -222,7 +329,8 @@ ApplicationWindow {
             if (!win._isFaceSel(win.maskKeys[i])) a.push(win.maskKeys[i])
         win._commitMaskKeys(a)
     }
-    function _commitMaskKeys(a) {
+    // throttle=true 면 디바운스(체크박스 연타 코얼레싱용) 대신 스로틀 — 연속 슬라이더용(_throttleMask).
+    function _commitMaskKeys(a, throttle) {
         // 검출된 얼굴을 전부 고른 상태 == '선택 없음(전체 사용)'. 같은 화면이 두 가지로
         // 직렬화되면 사이드카가 달라지고 되돌리기에 의미 없는 단계가 하나 끼어든다 → 정규화.
         if (controller.faceCount > 0) {
@@ -237,9 +345,12 @@ ApplicationWindow {
         a.sort()                    // 순서 차이로 같은 상태가 다르게 직렬화되는 것 방지
         win.maskKeys = a
         win.layers[win.activeLayer].keys = a; win.layers = win.layers.slice()
-        maskApplyTimer.restart()
+        if (throttle) win._throttleMask()
+        else maskApplyTimer.restart()
     }
-    // 마스크 작업 진행 오버레이용 지연 플래그. 부위/얼굴 토글의 재조합은 캐시 히트라 ~50ms 라서,
+    // 마스크 작업 진행 오버레이용 지연 플래그. 얼굴 부위 토글의 재조합은 크롭 단위라 ~70ms 라서,
+    // (⚠️Scene 클래스 재조합은 실측 ~900ms — 프록시 전체 scipy 가이디드필터 566ms + fill_holes
+    //  154ms. 즉 Scene 토글은 오늘도 dim 이 뜬다. 깊이 범위 슬라이더는 Scene 성분을 캐시해 피한다)
     // skyBusy 를 그대로 쓰면 누를 때마다 어두워졌다 밝아지는 깜빡임만 남는다. 실제로 오래 걸리는
     // 작업(첫 추론 ~1s, 얼굴 파싱, 모델 다운로드)에서만 뜨도록 문턱을 둔다.
     property bool skyBusySlow: false
@@ -308,6 +419,10 @@ ApplicationWindow {
         for (var i = 0; i < win.skyAdjustKeys.length; i++) { var k = win.skyAdjustKeys[i]; win._skySlider(k).value = L[k] }
         skyInvertCheck.checked = L.invert
         win.maskKeys = L.keys.slice()
+        win._syncDepthFromKeys()          // keys 안의 depth@ → 미러
+        depthNearSlider.value = win.depthNear
+        depthFarSlider.value = win.depthFar
+        depthFeatherSlider.value = win.depthFeather
         win._loadingLayer = false
     }
     // 슬라이더/invert → 활성 레이어 저장(+ 셰이더 유니폼 notify). 슬라이더 워처(skyLayerWatch)가 호출.
@@ -319,7 +434,18 @@ ApplicationWindow {
         L.keys = win.maskKeys.slice()
         win.layers = win.layers.slice()
     }
+    // 대기 중인 마스크 커밋(체크박스 220ms 디바운스 / 깊이 60ms 스로틀)을 **현재 레이어로** 즉시
+    // 발사. 레이어 전환 전에 안 하면 타이머가 새 레이어의 keys 로 발화해(no-op) 옛 레이어의
+    // 마지막 변경이 컨트롤러에 영영 안 간다 — 사이드카(신값)와 프리뷰/export 마스크(구값)가
+    // 이미지 재로드 전까지 조용히 어긋난다. setMaskClasses 는 동일 keys 면 no-op 이라 안전.
+    function _flushMaskTimers() {
+        if (maskApplyTimer.running || depthTrailTimer.running) {
+            maskApplyTimer.stop(); depthTrailTimer.stop()
+            controller.setMaskClasses(win.activeLayer, win.maskKeys)
+        }
+    }
     function selectLayer(i) {           // 레이어 전환: 현재값 저장 → 활성 변경 → 새 레이어 로드
+        win._flushMaskTimers()          // 옛 레이어의 대기 중 커밋을 먼저 배달
         win.saveActiveFromSliders()     // showSkyMask 는 유지 → 오버레이가 새 활성 레이어 마스크를 따라감
         win.activeLayer = i
         win.loadActiveToSliders()
@@ -354,6 +480,9 @@ ApplicationWindow {
         property alias from: skySld.from
         property alias to: skySld.to
         property var host: null
+        // 조정 슬라이더는 드래그 중 빨간 오버레이를 끈다(보정 결과를 봐야 하므로). 반대로 Depth
+        // 범위 슬라이더는 **무엇이 선택되는지**가 목적이라 오버레이를 켜둔 채 움직여야 한다.
+        property bool keepOverlay: false
         Layout.fillWidth: true
         spacing: 2
         Label {
@@ -370,7 +499,10 @@ ApplicationWindow {
                 if (pressed) _pendingReset = skyRoot.host.isDblPress(skySld)
                 else if (_pendingReset) { skyRoot.value = skyRoot.defaultValue; _pendingReset = false }
             }
-            onMoved: { skyRoot.value = value; skyRoot.host.showSkyMask = false }  // 드래그 → 외부 value 동기 + 오버레이 끔
+            onMoved: {                                   // 드래그 → 외부 value 동기 + 오버레이 끔
+                skyRoot.value = value
+                if (!skyRoot.keepOverlay) skyRoot.host.showSkyMask = false
+            }
         }
         // 독립 Binding: from/to 확정 뒤(및 이후 변경마다) skyRoot.value 를 내부 슬라이더에 재대입.
         // 드래그의 내부 write 로 바인딩이 깨져도 외부 value 변경(리셋/복원)이 계속 반영(체크박스 Binding 패턴).
@@ -610,6 +742,11 @@ ApplicationWindow {
         skyContrastSlider.value = 1.0
         skyInvertCheck.checked = false
         win.maskKeys = []
+        win.depthOn = false                      // 깊이 범위도 기본값으로(미러 + 슬라이더)
+        win.depthNear = 0.5; win.depthFar = 1.0; win.depthFeather = 0.10
+        depthNearSlider.value = win.depthNear
+        depthFarSlider.value = win.depthFar
+        depthFeatherSlider.value = win.depthFeather
         win.showSkyMask = false
         win._loadingLayer = false
         controller.clearSky()
@@ -891,6 +1028,7 @@ ApplicationWindow {
         || skySatSlider.pressed || skyHiSlider.pressed || skyShadowsSlider.pressed
         || skyTextureSlider.pressed || skyClaritySlider.pressed || skyDehazeSlider.pressed
         || skyContrastSlider.pressed
+        || depthNearSlider.pressed || depthFarSlider.pressed || depthFeatherSlider.pressed
         || stampSizeSlider.pressed || stampMarginSlider.pressed
         || curveEditor.dragging || cropOverlay.dragging
     // 릴리즈 순간(어떤 소스든 드래그 종료) 보류 중 커밋이 있으면 즉시 실행 — 릴리즈 = undo 스텝.
@@ -4355,7 +4493,9 @@ ApplicationWindow {
                         }
                     }
                     Label {
-                        text: "first use only · ~105 MB"
+                        // 이 바는 장면(105MB)·얼굴(341MB)·깊이(105MB) 모델이 공유한다 →
+                        // 특정 크기를 박아두면 나머지 둘에서 거짓말이 된다(정확한 크기는 AI Models 화면).
+                        text: "first use only"
                         color: "#9a9a9a"; font.pixelSize: 11
                         Layout.alignment: Qt.AlignHCenter
                     }
@@ -5988,7 +6128,9 @@ ApplicationWindow {
                             }
                             Label {
                                 Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                text: "Check one or more — the mask is the union of the selected classes."
+                                text: win.maskTab === 2
+                                      ? "Pick a distance range — it joins whatever Scene / Face classes are ticked."
+                                      : "Check one or more — the mask is the union of the selected classes."
                                 color: "#888"; font.pixelSize: 11
                             }
                             // Scene / Face 탭. 표시만 전환하고 선택은 양쪽 모두 살아 있으므로
@@ -6007,9 +6149,9 @@ ApplicationWindow {
                                 Row {
                                     anchors.fill: parent
                                     Repeater {
-                                        model: ["Scene", "Face"]
+                                        model: ["Scene", "Face", "Depth"]
                                         delegate: Item {
-                                            width: parent.width / 2
+                                            width: parent.width / 3
                                             height: parent.height
                                             property bool active: win.maskTab === index
                                             Text {
@@ -6119,10 +6261,73 @@ ApplicationWindow {
                                     color: "#888"; font.pixelSize: 10
                                 }
                             }
+                            // ---- Depth 탭: 거리 범위 ----
+                            // 세그가 못 가르는 축. 체크박스가 아니라 범위라서 클래스 그리드 대신
+                            // 이 블록이 뜬다. 오버레이(빨강)를 켜둔 채 슬라이더를 움직이면
+                            // 어디가 잡히는지 바로 보인다(SkySlider.keepOverlay).
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 4
+                                visible: win.maskTab === 2
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: 6
+                                    CheckBox {
+                                        id: depthOnCheck
+                                        enabled: controller.imagePath !== "" && !win.skyBusySlow
+                                        // 켤 때는 이미지 히스토그램에서 시드(고정 상수는 장면마다
+                                        // 어긋난다). 끌 때는 키만 제거.
+                                        onToggled: {
+                                            win.depthOn = checked
+                                            if (checked) win._commitDepthAuto()
+                                            else win._commitDepth()
+                                        }
+                                    }
+                                    // 인라인 checked: 바인딩이 첫 클릭에 파괴돼 Clear/레이어 전환이
+                                    // 반영 안 된다 → 독립 Binding(클래스 체크박스와 같은 이유).
+                                    Binding {
+                                        target: depthOnCheck; property: "checked"; value: win.depthOn
+                                    }
+                                    Label {
+                                        Layout.fillWidth: true; text: "Use distance range"
+                                        color: "white"; font.pixelSize: 12
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
+                                }
+                                SkySlider {
+                                    id: depthNearSlider
+                                    host: win; keepOverlay: true; enabled: win.depthOn
+                                    label: "Near"; suffix: "  (0 = closest)"
+                                    from: 0.0; to: 1.0; value: 0.5; defaultValue: 0.5
+                                    onValueChanged: { win.depthNear = value; win._commitDepth() }
+                                }
+                                SkySlider {
+                                    id: depthFarSlider
+                                    host: win; keepOverlay: true; enabled: win.depthOn
+                                    label: "Far"; suffix: "  (1 = farthest)"
+                                    from: 0.0; to: 1.0; value: 1.0; defaultValue: 1.0
+                                    onValueChanged: { win.depthFar = value; win._commitDepth() }
+                                }
+                                SkySlider {
+                                    id: depthFeatherSlider
+                                    host: win; keepOverlay: true; enabled: win.depthOn
+                                    label: "Feather"
+                                    from: 0.005; to: 0.4; value: 0.10; defaultValue: 0.10
+                                    onValueChanged: { win.depthFeather = value; win._commitDepth() }
+                                }
+                                Label {
+                                    Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                    text: "Starts on the background, seeded from this photo's own "
+                                          + "distance histogram. Distance is relative per photo — the "
+                                          + "same Near/Far lands differently on another shot, so "
+                                          + "pasted edits may need a nudge."
+                                    color: "#888"; font.pixelSize: 10
+                                }
+                            }
                             GridLayout {
                                 Layout.fillWidth: true
                                 columns: 2
                                 columnSpacing: 4; rowSpacing: 2
+                                visible: win.maskTab !== 2      // Depth 탭은 클래스가 아니라 범위
                                 Repeater {
                                     model: win.maskTab === 1 ? controller.faceGroups
                                                              : controller.maskGroups
@@ -6132,7 +6337,7 @@ ApplicationWindow {
                                             id: maskKeyCheck
                                             // faceScanning 중 잠금(~60ms) — 검출 전에 체크하면
                                             // faceCount 가 0 이라 기본 얼굴 선택이 안 붙는다.
-                                            // 재조합은 ~50ms 라 그때마다 잠그면 클릭이 씹힌다
+                                            // 얼굴 재조합은 ~70ms 라 그때마다 잠그면 클릭이 씹힌다
                                             // → 실제로 오래 걸릴 때(skyBusySlow)만 비활성.
                                             enabled: controller.imagePath !== "" && !win.skyBusySlow
                                                      && !controller.faceScanning
@@ -6216,7 +6421,7 @@ ApplicationWindow {
                             SkySlider { id: skySatSlider;     host: win; label: "Saturation" }
                             Label {
                                 Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                text: "Check one or more classes above to build the mask; the sliders apply only to the masked region. Applies to both preview and export."
+                                text: "Check classes (Scene / Face) or set a distance range (Depth) above to build the mask; the sliders apply only to the masked region. Applies to both preview and export."
                                 color: "#888"; font.pixelSize: 11
                             }
                         }

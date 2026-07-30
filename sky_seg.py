@@ -23,7 +23,7 @@ import threading
 import urllib.request
 
 import numpy as np
-from scipy.ndimage import binary_fill_holes, uniform_filter, zoom
+from scipy.ndimage import binary_fill_holes, zoom
 
 import app_dirs
 
@@ -245,18 +245,34 @@ def _smoothstep(e0: float, e1: float, x: np.ndarray) -> np.ndarray:
 
 
 def _guided_filter(guide: np.ndarray, src: np.ndarray, radius: int, eps: float) -> np.ndarray:
-    """He et al. guided filter. guide/src 는 [0,1] (H,W). 가이드 엣지에 src 를 밀착시킨다."""
+    """He et al. guided filter. guide/src 는 [0,1] (H,W). 가이드 엣지에 src 를 밀착시킨다.
+
+    박스 평균은 **cv2.boxFilter** 로 한다 — scipy `uniform_filter` 는 프록시 전체(2560×1709,
+    r=20)에서 610ms 인데 cv2 는 165ms(**3.7×**)다. 경계 규칙은 같지만(scipy mode='reflect' ==
+    cv2 BORDER_REFLECT) **비트 동일은 아니다** — 분리형 running-sum 의 누산 순서가 달라
+    float32 오차가 남는다. 실측 max|diff|: 실사용 반경(r≥4) **1.2e-07**, r=1 에서 1.9e-06.
+    소비측 양자화(마스크·t-맵 Grayscale8 = 3.9e-03, nrBase 16bit = 1.5e-05)보다 훨씬 작아
+    표현 가능한 정밀도 아래다. (앱에서 r=1 은 발생하지 않는다 — NR_RADIUS=4, 하늘 r=20, haze r≥4)
+
+    이 함수는 하늘/장면 마스크(compose_mask)·디헤이즈 t-맵(haze)·휘도 NR(프리뷰 main / **export
+    pipeline**)이 공유하므로, 한 곳만 바꿔도 프리뷰=Export 정합이 유지된다(양쪽이 함께 바뀐다).
+    """
+    import cv2
     radius = max(1, int(radius))
-    size = 2 * radius + 1
-    mean_g = uniform_filter(guide, size)
-    mean_s = uniform_filter(src, size)
-    mean_gs = uniform_filter(guide * src, size)
-    cov_gs = mean_gs - mean_g * mean_s
-    mean_gg = uniform_filter(guide * guide, size)
-    var_g = mean_gg - mean_g * mean_g
+    k = (2 * radius + 1,) * 2
+    # cv2 는 float32 연속 배열을 요구한다(float64 가 오면 조용히 정밀도/형이 달라진다).
+    g = np.ascontiguousarray(guide, dtype=np.float32)
+    s = np.ascontiguousarray(src, dtype=np.float32)
+
+    def box(x):
+        return cv2.boxFilter(x, -1, k, normalize=True, borderType=cv2.BORDER_REFLECT)
+
+    mean_g, mean_s = box(g), box(s)
+    cov_gs = box(g * s) - mean_g * mean_s
+    var_g = box(g * g) - mean_g * mean_g
     a = cov_gs / (var_g + eps)
     b = mean_s - a * mean_g
-    return uniform_filter(a, size) * guide + uniform_filter(b, size)
+    return box(a) * g + box(b)
 
 
 def segment_sky(rgb_u8: np.ndarray, refine: bool = True, fill_holes: bool = True) -> np.ndarray:
