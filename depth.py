@@ -34,6 +34,9 @@ import urllib.request
 import numpy as np
 
 import app_dirs
+# 머신 전역 DML 직렬화 락 — NAFNet 타일 추론과 이 모듈의 추론이 **동시에** DirectML 에
+# 제출되면 NVIDIA 드라이버(nvwgf2umx.dll)가 죽는 것이 재현됨(정의부 주석 참조).
+from ai_denoise import GPU_LOCK
 from face_seg import _resize          # cv2 판 리사이즈(scipy zoom 보다 빠름 — face_seg 주석 참조)
 from sky_seg import _MEAN, _STD, _guided_filter
 
@@ -202,7 +205,10 @@ def _session():
             if _session_obj is None:
                 import onnxruntime as ort
                 ensure_model()
-                sess = ort.InferenceSession(MODEL_PATH, providers=_providers(ort))
+                # 세션 생성(=DML 그래프/셰이더 컴파일, 실측 ~3.6s)도 GPU 제출 — NAFNet 타일과
+                # 겹치면 드라이버 크래시(GPU_LOCK 정의부 주석). CPU 폴백이어도 생성은 1회라 무해.
+                with GPU_LOCK:
+                    sess = ort.InferenceSession(MODEL_PATH, providers=_providers(ort))
                 used = sess.get_providers()
                 _provider_label = "CPU" if used[:1] == ["CPUExecutionProvider"] else "GPU"
                 _session_obj = sess
@@ -242,8 +248,12 @@ def infer_distance(rgb_u8: np.ndarray, guide_luma=None) -> np.ndarray:
     blob = _preprocess(rgb_u8)
     if len(inp.shape) == 5:
         blob = blob[:, None]
-    z = np.squeeze(np.asarray(sess.run(["predicted_depth"], {inp.name: blob})[0],
-                              dtype=np.float32))
+    if provider_label() == "GPU":       # DML 동시 제출 = 드라이버 크래시(GPU_LOCK 주석)
+        with GPU_LOCK:
+            out = sess.run(["predicted_depth"], {inp.name: blob})
+    else:
+        out = sess.run(["predicted_depth"], {inp.name: blob})
+    z = np.squeeze(np.asarray(out[0], dtype=np.float32))
 
     lz = np.log(np.maximum(z, LOG_FLOOR))
     lo, hi = np.percentile(lz, PCT_LO), np.percentile(lz, PCT_HI)

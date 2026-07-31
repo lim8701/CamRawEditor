@@ -19,6 +19,22 @@ GPU 프로빙 캐시(`ai_denoise_device.json`)도 동일. 복사가 끝난 뒤 �
 
 앱을 삭제해도 사용자 디렉터리의 모델은 남는다 — 완전 제거하려면 위 경로를 함께 삭제.
 
+## ⚠️ GPU(DirectML) 추론은 반드시 직렬화 (`ai_denoise.GPU_LOCK`)
+
+서로 다른 ORT 세션이 DirectML 에 **동시에** 제출하면 NVIDIA 드라이버(nvwgf2umx.dll)가
+access violation 으로 프로세스째 죽는다. DSCF1962(aiNr=True + depth 마스크 사이드카) 로드에서
+100% 재현됐고, 헤드리스(offscreen)에서도 동일 — Qt 렌더링과 무관한 **DML↔DML 경합**이다
+(조합 분리 실측: NAFNet 단독 OK · depth 단독 OK · 둘 동시 = 크래시).
+
+규칙: **GPU EP 세션의 `run()` 과 세션 생성(=DML 셰이더 컴파일)은 `ai_denoise.GPU_LOCK` 안에서만.**
+- NAFNet: 타일(GPU 146ms)마다 잡았다 놓아 다른 추론과 인터리브
+- depth: 추론 1회(~0.5s)와 세션 생성(~3.6s)을 각각 락 안에서
+- Florence-2: 스텝(비전/인코더/디코더 토큰)마다 락 — CPU 강제 배치(cpu=True)는 잡지 않음
+- CPU 세션은 잡지 않는다(경합 없음 + CPU 타일 ~5s 가 GPU 작업을 막으면 안 됨)
+
+새 ONNX 모델을 추가할 때 GPU EP 를 쓴다면 같은 규칙을 따라야 한다. 과거 주간 빈도로 있던
+동일 시그니처 크래시(2026-07-20/23, DirectML 로드 상태)도 같은 기전으로 추정된다.
+
 ## 하늘 세그멘테이션 (Sky segmentation)
 
 - **모델**: SegFormer-B2, ADE20K 150클래스 시맨틱 세그멘테이션 (하늘 = 클래스 2)

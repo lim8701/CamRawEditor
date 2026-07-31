@@ -83,6 +83,16 @@ _LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
 _session_obj = None
 _provider_label = None      # 세션 생성 후 실제 사용 EP: "GPU" | "CPU"
 
+# ── 머신 전역 GPU 추론 직렬화 락 ─────────────────────────────────────────────
+# 서로 다른 ORT 세션이 DirectML 에 **동시에** 제출하면 NVIDIA 드라이버(nvwgf2umx.dll)가
+# access violation 으로 프로세스째 죽는다 — DSCF1962(aiNr=True + depth 마스크) 로드에서
+# 100% 재현됐고, 헤드리스(offscreen)에서도 동일해 Qt 렌더링과 무관한 DML↔DML 경합으로
+# 확정(조합 분리: NAFNet 단독 OK · depth 단독 OK · 둘 동시 = 크래시).
+# 규칙: **GPU EP 세션의 run()/생성(셰이더 컴파일)** 은 이 락 안에서만. NAFNet 은 타일
+# (GPU 146ms)마다 잡았다 놓아 다른 추론(depth ~0.5s, Florence-2 스텝)과 인터리브된다.
+# CPU 세션은 잡지 않는다 — 경합이 없고, CPU 타일(~5s)이 GPU 작업을 막으면 안 된다.
+GPU_LOCK = threading.Lock()
+
 
 class Cancelled(Exception):
     """타일 루프 중단(이미지 전환/토글 해제). 호출측이 잡아서 조용히 폐기."""
@@ -203,19 +213,22 @@ def _probe_dml_device(ort, fresh=False):
             # 오류로 오인하므로 프로빙 중에는 출력을 삼킨다(결과는 아래서 직접 판정).
             import contextlib
             import io
-            with contextlib.redirect_stdout(io.StringIO()), \
-                    contextlib.redirect_stderr(io.StringIO()):
-                s = ort.InferenceSession(
-                    MODEL_PATH, providers=[("DmlExecutionProvider", {"device_id": dev})])
-            # 존재하지 않는 device_id 는 예외 대신 조용히 CPU 로 폴백됨(ORT 동작) → 감지해 중단
-            if s.get_providers()[0] != "DmlExecutionProvider":
-                del s
-                break
-            inp = s.get_inputs()[0].name
-            s.run(None, {inp: x})                       # 워밍업(컴파일)
-            t0 = time.perf_counter()
-            s.run(None, {inp: x})
-            dt = time.perf_counter() - t0
+            # 프로빙(세션 생성=셰이더 컴파일 + 워밍업 run)도 DML 제출 → GPU_LOCK 안에서
+            # (다른 모듈의 GPU 추론과 겹치면 드라이버 크래시 — GPU_LOCK 주석 참조).
+            with GPU_LOCK:
+                with contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    s = ort.InferenceSession(
+                        MODEL_PATH, providers=[("DmlExecutionProvider", {"device_id": dev})])
+                # 존재하지 않는 device_id 는 예외 대신 조용히 CPU 로 폴백됨(ORT 동작) → 감지해 중단
+                if s.get_providers()[0] != "DmlExecutionProvider":
+                    del s
+                    break
+                inp = s.get_inputs()[0].name
+                s.run(None, {inp: x})                       # 워밍업(컴파일)
+                t0 = time.perf_counter()
+                s.run(None, {inp: x})
+                dt = time.perf_counter() - t0
             if dt < best_t:
                 best, best_t = dev, dt
             del s
@@ -257,7 +270,9 @@ def _session():
                         break
                     # 무효 device 면 ORT 가 "EP Error" 블록을 출력하며 CPU 폴백 —
                     # 노이즈는 삼키고 아래서 실제 EP 를 판정해 명확한 메시지로 처리.
-                    with contextlib.redirect_stdout(io.StringIO()), \
+                    # 세션 생성(=DML 그래프/셰이더 컴파일)도 GPU_LOCK 안에서 — GPU_LOCK 주석 참조.
+                    with GPU_LOCK, \
+                            contextlib.redirect_stdout(io.StringIO()), \
                             contextlib.redirect_stderr(io.StringIO()):
                         s = ort.InferenceSession(
                             MODEL_PATH,
@@ -332,6 +347,7 @@ def denoise_rgb(rgb: np.ndarray, progress=None, cancel=None,
     """
     sess = _session()
     inp = sess.get_inputs()[0].name
+    on_gpu = _provider_label == "GPU"      # 타일 run 을 GPU_LOCK 으로 감쌀지(CPU 는 경합 없음)
     h, w = rgb.shape[:2]
     # TILE 미만이면 패딩(끝에 크롭). 512 가 곧 최소 처리 단위.
     # mode="symmetric"(경계 픽셀 포함 대칭) — 짧은 변에서 pad 폭이 변보다 커도 안전하고
@@ -362,7 +378,11 @@ def denoise_rgb(rgb: np.ndarray, progress=None, cancel=None,
                 time.sleep(0.05)
             tile = src[y0:y0 + TILE, x0:x0 + TILE]
             x = np.ascontiguousarray(tile.transpose(2, 0, 1)[None], dtype=np.float32)
-            out = sess.run(None, {inp: x})[0][0].transpose(1, 2, 0)   # (TILE, TILE, 3)
+            if on_gpu:                              # DML 동시 제출 = 드라이버 크래시(GPU_LOCK 주석)
+                with GPU_LOCK:
+                    out = sess.run(None, {inp: x})[0][0].transpose(1, 2, 0)
+            else:
+                out = sess.run(None, {inp: x})[0][0].transpose(1, 2, 0)   # (TILE, TILE, 3)
             if float(np.abs(out - tile).mean()) > DIVERGE_MEAN:
                 out = tile          # 모델 발산(극암부 타일) → 원본 유지(DIVERGE_MEAN 주석 참조)
             acc[y0:y0 + TILE, x0:x0 + TILE] += out * wt[..., None]

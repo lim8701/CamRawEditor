@@ -260,7 +260,13 @@ def _load_state(cpu: bool = False):
         prov = ["CPUExecutionProvider"] if cpu else _providers(ort)
 
         def sess(name):
-            return ort.InferenceSession(_path(name), opts, providers=prov)
+            if cpu:
+                return ort.InferenceSession(_path(name), opts, providers=prov)
+            # GPU 세션 생성(=DML 그래프/셰이더 컴파일)도 GPU 제출 — 다른 모듈의 DML 추론과
+            # 겹치면 드라이버 크래시(ai_denoise.GPU_LOCK 정의부 주석).
+            from ai_denoise import GPU_LOCK
+            with GPU_LOCK:
+                return ort.InferenceSession(_path(name), opts, providers=prov)
 
         sessions = {
             "vis": sess("florence2_vision_encoder.onnx"),
@@ -306,28 +312,42 @@ def generate(rgb: np.ndarray, task: str = "<CAPTION>", max_new_tokens: int = 120
     forced_bos = gen.get("forced_bos_token_id")          # 공식 설정: 첫 토큰 = <s>
     ngram_n = int(gen.get("no_repeat_ngram_size", 0))    # 공식 설정: 3(반복 퇴화 방지)
 
+    # GPU 세션의 run 은 머신 전역 GPU_LOCK 안에서 — 서로 다른 ORT 세션의 DML 동시 제출은
+    # NVIDIA 드라이버 크래시가 재현됨(ai_denoise.GPU_LOCK 정의부 주석). 스텝 단위로 잡았다
+    # 놓아 NAFNet 타일(146ms)·depth 추론과 인터리브된다. CPU 세션(cpu=True 배치)은 경합이
+    # 없으므로 잡지 않는다(잡으면 배치 인덱싱이 GPU 작업을 불필요하게 막는다).
+    if cpu:
+        import contextlib
+        _lk = contextlib.nullcontext()
+    else:
+        from ai_denoise import GPU_LOCK as _lk
+
     # 전처리: ImageNet 정규화 (preprocessor_config 기본값)
     arr = rgb.astype(np.float32) / 255.0
     arr = (arr - np.array([0.485, 0.456, 0.406], np.float32)) \
         / np.array([0.229, 0.224, 0.225], np.float32)
     px = arr.transpose(2, 0, 1)[None]
 
-    img_feat = vis.run(None, {"pixel_values": px})[0]
+    with _lk:
+        img_feat = vis.run(None, {"pixel_values": px})[0]
     ids = [bos] + bpe.encode(prompt) + [eos]
-    txt_emb = emb.run(None, {"input_ids": np.array([ids], np.int64)})[0]
+    with _lk:
+        txt_emb = emb.run(None, {"input_ids": np.array([ids], np.int64)})[0]
     merged = np.concatenate([img_feat, txt_emb], axis=1).astype(np.float32)
     mask = np.ones(merged.shape[:2], np.int64)
-    enc_out = enc.run(None, {"inputs_embeds": merged, "attention_mask": mask})[0]
+    with _lk:
+        enc_out = enc.run(None, {"inputs_embeds": merged, "attention_mask": mask})[0]
 
     dec_ids = [dec_start]
     for step in range(max_new_tokens):
         if step == 0 and forced_bos is not None:
             dec_ids.append(int(forced_bos))              # forced_bos_token_id
             continue
-        d_emb = emb.run(None, {"input_ids": np.array([dec_ids], np.int64)})[0]
-        logits = dec.run(None, {"inputs_embeds": d_emb,
-                                "encoder_hidden_states": enc_out,
-                                "encoder_attention_mask": mask})[0]
+        with _lk:
+            d_emb = emb.run(None, {"input_ids": np.array([dec_ids], np.int64)})[0]
+            logits = dec.run(None, {"inputs_embeds": d_emb,
+                                    "encoder_hidden_states": enc_out,
+                                    "encoder_attention_mask": mask})[0]
         row = logits[0, -1]
         # no_repeat_ngram: 기존 n-gram 을 반복하게 될 토큰 금지(문단 반복 퇴화 방지)
         if ngram_n and len(dec_ids) >= ngram_n:
