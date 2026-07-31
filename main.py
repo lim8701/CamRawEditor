@@ -49,7 +49,7 @@ BASE = app_base()
 SHADERS_DIR = BASE / "shaders"
 SHADER_NAMES = ["adjust.frag", "blur.frag", "convert.frag", "displaycm.frag", "stamp.frag"]
 LUTS_DIR = BASE / "luts"
-APP_VERSION = "1.6.3"   # SemVer(MAJOR.MINOR.PATCH). 올릴 때 packaging/version_info.txt(exe 버전 리소스)도 수동으로 맞출 것
+APP_VERSION = "1.7.0"   # SemVer(MAJOR.MINOR.PATCH). 올릴 때 packaging/version_info.txt(exe 버전 리소스)도 수동으로 맞출 것
 
 # 업데이트 확인: GitHub 릴리스 목록(공개 repo, 무인증 60회/시간 — 시작 시 1회면 충분)
 _RELEASES_API = "https://api.github.com/repos/lim8701/FilmRawstery/releases"
