@@ -901,6 +901,7 @@ ApplicationWindow {
         win.batchCancel = false; win.batchDestUrl = destUrl; win.batchExt = ext
         win.batchResult = ""
         win.batchActive = true
+        controller.setKeepAwake(true)    // 배치 전 구간(로드/마스킹 갭 포함) 시스템 슬립 방지
         win.batchLoadNext()
     }
     function batchLoadNext() {
@@ -912,6 +913,7 @@ ApplicationWindow {
         var attempted = win.batchIndex
         var saved = attempted - win.batchFails
         win.batchActive = false; win.batchPhase = 0
+        controller.setKeepAwake(false)
         win.batchResult = "Batch: " + saved + " saved"
                         + (win.batchFails > 0 ? ", " + win.batchFails + " failed" : "")
                         + (win.batchCancel ? " (cancelled)" : "")
@@ -1020,6 +1022,7 @@ ApplicationWindow {
         win.wallCancel = false; win.wallDestUrl = destUrl; win.wallResult = ""
         controller.wallpaperClearPanels()
         win.wallActive = true
+        controller.setKeepAwake(true)    // 배경화면 실행 전 구간 시스템 슬립 방지
         win.wallLoadNext()
     }
     function wallLoadNext() {
@@ -1037,11 +1040,13 @@ ApplicationWindow {
     }
     function wallAbort(why) {
         win.wallActive = false; win.wallPhase = 0
+        controller.setKeepAwake(false)
         controller.wallpaperClearPanels()
         win.wallResult = "Wallpaper " + why
     }
     function wallFinish(ok) {
         win.wallActive = false; win.wallPhase = 0
+        controller.setKeepAwake(false)
         controller.wallpaperClearPanels()                 // 패널 배열 메모리 해제
         win.wallResult = ok ? "Wallpaper saved" : ("Wallpaper failed (" + controller.exportStatus + ")")
     }
@@ -6630,7 +6635,11 @@ ApplicationWindow {
                                         clip: true
                                         Image {
                                             readonly property string p: win.wallSlots[parent.index]
-                                            source: p !== "" ? "image://thumb/" + encodeURIComponent(p) : ""
+                                            // wallthumb = 사이드카 지오메트리(크롭/회전/원근) 적용 썸네일
+                                            // → 오프셋 조절 기준이 실제 export 프레이밍과 일치.
+                                            // ?r= 은 편집 저장 시 URL 을 바꿔 QML 이미지 캐시 무효화.
+                                            source: p !== "" ? "image://wallthumb/" + encodeURIComponent(p)
+                                                               + "?r=" + controller.editsRevision : ""
                                             sourceSize.width: 256
                                             asynchronous: true
                                             fillMode: Image.Stretch
@@ -6688,7 +6697,8 @@ ApplicationWindow {
                                                     asynchronous: true
                                                     sourceSize.width: 96
                                                     source: wallCard.slotPath !== ""
-                                                            ? "image://thumb/" + encodeURIComponent(wallCard.slotPath) : ""
+                                                            ? "image://wallthumb/" + encodeURIComponent(wallCard.slotPath)
+                                                              + "?r=" + controller.editsRevision : ""
                                                 }
                                                 Text {
                                                     anchors.centerIn: parent
@@ -6718,12 +6728,25 @@ ApplicationWindow {
                                                     color: "#E0A226"; font.pixelSize: 10
                                                 }
                                             }
-                                            Button {
+                                            // ✕ 는 flat Button 글리프가 어두워 안 보임 → 검색창 ✕ 와 같은
+                                            // Rectangle+Text 패턴(흰 글리프, 호버 배경)으로 직접 구성.
+                                            Rectangle {
                                                 visible: wallCard.slotPath !== ""
-                                                text: "✕"; flat: true
-                                                implicitWidth: 26; implicitHeight: 24
-                                                ToolTip.text: "Clear this slot"; ToolTip.visible: hovered; ToolTip.delay: 500
-                                                onClicked: win.wallClearSlot(wallCard.index)
+                                                width: 24; height: 24; radius: 12
+                                                color: wallClrHover.hovered ? "#3a3f4b" : "transparent"
+                                                Text {
+                                                    anchors.centerIn: parent
+                                                    text: "✕"; color: "#e6e6e6"; font.pixelSize: 12
+                                                }
+                                                HoverHandler { id: wallClrHover }
+                                                ToolTip.visible: wallClrHover.hovered
+                                                ToolTip.delay: 500
+                                                ToolTip.text: "Clear this slot"
+                                                MouseArea {
+                                                    anchors.fill: parent
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: win.wallClearSlot(wallCard.index)
+                                                }
                                             }
                                         }
 

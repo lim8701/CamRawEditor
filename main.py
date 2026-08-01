@@ -86,6 +86,24 @@ FEATURE_FLAGS = _feature_flags()
 # Wallpaper 패널(3분할 트립틱 합성): 개인용 — 릴리즈에선 .env 부재로 자동 숨김
 WALLPAPER_PANEL = _flag_on(FEATURE_FLAGS, "WALLPAPER_PANEL")
 
+# ---------- 시스템 슬립 방지 (Windows SetThreadExecutionState) ----------
+_ES_CONTINUOUS = 0x80000000
+_ES_SYSTEM_REQUIRED = 0x00000001
+
+
+def _set_keep_awake(on: bool) -> None:
+    """export 류 긴 작업 동안 Windows 시스템 슬립 방지(화면 꺼짐/노트북 덮개 정책은 그대로).
+    ⚠️ES_CONTINUOUS 상태는 '호출한 스레드'에 귀속(스레드 종료 시 자동 해제)이라 반드시
+    메인 스레드에서만 호출할 것 — 워커에서는 Controller._keepAwakeSig 로 큐잉."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        state = _ES_CONTINUOUS | (_ES_SYSTEM_REQUIRED if on else 0)
+        ctypes.windll.kernel32.SetThreadExecutionState(state)
+    except Exception:
+        pass                            # 실패해도 기능 자체는 무영향(슬립만 못 막음)
+
 # 업데이트 확인: GitHub 릴리스 목록(공개 repo, 무인증 60회/시간 — 시작 시 1회면 충분)
 _RELEASES_API = "https://api.github.com/repos/lim8701/FilmRawstery/releases"
 
@@ -719,6 +737,74 @@ class PreviewProvider(QQuickImageProvider):
             return QImage()
 
 
+class WallThumbProvider(QQuickImageProvider):
+    """Wallpaper 패널 썸네일: 내장 프리뷰 JPEG 에 **사이드카 지오메트리**(플립/90°/스트레이튼/
+    원근/크롭)를 적용해 제공 — export(render_full→_apply_geometry)와 같은 프레이밍이라
+    패널 목업 프리뷰의 오프셋 조절 기준이 실제 결과와 일치한다. 톤/색 편집은 미적용
+    (프레이밍 판단에 불필요 — 지오메트리만 pipeline._apply_geometry 로 재현).
+    URL: 'image://wallthumb/<percent-encoded-path>?r=<editsRevision>' — r 은 QML Image
+    URL 캐시 무효화용 쿼리이고, 내부 캐시는 사이드카 mtime 을 키에 포함해 따로 무효화."""
+
+    _CACHE_MAX = 8
+    _GEO_KEYS = ("flipH", "flipV", "quarterTurns", "rotateAngle",
+                 "cropX", "cropY", "cropW", "cropH", "geoV", "geoH", "geoScale")
+
+    def __init__(self):
+        super().__init__(QQuickImageProvider.ImageType.Image,
+                         QQuickImageProvider.Flag.ForceAsynchronousImageLoading)
+        self._cache = OrderedDict()      # (path, edge, edits_mtime) -> QImage (LRU)
+        self._lock = threading.Lock()
+
+    def requestImage(self, image_id, size, requested_size):  # noqa: N802 (Qt API)
+        raw = image_id.split("?", 1)[0]               # 쿼리스트링(?r=) 제거
+        path = QUrl.fromPercentEncoding(raw.encode("utf-8"))
+        edge = (requested_size.width()
+                if (requested_size is not None and requested_size.width() > 0) else 512)
+        p = Path(path)
+        ep = Controller._edits_path(str(p.parent), p.name)
+        try:
+            mtime = ep.stat().st_mtime_ns if ep.is_file() else 0
+        except OSError:
+            mtime = 0
+        key = (path, edge, mtime)
+        with self._lock:
+            cached = self._cache.get(key)
+            if cached is not None and not cached.isNull():
+                self._cache.move_to_end(key)
+                return cached
+        img = self._make(path, edge)
+        with self._lock:
+            self._cache[key] = img
+            self._cache.move_to_end(key)
+            while len(self._cache) > self._CACHE_MAX:
+                self._cache.popitem(last=False)
+        return img
+
+    @staticmethod
+    def _make(path, edge) -> QImage:
+        img = PreviewProvider._make_preview(path, edge)
+        if img.isNull():
+            return img
+        try:
+            e = Controller._read_edits(path)
+            if not any(k in e for k in WallThumbProvider._GEO_KEYS):
+                return img                            # 사이드카 없음 → 원본 프레이밍 그대로
+            import numpy as np
+            import pipeline
+            img = img.convertToFormat(QImage.Format.Format_RGB888)
+            w, h, bpl = img.width(), img.height(), img.bytesPerLine()
+            arr = np.frombuffer(img.constBits(), np.uint8, h * bpl).reshape(h, bpl)
+            arr = np.ascontiguousarray(arr[:, :w * 3].reshape(h, w, 3))
+            gp = dict(e)
+            gp["geoScalePct"] = float(e.get("geoScale", 100.0))   # 사이드카 키 → export 키
+            arr = np.ascontiguousarray(pipeline._apply_geometry(arr, gp))
+            h2, w2 = arr.shape[:2]
+            return QImage(arr.data, w2, h2, 3 * w2,
+                          QImage.Format.Format_RGB888).copy()
+        except Exception:
+            return img                                # 지오메트리 실패 시 원본 썸네일 폴백
+
+
 class Controller(QObject):
     imageChanged = Signal()
     asShotKelvinChanged = Signal()
@@ -772,6 +858,7 @@ class Controller(QObject):
     # 검출만 끝난 걸 '마스크 준비 완료'로 오해해 마스크 없이 저장되는 사고가 난다.
     _facesReady = Signal(object)
     _exportProgressSig = Signal(float)  # (내부) export 워커 -> 메인 스레드 진행률(0..1)
+    _keepAwakeSig = Signal(bool)  # (내부) export 워커 -> 메인 스레드 슬립 방지 해제(스레드 귀속 API)
     _hazeReady = Signal(object)  # (내부) 디헤이즈 추정 워커 -> 메인 스레드 (seq, (t, A, conf))
     _nrReady = Signal(object)    # (내부) NR 베이스 워커 -> 메인 스레드 (seq, 디노이즈드 luma)
     _aiNrStatusSig = Signal(object)  # (내부) AI NR 워커 -> 메인 스레드 (seq, 상태 문구)
@@ -892,6 +979,11 @@ class Controller(QObject):
         self._export_progress = 0.0   # CPU export 진행률(0..1). 워커가 _exportProgressSig 로 갱신.
         self._exporting = False
         self._wall_panels = [None, None, None]   # 배경화면 패널 렌더 결과(uint8) 슬롯별 보관
+        # 슬립 방지 2계층: export=단일 렌더 구간(Python), ui=배치/배경화면 전체 구간(QML 상태머신).
+        # OR 로 합산 — 배치 중 파일 사이 로드/마스킹 갭에서도 ui 홀드가 유지돼 끊기지 않는다.
+        self._keep_awake_export = False
+        self._keep_awake_ui = False
+        self._keep_awake_cur = False
         self._exif_fields = []      # [{"label","value"}, ...] 패널용
         self._exif_summary = ""     # 오버레이용 2줄 요약
         self._stamp_text = ""       # 날짜 스탬프 텍스트 ('YY MM DD)
@@ -954,6 +1046,7 @@ class Controller(QObject):
         self._modelDlSig.connect(self._on_model_dl)
         self._facesReady.connect(self._on_faces_ready)
         self._exportProgressSig.connect(self._on_export_progress)
+        self._keepAwakeSig.connect(self._apply_keep_awake)
         self._hazeReady.connect(self._on_haze_ready)
         self._nrReady.connect(self._on_nr_ready)
         self._aiNrStatusSig.connect(self._on_ai_nr_status)
@@ -1720,6 +1813,26 @@ class Controller(QObject):
         p = Path(self._path)
         return QUrl.fromLocalFile(str(p.with_name(p.stem + "_exported.png")))
 
+    # ---------- 슬립 방지: export/배치 중 Windows 시스템 슬립으로 작업이 멈추는 것 방지 ----------
+    def _update_keep_awake(self) -> None:
+        """메인 스레드 전용(SetThreadExecutionState 가 스레드 귀속). 상태 변화 시에만 호출."""
+        want = self._keep_awake_export or self._keep_awake_ui
+        if want != self._keep_awake_cur:
+            self._keep_awake_cur = want
+            _set_keep_awake(want)
+
+    @Slot(bool)
+    def _apply_keep_awake(self, on: bool) -> None:
+        """단일 렌더 구간 홀드. 워커 finally 는 _keepAwakeSig.emit(False) 로 여기에 큐잉."""
+        self._keep_awake_export = on
+        self._update_keep_awake()
+
+    @Slot(bool)
+    def setKeepAwake(self, on: bool) -> None:  # noqa: N802 (QML 슬롯)
+        """배치/배경화면 상태머신용 — 실행 전체 구간(로드/마스킹 갭 포함) 홀드."""
+        self._keep_awake_ui = bool(on)
+        self._update_keep_awake()
+
     @Slot(QUrl, "QVariantMap")
     def exportImage(self, file_url: QUrl, params) -> None:  # noqa: N802 (QML 슬롯)
         """현재 조정값으로 풀해상도 현상 후 파일 저장 (백그라운드 스레드)."""
@@ -1734,6 +1847,7 @@ class Controller(QObject):
         sky_masks = list(self._layer_masks)   # 레이어별 마스크 스냅샷(export 는 p["maskLayers"] 조정값과 zip)
         haze = (self._haze_t, list(self._haze_A), self._haze_conf)   # DCP 추정 스냅샷(동일 이유)
         self._exporting = True
+        self._apply_keep_awake(True)
         self._export_progress = 0.0
         self.exportProgressChanged.emit()
         self._set_export_status("Exporting… (full resolution, may take tens of seconds)")
@@ -1769,6 +1883,7 @@ class Controller(QObject):
             # 를 보는 순간 exportStatus 가 아직 "Exporting…" 이라 저장된 파일을 실패로 오카운트함.
             self._set_export_status(msg)   # 워커 스레드 -> 시그널은 메인으로 큐잉됨
             self._exporting = False
+            self._keepAwakeSig.emit(False)   # 슬립 방지 해제(스레드 귀속 API → 메인으로 큐잉)
         print(f"[export] {msg}")
 
     # ---------- Wallpaper: 3분할 트립틱 합성 export ----------
@@ -1787,6 +1902,7 @@ class Controller(QObject):
         sky_masks = list(self._layer_masks)
         haze = (self._haze_t, list(self._haze_A), self._haze_conf)
         self._exporting = True
+        self._apply_keep_awake(True)
         self._export_progress = 0.0
         self.exportProgressChanged.emit()
         self._set_export_status(f"Rendering wallpaper panel {slot + 1}/3…")
@@ -1803,6 +1919,7 @@ class Controller(QObject):
             self._exportProgressSig.emit(0.0)
             self._set_export_status(msg)           # 반드시 _exporting 해제보다 먼저(_do_export 참조)
             self._exporting = False
+            self._keepAwakeSig.emit(False)
 
     @Slot()
     def wallpaperClearPanels(self) -> None:  # noqa: N802 (QML 슬롯)
@@ -1821,6 +1938,7 @@ class Controller(QObject):
         path = file_url.toLocalFile()
         o = {k: opts[k] for k in opts}
         self._exporting = True
+        self._apply_keep_awake(True)
         self._export_progress = 0.0
         self.exportProgressChanged.emit()
         self._set_export_status("Composing wallpaper…")
@@ -1840,6 +1958,7 @@ class Controller(QObject):
         finally:
             self._set_export_status(msg)
             self._exporting = False
+            self._keepAwakeSig.emit(False)
         print(f"[wallpaper] {msg}")
 
     @Slot(int, int, result=QUrl)
@@ -1860,6 +1979,7 @@ class Controller(QObject):
         self._gpu_path = file_url.toLocalFile()
         self._gpu_params = {k: params[k] for k in params}
         self._exporting = True
+        self._apply_keep_awake(True)
         self._export_progress = 0.0   # GPU 는 진행률 콜백 없음 → 0 유지(오버레이는 인디터미닛 표시)
         self.exportProgressChanged.emit()
         self._set_export_status("GPU exporting… (full-resolution decode)")
@@ -1880,6 +2000,7 @@ class Controller(QObject):
         """메인 스레드: 풀해상도 src 준비됨 → URL 갱신(QML Image 재로드) + grab 트리거."""
         if not ok:
             self._exporting = False
+            self._apply_keep_awake(False)
             self._set_export_status("GPU export failed (decode)")
             # 디코드 실패는 QML 이 감지 못 함(fullChanged/fullReady 미발화 → srcFull 상태변화
             # 없음). 명시적으로 로더 해제 신호를 보내지 않으면 gpuExportLoader 가 active=true
@@ -1900,6 +2021,7 @@ class Controller(QObject):
         if not self._exporting:
             return
         self._exporting = False
+        self._apply_keep_awake(False)
         self._set_export_status("GPU export failed (image load)")
         if self._full_provider is not None:
             self._full_provider.clear()
@@ -1939,6 +2061,7 @@ class Controller(QObject):
             msg = f"Failed: {exc}"
         finally:
             self._exporting = False
+            self._apply_keep_awake(False)   # QML grab 슬롯 = 메인 스레드 → 직접 호출
             if self._full_provider is not None:
                 self._full_provider.clear()    # 풀해상도 메모리 해제
         print(f"[export-gpu] {msg}")
@@ -3903,6 +4026,9 @@ def main() -> int:
 
     preview_provider = PreviewProvider()
     engine.addImageProvider("preview", preview_provider)
+
+    wallthumb_provider = WallThumbProvider()
+    engine.addImageProvider("wallthumb", wallthumb_provider)
 
     full_provider = RawFullProvider()
     engine.addImageProvider("rawfull", full_provider)
