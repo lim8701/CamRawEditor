@@ -51,6 +51,41 @@ SHADER_NAMES = ["adjust.frag", "blur.frag", "convert.frag", "displaycm.frag", "s
 LUTS_DIR = BASE / "luts"
 APP_VERSION = "1.7.0"   # SemVer(MAJOR.MINOR.PATCH). 올릴 때 packaging/version_info.txt(exe 버전 리소스)도 수동으로 맞출 것
 
+
+def _feature_flags() -> dict:
+    """개인용 기능 플래그: .env 파일의 KEY=VALUE (한 줄씩, '#' 주석 허용).
+
+    위치: dev=소스 폴더, frozen=exe 옆 폴더(_MEIPASS 아님 — 사용자가 릴리즈 빌드에서도
+    .env 를 exe 옆에 두면 켤 수 있게). 배포 spec 은 .env 를 번들하지 않으므로 릴리즈
+    기본값은 '파일 없음'=모든 플래그 꺼짐. OS 환경변수 FILMRAWSTERY_<KEY> 가 파일보다 우선."""
+    flags: dict[str, str] = {}
+    base = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) \
+        else Path(__file__).resolve().parent
+    try:
+        p = base / ".env"
+        if p.is_file():
+            for line in p.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                flags[k.strip()] = v.strip()
+    except Exception:
+        pass                            # 플래그 파일 문제는 조용히 무시(기능 숨김이 기본)
+    for k, v in os.environ.items():
+        if k.startswith("FILMRAWSTERY_"):
+            flags[k[len("FILMRAWSTERY_"):]] = v
+    return flags
+
+
+def _flag_on(flags: dict, key: str) -> bool:
+    return flags.get(key, "").strip().lower() in ("1", "true", "on", "yes")
+
+
+FEATURE_FLAGS = _feature_flags()
+# Wallpaper 패널(3분할 트립틱 합성): 개인용 — 릴리즈에선 .env 부재로 자동 숨김
+WALLPAPER_PANEL = _flag_on(FEATURE_FLAGS, "WALLPAPER_PANEL")
+
 # 업데이트 확인: GitHub 릴리스 목록(공개 repo, 무인증 60회/시간 — 시작 시 1회면 충분)
 _RELEASES_API = "https://api.github.com/repos/lim8701/FilmRawstery/releases"
 
@@ -856,6 +891,7 @@ class Controller(QObject):
         self._load_error = ""         # 디코드 실패 시 사용자 안내(빈 문자열=정상)
         self._export_progress = 0.0   # CPU export 진행률(0..1). 워커가 _exportProgressSig 로 갱신.
         self._exporting = False
+        self._wall_panels = [None, None, None]   # 배경화면 패널 렌더 결과(uint8) 슬롯별 보관
         self._exif_fields = []      # [{"label","value"}, ...] 패널용
         self._exif_summary = ""     # 오버레이용 2줄 요약
         self._stamp_text = ""       # 날짜 스탬프 텍스트 ('YY MM DD)
@@ -1704,20 +1740,25 @@ class Controller(QObject):
         threading.Thread(target=self._do_export, args=(path, pdict, src, sky_masks, haze),
                          daemon=True).start()
 
+    def _render_array(self, params: dict, src, sky_masks, haze):
+        """export 렌더 본체(저장 제외) — 워커 스레드에서 호출. uint8/uint16 (H,W,3) 반환."""
+        import pipeline
+        lut_arr, lut_n = None, 0
+        if params.get("lutEnabled", False):
+            lut_arr, lut_n = load_cube(str(LUTS_DIR / f"{params.get('simKey','identity')}.cube"))
+        ident = [i / 255.0 for i in range(256)]
+        curves = params.get("curves") or [ident, ident, ident, ident]
+        curve_rgb = pipeline.compose_curves(*curves)
+        src_path, src_kelvin, src_tint = src   # 요청 시점 스냅샷(라이브 self._path 금지)
+        return pipeline.render_full(
+            src_path, src_kelvin, src_tint, params, lut_arr, lut_n, curve_rgb,
+            bitdepth=int(params.get("bitDepth", 8)), sky_masks=sky_masks,
+            progress=lambda f: self._exportProgressSig.emit(f), haze=haze)
+
     def _do_export(self, path: str, params: dict, src, sky_masks=None, haze=None) -> None:
         try:
             import pipeline
-            lut_arr, lut_n = None, 0
-            if params.get("lutEnabled", False):
-                lut_arr, lut_n = load_cube(str(LUTS_DIR / f"{params.get('simKey','identity')}.cube"))
-            ident = [i / 255.0 for i in range(256)]
-            curves = params.get("curves") or [ident, ident, ident, ident]
-            curve_rgb = pipeline.compose_curves(*curves)
-            src_path, src_kelvin, src_tint = src   # 요청 시점 스냅샷(라이브 self._path 금지)
-            arr = pipeline.render_full(
-                src_path, src_kelvin, src_tint, params, lut_arr, lut_n, curve_rgb,
-                bitdepth=int(params.get("bitDepth", 8)), sky_masks=sky_masks,
-                progress=lambda f: self._exportProgressSig.emit(f), haze=haze)
+            arr = self._render_array(params, src, sky_masks, haze)
             ok = pipeline.save_image(arr, path)
             msg = f"Saved: {path}" if ok else f"Save failed: {path}"
         except Exception as exc:
@@ -1729,6 +1770,85 @@ class Controller(QObject):
             self._set_export_status(msg)   # 워커 스레드 -> 시그널은 메인으로 큐잉됨
             self._exporting = False
         print(f"[export] {msg}")
+
+    # ---------- Wallpaper: 3분할 트립틱 합성 export ----------
+    # 배치 export 와 동일한 이유(픽셀 마스크 미영속·커브 평가기 QML 전용)로 QML 상태머신이
+    # 슬롯 사진을 하나씩 라이브 로드한 뒤 이 슬롯을 호출해 렌더 배열만 모으고, 마지막에
+    # wallpaperCompose 로 합성/저장한다. _wall_panels 는 워커가 쓰고 _exporting=False 이후에만
+    # QML 이 다음 단계를 호출하므로 락 불요(배치와 동일 규율).
+    @Slot(int, "QVariantMap")
+    def wallpaperRenderPanel(self, slot: int, params) -> None:  # noqa: N802 (QML 슬롯)
+        """현재 로드된 사진을 편집값으로 렌더해 저장 대신 _wall_panels[slot] 에 보관."""
+        if not self._path or self._exporting or not (0 <= slot < 3):
+            return
+        pdict = {k: params[k] for k in params}
+        pdict["bitDepth"] = 8                      # 패널은 항상 8bit(합성 캔버스가 uint8)
+        src = (self._path, self._kelvin, self._tint)   # exportImage 와 동일 스냅샷
+        sky_masks = list(self._layer_masks)
+        haze = (self._haze_t, list(self._haze_A), self._haze_conf)
+        self._exporting = True
+        self._export_progress = 0.0
+        self.exportProgressChanged.emit()
+        self._set_export_status(f"Rendering wallpaper panel {slot + 1}/3…")
+        threading.Thread(target=self._do_wall_panel,
+                         args=(slot, pdict, src, sky_masks, haze), daemon=True).start()
+
+    def _do_wall_panel(self, slot, params, src, sky_masks, haze) -> None:
+        try:
+            self._wall_panels[slot] = self._render_array(params, src, sky_masks, haze)
+            msg = f"PanelReady: {slot}"            # QML wallTick 이 접두사로 성공 판정
+        except Exception as exc:
+            msg = f"Failed: {exc}"
+        finally:
+            self._exportProgressSig.emit(0.0)
+            self._set_export_status(msg)           # 반드시 _exporting 해제보다 먼저(_do_export 참조)
+            self._exporting = False
+
+    @Slot()
+    def wallpaperClearPanels(self) -> None:  # noqa: N802 (QML 슬롯)
+        self._wall_panels = [None, None, None]
+
+    @Slot(QUrl, "QVariantMap")
+    def wallpaperCompose(self, file_url: QUrl, opts) -> None:  # noqa: N802 (QML 슬롯)
+        """opts: canvasW, canvasH, gap, offsets[3]. 3패널 합성 → 저장(스레드)."""
+        if self._exporting:
+            return
+        panels = list(self._wall_panels)
+        if any(p is None for p in panels):
+            # exporting 을 올리지 않고 실패 상태만 → QML phase4 가 즉시 실패 판정
+            self._set_export_status("Failed: missing wallpaper panel")
+            return
+        path = file_url.toLocalFile()
+        o = {k: opts[k] for k in opts}
+        self._exporting = True
+        self._export_progress = 0.0
+        self.exportProgressChanged.emit()
+        self._set_export_status("Composing wallpaper…")
+        threading.Thread(target=self._do_wall_compose, args=(path, panels, o),
+                         daemon=True).start()
+
+    def _do_wall_compose(self, path: str, panels, o: dict) -> None:
+        try:
+            import pipeline
+            canvas = pipeline.compose_wallpaper(
+                panels, int(o["canvasW"]), int(o["canvasH"]), int(o.get("gap", 18)),
+                [float(v) for v in o.get("offsets", [0.0, 0.0, 0.0])])
+            ok = pipeline.save_image(canvas, path)
+            msg = f"Saved: {path}" if ok else f"Save failed: {path}"
+        except Exception as exc:
+            msg = f"Failed: {exc}"
+        finally:
+            self._set_export_status(msg)
+            self._exporting = False
+        print(f"[wallpaper] {msg}")
+
+    @Slot(int, int, result=QUrl)
+    def suggestedWallpaperUrl(self, w: int, h: int) -> QUrl:  # noqa: N802 (QML 슬롯)
+        """배경화면 기본 파일명: <현재 탐색기 폴더>/wallpaper_{w}x{h}.jpg"""
+        folder = self._folder or (str(Path(self._path).parent) if self._path else "")
+        if not folder:
+            return QUrl()
+        return QUrl.fromLocalFile(str(Path(folder) / f"wallpaper_{w}x{h}.jpg"))
 
     # ---------- GPU export: 프리뷰와 동일한 셰이더로 풀해상도 렌더(프리뷰=Export 보장) ----------
     @Slot(QUrl, "QVariantMap")
@@ -1912,6 +2032,12 @@ class Controller(QObject):
 
     # 내보내는 중 여부(스피너 표시용). 상태 변경과 동시에 갱신되므로 같은 시그널로 통지.
     exporting = Property(bool, _get_exporting, notify=exportStatusChanged)
+
+    def _get_wallpaper_enabled(self) -> bool:
+        return WALLPAPER_PANEL
+
+    # 개인용 Wallpaper 패널 노출 여부(.env 플래그, 시작 시 고정) — 릴리즈 기본 숨김
+    wallpaperEnabled = Property(bool, _get_wallpaper_enabled, constant=True)
 
     def _get_curve_url(self) -> str:
         return self._curve_url

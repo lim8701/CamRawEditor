@@ -711,3 +711,32 @@ def save_image(arr, path) -> bool:
     else:
         img = QImage(arr.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
     return bool(img.save(path))
+
+
+def compose_wallpaper(panels, canvas_w, canvas_h, gap, offsets):
+    """3분할 트립틱 배경화면 합성. panels: [uint8 (H,W,3)]*3(좌/중/우),
+    offsets: [-1..1]*3 가로 크롭 오프셋(-1=왼쪽 끝, 0=중앙, +1=오른쪽 끝).
+    각 패널을 cover-fit(스케일 후 크롭)하므로 입력 해상도/비율과 무관하게 정확.
+    갭·배경은 검정 고정. -> (canvas_h, canvas_w, 3) uint8"""
+    avail = canvas_w - 2 * gap
+    base, rem = avail // 3, avail % 3
+    widths = [base + (1 if i < rem else 0) for i in range(3)]   # 나머지 px는 왼쪽부터
+    canvas = np.zeros((canvas_h, canvas_w, 3), np.uint8)        # 검정 = 갭
+    x = 0
+    for arr, pw, off in zip(panels, widths, offsets):
+        h, w = arr.shape[:2]
+        s = max(canvas_h / h, pw / w)                           # cover-fit
+        nh, nw = max(canvas_h, round(h * s)), max(pw, round(w * s))
+        if (nh, nw) != (h, w):
+            f32 = arr.astype(np.float32)
+            if s < 1.0:
+                sig = 0.5 * (1.0 / s - 1.0)                     # _downscale_to_edge 와 동일 AA
+                if sig > 0.4:
+                    f32 = gaussian_filter(f32, (sig, sig, 0.0))
+            f32 = zoom(f32, (nh / h, nw / w, 1.0), order=1)
+            arr = np.clip(f32 + 0.5, 0, 255).astype(np.uint8)
+        x0 = min(max(int(round((nw - pw) * (off + 1.0) * 0.5)), 0), nw - pw)
+        y0 = (nh - canvas_h) // 2
+        canvas[:, x:x + pw] = arr[y0:y0 + canvas_h, x0:x0 + pw]
+        x += pw + gap
+    return canvas

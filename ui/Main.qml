@@ -72,10 +72,11 @@ ApplicationWindow {
     // Undo / Redo (편집 스냅샷)
     Shortcut { sequences: [StandardKey.Undo]; onActivated: win.undo() }                    // Ctrl+Z
     Shortcut { sequences: [StandardKey.Redo, "Ctrl+Shift+Z"]; onActivated: win.redo() }    // Ctrl+Y / Ctrl+Shift+Z
-    // 우측 패널 전환: Edit / Crop·Geometry / Masking
+    // 우측 패널 전환: Edit / Crop·Geometry / Masking / Wallpaper
     Shortcut { sequence: "Ctrl+1"; onActivated: win.activePanel = 0 }
     Shortcut { sequence: "Ctrl+2"; onActivated: win.activePanel = 1 }
     Shortcut { sequence: "Ctrl+3"; onActivated: win.activePanel = 2 }
+    Shortcut { sequence: "Ctrl+4"; enabled: controller.wallpaperEnabled; onActivated: win.activePanel = 3 }
 
     // 디스플레이 색관리(프리뷰 전용 sRGB→모니터 색역 보정) 토글.
     Shortcut { sequence: "Ctrl+Shift+M"; onActivated: win.displayCM = !win.displayCM }
@@ -961,6 +962,129 @@ ApplicationWindow {
         }
     }
 
+    // ===== Wallpaper (3분할 트립틱 배경화면) =====
+    // 배치 export 와 동일한 이유(마스크 미영속·커브 평가기 QML 전용)로 슬롯 사진을 하나씩
+    // 라이브 로드 → editsReady → wallParams() → wallpaperRenderPanel 로 렌더해 모은 뒤
+    // wallpaperCompose 로 합성/저장. 트립틱은 3장 전부 필요하므로 한 장이라도 실패하면 전체 중단
+    // (배치의 파일별 실패 허용과 다른 점).
+    property var wallSlots: ["", "", ""]          // 슬롯별 경로("" = 비어있음), 좌/중/우
+    property var wallOffsets: [0.0, 0.0, 0.0]     // 가로 크롭 오프셋(-1 왼쪽끝..+1 오른쪽끝)
+    property int wallGap: 18                      // 패널 사이 검정 갭(px, 캔버스 기준)
+    property int wallResIndex: 0
+    readonly property var wallResW: [3840, 2560, 1920]
+    readonly property var wallResH: [2160, 1440, 1080]
+    readonly property int wallFilled: {
+        var n = 0
+        for (var i = 0; i < 3; i++) if (wallSlots[i] !== "") n++
+        return n
+    }
+    property bool wallActive: false
+    property var wallQueue: []                    // [{slot, path}]
+    property int wallIndex: 0
+    // 단계: 1=로드 대기(editsReady) → 2=마스크 settle 대기 → 3=패널 렌더 대기 → 4=합성 대기
+    property int wallPhase: 0
+    property real wallPhaseT0: 0
+    property bool wallCancel: false
+    property string wallDestUrl: ""
+    property string wallResult: ""                // 패널 내 결과 문구
+
+    function wallAssign(slot) {
+        var it = win.explorerFiles[fileListView.currentIndex]
+        if (!it || it.isDir) return
+        var a = win.wallSlots.slice(); a[slot] = it.path; win.wallSlots = a
+    }
+    function wallClearSlot(slot) {
+        var a = win.wallSlots.slice(); a[slot] = ""; win.wallSlots = a
+        var o = win.wallOffsets.slice(); o[slot] = 0.0; win.wallOffsets = o
+    }
+    function wallSetOffset(slot, v) {
+        var o = win.wallOffsets.slice(); o[slot] = v; win.wallOffsets = o
+    }
+    // 패널 렌더 파라미터: 현재(슬롯 사진 복원 후) 편집값 + 긴변/비트깊이 오버라이드.
+    // outEdge 는 속도 최적화일 뿐 — 합성이 항상 cover-fit 재스케일하므로 정확도와 무관.
+    // 크롭된 사진은 크롭 후 세로가 캔버스 높이 이상 되도록 긴 변을 키워 업스케일 열화 방지.
+    function wallParams() {
+        var p = win.exportParams()
+        var frac = ((((win.quarterTurns % 4) + 4) % 4) % 2 === 1) ? win.cropW : win.cropH
+        if (!(frac > 0.05)) frac = 1.0
+        p["outEdge"] = Math.min(6000, Math.round(win.wallResH[win.wallResIndex] / frac))
+        p["bitDepth"] = 8
+        return p
+    }
+    function wallStart(destUrl) {
+        if (win.wallActive || win.batchActive || controller.exporting) return
+        if (win.wallFilled !== 3) return
+        var q = []
+        for (var i = 0; i < 3; i++) q.push({ slot: i, path: win.wallSlots[i] })
+        win.wallQueue = q; win.wallIndex = 0
+        win.wallCancel = false; win.wallDestUrl = destUrl; win.wallResult = ""
+        controller.wallpaperClearPanels()
+        win.wallActive = true
+        win.wallLoadNext()
+    }
+    function wallLoadNext() {
+        if (win.wallCancel) { win.wallAbort("cancelled"); return }
+        if (win.wallIndex >= win.wallQueue.length) {      // 3장 완료 → 합성
+            win.wallPhase = 4; win.wallPhaseT0 = Date.now()
+            controller.wallpaperCompose(win.wallDestUrl, {
+                "canvasW": win.wallResW[win.wallResIndex],
+                "canvasH": win.wallResH[win.wallResIndex],
+                "gap": win.wallGap, "offsets": win.wallOffsets })
+            return
+        }
+        win.wallPhase = 1; win.wallPhaseT0 = Date.now()
+        controller.loadPath(win.wallQueue[win.wallIndex].path)
+    }
+    function wallAbort(why) {
+        win.wallActive = false; win.wallPhase = 0
+        controller.wallpaperClearPanels()
+        win.wallResult = "Wallpaper " + why
+    }
+    function wallFinish(ok) {
+        win.wallActive = false; win.wallPhase = 0
+        controller.wallpaperClearPanels()                 // 패널 배열 메모리 해제
+        win.wallResult = ok ? "Wallpaper saved" : ("Wallpaper failed (" + controller.exportStatus + ")")
+    }
+    Connections {
+        target: controller
+        function onEditsReady() {
+            if (win.wallActive && win.wallPhase === 1)
+                Qt.callLater(function() { win.wallPhase = 2; win.wallPhaseT0 = Date.now() })
+        }
+    }
+    Timer {
+        id: wallTick
+        interval: 250; repeat: true
+        running: win.wallActive
+        onTriggered: {
+            var waited = Date.now() - win.wallPhaseT0
+            if (win.wallPhase === 1) {
+                if (waited > 30000) win.wallAbort("failed (load timeout)")
+            } else if (win.wallPhase === 2) {
+                // batchTick phase 2 와 동일한 마스크 settle 대기(폴백 포함, 그쪽 주석 참조)
+                var maskPending = win.maskKeys.length > 0 &&
+                                  !controller.hasSkyMask && !controller.maskSettled
+                if (!controller.busy && !controller.skyBusy && (!maskPending || waited > 20000)) {
+                    controller.wallpaperRenderPanel(
+                        win.wallQueue[win.wallIndex].slot, win.wallParams())
+                    if (!controller.exporting) { win.wallAbort("failed (render refused)"); return }
+                    win.wallPhase = 3; win.wallPhaseT0 = Date.now()
+                }
+            } else if (win.wallPhase === 3) {
+                if (!controller.exporting) {
+                    if (controller.exportStatus.indexOf("PanelReady:") !== 0) {
+                        win.wallAbort("failed (" + controller.exportStatus + ")"); return
+                    }
+                    win.wallIndex++
+                    win.wallLoadNext()
+                }
+            } else if (win.wallPhase === 4) {
+                if (!controller.exporting)
+                    win.wallFinish(controller.exportStatus.indexOf("Saved:") === 0)
+            }
+        }
+    }
+
     // ===== Undo / Redo (편집 스냅샷 스택) =====
     // editParams() JSON 스냅샷을 쌓는다. 자동저장(editSaveTimer 디바운스) 시점마다 1개 push
     // → 슬라이더 드래그 1회 = 1 스텝(중간 프레임 무시). 새 파일 로드 시 baseline 으로 리셋.
@@ -1788,7 +1912,7 @@ ApplicationWindow {
     // Alt+↑: 상위 폴더로 이동(Windows 탐색기 관례). 위로가기 버튼과 동일하게 직전 폴더 선택 유지.
     Shortcut {
         sequence: "Alt+Up"
-        enabled: !win.batchActive && !previewWin.visible
+        enabled: !win.batchActive && !win.wallActive && !previewWin.visible
         onActivated: {
             win._selectAfterScan = controller.currentFolder
             controller.goUp()
@@ -1801,6 +1925,7 @@ ApplicationWindow {
         sequences: ["Return", "Enter"]
         enabled: win.showExplorer && fileListView.currentIndex >= 0
                  && !previewWin.visible && !stampField.activeFocus && !win.batchActive
+                 && !win.wallActive
         onActivated: {
             var it = win.explorerFiles[fileListView.currentIndex]
             if (!it) return
@@ -2290,6 +2415,15 @@ ApplicationWindow {
         }
     }
 
+    FileDialog {
+        id: wallpaperSaveDialog
+        title: "Export Wallpaper"
+        fileMode: FileDialog.SaveFile
+        nameFilters: ["JPEG (*.jpg)", "PNG (*.png)"]
+        defaultSuffix: "jpg"
+        onAccepted: win.wallStart(selectedFile)
+    }
+
     // ---------- 썸네일 호버 피크 ----------
     // 탐색기 파일 행에 마우스를 올리고 잠깐(250ms) 멈추면 EXIF 썸네일을 원본 크기
     // (최대 160px, 업스케일 없음)로 행 우측에 팝업 표시. 행을 벗어나면 즉시 닫히고,
@@ -2369,7 +2503,7 @@ ApplicationWindow {
                 anchors.fill: parent
                 anchors.margins: 8
                 spacing: 6
-                enabled: !win.batchActive   // 배치 중 파일 전환/폴더 변경 차단(취소는 오버레이 버튼)
+                enabled: !win.batchActive && !win.wallActive   // 배치/배경화면 실행 중 파일 전환·폴더 변경 차단(취소는 오버레이 버튼)
 
                 // 헤더 1줄: [⬆ 상위 폴더] + [현재 폴더 경로(클릭=폴더 선택 대화상자)]
                 RowLayout {
@@ -4312,7 +4446,7 @@ ApplicationWindow {
             // 진행 중 오버레이 (이미지 위): export / 배치 / 디코딩(렌즈 보정) / 하늘 세그멘테이션
             Rectangle {
                 anchors.fill: parent
-                visible: controller.exporting || win.batchActive || controller.busy
+                visible: controller.exporting || win.batchActive || win.wallActive || controller.busy
                          || win.skyBusySlow || controller.aiNrDownloading
                          || controller.aiNrInitializing
                 color: "#aa000000"
@@ -4324,9 +4458,9 @@ ApplicationWindow {
                 // 배치 중엔 파일 전환(디코드/마스크) 구간에도 유지되고 FRAME i/N 카운트업.
                 Rectangle {
                     id: filmCell
-                    visible: controller.exporting || win.batchActive
+                    visible: controller.exporting || win.batchActive || win.wallActive
                     anchors.centerIn: parent
-                    width: 320; height: win.batchActive ? 176 : 156
+                    width: 320; height: (win.batchActive || win.wallActive) ? 176 : 156
                     radius: 10
                     color: "#1b1b1d"
                     border.color: "#E0A226"; border.width: 1
@@ -4345,7 +4479,7 @@ ApplicationWindow {
                                 Rectangle { width: 14; height: 9; radius: 2; color: "#E0A226" }
                             }
                             NumberAnimation on x {
-                                running: controller.exporting || win.batchActive
+                                running: controller.exporting || win.batchActive || win.wallActive
                                 from: 0; to: -holesRow.pitch
                                 duration: 650; loops: Animation.Infinite
                             }
@@ -4367,9 +4501,12 @@ ApplicationWindow {
                                                                 && controller.exportProgress > 0.0
                             Text {
                                 Layout.alignment: Qt.AlignHCenter
-                                visible: win.batchActive
-                                text: "FRAME " + Math.min(win.batchIndex + 1, win.batchQueue.length)
-                                      + " / " + win.batchQueue.length
+                                visible: win.batchActive || win.wallActive
+                                text: win.wallActive
+                                      ? (win.wallPhase === 4 ? "COMPOSING"
+                                         : "PANEL " + Math.min(win.wallIndex + 1, 3) + " / 3")
+                                      : "FRAME " + Math.min(win.batchIndex + 1, win.batchQueue.length)
+                                        + " / " + win.batchQueue.length
                                 color: "#E0A226"; font.pixelSize: 12; font.letterSpacing: 2
                                 font.weight: Font.Bold
                             }
@@ -4402,7 +4539,7 @@ ApplicationWindow {
                                     visible: !devInfo.determinate
                                     width: 64; height: parent.height; radius: 2; color: "#E0A226"
                                     NumberAnimation on x {
-                                        running: (controller.exporting || win.batchActive) && !devInfo.determinate
+                                        running: (controller.exporting || win.batchActive || win.wallActive) && !devInfo.determinate
                                         from: -sweepSeg.width; to: progTrack.width
                                         duration: 1000; loops: Animation.Infinite
                                     }
@@ -4424,9 +4561,21 @@ ApplicationWindow {
                     onClicked: win.batchCancel = true
                 }
 
+                // 배경화면 취소 — 현재 패널까지 마치고 중단(배치와 동일 의미론)
+                Button {
+                    visible: win.wallActive
+                    anchors.top: filmCell.bottom
+                    anchors.topMargin: 12
+                    anchors.horizontalCenter: filmCell.horizontalCenter
+                    text: win.wallCancel ? "Cancelling…" : "Cancel wallpaper"
+                    enabled: !win.wallCancel
+                    onClicked: win.wallCancel = true
+                }
+
                 // ── AI 모델 다운로드: 실제 진행률 프로그레스바(하늘 모델 오버레이와 동일 UX) ──
                 ColumnLayout {
                     visible: controller.aiNrDownloading && !controller.exporting && !win.batchActive
+                             && !win.wallActive
                     anchors.centerIn: parent
                     spacing: 12
                     Label {
@@ -4527,7 +4676,7 @@ ApplicationWindow {
             Layout.preferredWidth: 300
             Layout.fillHeight: true
             color: "#2b2b2b"
-            enabled: !win.batchActive   // 배치 중 슬라이더 변경 → 배치 파일 사이드카 오염 방지
+            enabled: !win.batchActive && !win.wallActive   // 배치/배경화면 실행 중 슬라이더 변경 → 사이드카 오염 방지
 
             ColumnLayout {
                 anchors.fill: parent
@@ -6426,6 +6575,245 @@ ApplicationWindow {
                             }
                         }
                     }
+
+                    // ===== index 3: Wallpaper (3분할 트립틱 배경화면 합성) =====
+                    Flickable {
+                        id: wallScroll
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        contentWidth: width
+                        contentHeight: wallCol.height + 32
+                        boundsBehavior: Flickable.StopAtBounds
+                        ScrollBar.vertical: B.ScrollBar {
+                            id: wallBar
+                            width: 12
+                            policy: ScrollBar.AlwaysOn
+                            contentItem: Rectangle { implicitWidth: 8; radius: 4; color: wallBar.pressed ? "#cfcfcf" : "#9a9a9a" }
+                            background: Rectangle { radius: 4; color: "#3a3a3a" }
+                        }
+
+                        ColumnLayout {
+                            id: wallCol
+                            x: 16; y: 16
+                            width: wallScroll.width - 32
+                            spacing: 12
+
+                            Label {
+                                text: "Wallpaper"
+                                color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                                font.capitalization: Font.AllUppercase
+                            }
+                            Label {
+                                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                text: "Select a photo in the explorer (single click), then click a slot below. Each photo is developed with its own edits, then composed side by side."
+                                color: "#888"; font.pixelSize: 11
+                            }
+
+                            // ---- 목업 프리뷰: 합성 수학(compose_wallpaper) 미러 ----
+                            // 썸네일을 cover-fit 스케일 + 가로 오프셋으로 clip — 실제 합성과 동일 기하.
+                            // (PreserveAspectCrop 은 크롭 위치 지정 불가라 Stretch+수동 배치 필수)
+                            Rectangle {
+                                id: wallPreview
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: width * 9 / 16
+                                color: "black"; radius: 4; clip: true
+                                readonly property real gapPx: win.wallGap * width / win.wallResW[win.wallResIndex]
+                                readonly property real cellW: (width - 2 * gapPx) / 3
+                                Repeater {
+                                    model: 3
+                                    Item {
+                                        required property int index
+                                        x: index * (wallPreview.cellW + wallPreview.gapPx)
+                                        width: wallPreview.cellW
+                                        height: wallPreview.height
+                                        clip: true
+                                        Image {
+                                            readonly property string p: win.wallSlots[parent.index]
+                                            source: p !== "" ? "image://thumb/" + encodeURIComponent(p) : ""
+                                            sourceSize.width: 256
+                                            asynchronous: true
+                                            fillMode: Image.Stretch
+                                            readonly property real s: (implicitWidth > 0 && implicitHeight > 0)
+                                                ? Math.max(parent.height / implicitHeight, parent.width / implicitWidth) : 1
+                                            width: implicitWidth * s
+                                            height: implicitHeight * s
+                                            // 합성과 동일: x0 = (nw-pw)*(off+1)/2, 세로는 중앙
+                                            x: -Math.max(0, (width - parent.width) * (win.wallOffsets[parent.index] + 1) / 2)
+                                            y: -Math.max(0, (height - parent.height) / 2)
+                                        }
+                                    }
+                                }
+                            }
+
+                            // ---- 슬롯 카드 x3 (좌/중/우) ----
+                            Repeater {
+                                model: ["Left", "Center", "Right"]
+                                Rectangle {
+                                    required property string modelData
+                                    required property int index
+                                    id: wallCard
+                                    Layout.fillWidth: true
+                                    implicitHeight: cardCol.implicitHeight + 20
+                                    color: "#242424"; radius: 4
+                                    border.color: wallCardMouse.containsMouse ? "#8ab4f8" : "#444"
+                                    border.width: 1
+                                    readonly property string slotPath: win.wallSlots[index]
+
+                                    // 카드 클릭 = 탐색기 현재 선택 파일 할당(✕/슬라이더가 위에서 우선)
+                                    MouseArea {
+                                        id: wallCardMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: win.wallAssign(wallCard.index)
+                                    }
+
+                                    ColumnLayout {
+                                        id: cardCol
+                                        x: 10; y: 10
+                                        width: parent.width - 20
+                                        spacing: 6
+
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 8
+                                            Rectangle {
+                                                width: 48; height: 48; radius: 3
+                                                color: "#1e1e1e"; clip: true
+                                                Image {
+                                                    id: wallCardThumb
+                                                    anchors.fill: parent
+                                                    fillMode: Image.PreserveAspectCrop
+                                                    asynchronous: true
+                                                    sourceSize.width: 96
+                                                    source: wallCard.slotPath !== ""
+                                                            ? "image://thumb/" + encodeURIComponent(wallCard.slotPath) : ""
+                                                }
+                                                Text {
+                                                    anchors.centerIn: parent
+                                                    visible: wallCard.slotPath === ""
+                                                    text: "+"
+                                                    color: "#777"; font.pixelSize: 22
+                                                }
+                                            }
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 2
+                                                Label {
+                                                    Layout.fillWidth: true
+                                                    elide: Text.ElideMiddle
+                                                    text: wallCard.slotPath !== ""
+                                                          ? wallCard.slotPath.split(/[\\/]/).pop()
+                                                          : wallCard.modelData + " — click to assign"
+                                                    color: wallCard.slotPath !== "" ? "#e6e6e6" : "#888"
+                                                    font.pixelSize: 12
+                                                }
+                                                Label {
+                                                    // 가로 사진 경고(강한 크롭). 썸네일 로드 후에만 판단 가능.
+                                                    visible: wallCard.slotPath !== ""
+                                                             && wallCardThumb.status === Image.Ready
+                                                             && wallCardThumb.implicitWidth > wallCardThumb.implicitHeight
+                                                    text: "⚠ landscape — heavy crop"
+                                                    color: "#E0A226"; font.pixelSize: 10
+                                                }
+                                            }
+                                            Button {
+                                                visible: wallCard.slotPath !== ""
+                                                text: "✕"; flat: true
+                                                implicitWidth: 26; implicitHeight: 24
+                                                ToolTip.text: "Clear this slot"; ToolTip.visible: hovered; ToolTip.delay: 500
+                                                onClicked: win.wallClearSlot(wallCard.index)
+                                            }
+                                        }
+
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            visible: wallCard.slotPath !== ""
+                                            Label {
+                                                text: "Offset"
+                                                color: "#aaa"; font.pixelSize: 11
+                                            }
+                                            Slider {
+                                                id: wallOffSlider
+                                                Layout.fillWidth: true
+                                                from: -1.0; to: 1.0
+                                                value: win.wallOffsets[wallCard.index]
+                                                onMoved: win.wallSetOffset(wallCard.index, value)
+                                                property real defaultValue: 0.0
+                                                property real _lastPressMs: 0
+                                                property bool _pendingReset: false
+                                                onPressedChanged: {
+                                                    if (pressed) _pendingReset = win.isDblPress(wallOffSlider)
+                                                    else if (_pendingReset) {
+                                                        _pendingReset = false
+                                                        win.wallSetOffset(wallCard.index, defaultValue)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+
+                            Label {
+                                text: "Gap:  " + win.wallGap + " px"
+                                color: "white"
+                            }
+                            Slider {
+                                id: wallGapSlider
+                                Layout.fillWidth: true
+                                from: 0; to: 60; stepSize: 1
+                                value: win.wallGap
+                                onMoved: win.wallGap = Math.round(value)
+                                property real defaultValue: 18
+                                property real _lastPressMs: 0
+                                property bool _pendingReset: false
+                                onPressedChanged: {
+                                    if (pressed) _pendingReset = win.isDblPress(wallGapSlider)
+                                    else if (_pendingReset) { _pendingReset = false; win.wallGap = defaultValue }
+                                }
+                            }
+
+                            Label {
+                                text: "Resolution"
+                                color: "white"
+                            }
+                            ComboBox {
+                                id: wallResCombo
+                                Layout.fillWidth: true
+                                model: ["3840 × 2160 (4K)", "2560 × 1440 (QHD)", "1920 × 1080 (FHD)"]
+                                currentIndex: win.wallResIndex
+                                onActivated: win.wallResIndex = currentIndex
+                                Connections {
+                                    target: wallResCombo.popup
+                                    function onClosed() { viewport.forceActiveFocus() }
+                                }
+                            }
+
+                            Button {
+                                text: "Export Wallpaper…"
+                                Layout.fillWidth: true
+                                enabled: win.wallFilled === 3 && !win.wallActive && !win.batchActive
+                                         && !controller.exporting && !controller.busy
+                                onClicked: {
+                                    var u = controller.suggestedWallpaperUrl(
+                                        win.wallResW[win.wallResIndex], win.wallResH[win.wallResIndex])
+                                    if (u != "") wallpaperSaveDialog.selectedFile = u
+                                    wallpaperSaveDialog.open()
+                                }
+                            }
+                            Label {
+                                visible: win.wallResult !== ""
+                                Layout.fillWidth: true; wrapMode: Text.WrapAnywhere
+                                text: win.wallResult
+                                color: win.wallResult === "Wallpaper saved" ? "#9fd39f" : "#e08a8a"
+                                font.pixelSize: 11
+                            }
+                        }
+                    }
                 }   // end StackLayout
             }       // end 우측 패널 outer ColumnLayout
         }           // end 우측 패널 Rectangle
@@ -6443,11 +6831,18 @@ ApplicationWindow {
                 spacing: 4
 
                 Repeater {
-                    model: [
-                        { icon: "edit", tip: "Edit", key: "Ctrl+1" },
-                        { icon: "crop", tip: "Crop / Rotate / Geometry", key: "Ctrl+2" },
-                        { icon: "mask", tip: "Masking", key: "Ctrl+3" }
-                    ]
+                    // Wallpaper 는 개인용 기능 — .env 플래그(controller.wallpaperEnabled, 시작 시 고정)
+                    // 가 켜졌을 때만 항목 노출. 릴리즈 빌드는 .env 미포함이라 자동 숨김.
+                    model: {
+                        var m = [
+                            { icon: "edit", tip: "Edit", key: "Ctrl+1" },
+                            { icon: "crop", tip: "Crop / Rotate / Geometry", key: "Ctrl+2" },
+                            { icon: "mask", tip: "Masking", key: "Ctrl+3" }
+                        ]
+                        if (controller.wallpaperEnabled)
+                            m.push({ icon: "wall", tip: "Wallpaper", key: "Ctrl+4" })
+                        return m
+                    }
                     delegate: Rectangle {
                         width: 40; height: 40
                         radius: 6
@@ -6485,6 +6880,11 @@ ApplicationWindow {
                                     function seg(a, b) { ctx.beginPath(); ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]); ctx.stroke() }
                                     seg(P(7,2), P(7,17));  seg(P(7,17), P(22,17))
                                     seg(P(2,7), P(17,7));  seg(P(17,7), P(17,22))
+                                } else if (ic === "wall") {
+                                    // 배경화면: 세로 패널 3개(트립틱)
+                                    ctx.fillRect(o + 3, o + 4, 5, 16)
+                                    ctx.fillRect(o + 9.5, o + 4, 5, 16)
+                                    ctx.fillRect(o + 16, o + 4, 5, 16)
                                 } else {
                                     // 마스킹: 프레임(이미지) + 채운 원(선택 영역) — 영역별 보정
                                     ctx.strokeRect(o + 3, o + 4, 18, 16)

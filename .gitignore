@@ -33,6 +33,9 @@ luts/sepia.cube
 # assets/donate_kakaopay.jpg 를 쓴다(크롭하면 QR 중심이 pay 로고 쪽으로 치우침).
 /donate/
 
+# 개인용 기능 플래그(WALLPAPER_PANEL 등) — 릴리즈/저장소엔 미포함이 기본값(기능 숨김)
+.env
+
 # OS
 Thumbs.db
 .DS_Store
