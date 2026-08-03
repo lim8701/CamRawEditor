@@ -129,7 +129,11 @@ ApplicationWindow {
     property int layerCount: 1               // 현재 존재하는 레이어 수(1..5) — UI/저장 대상
     property int maxLayers: 5
     function _newLayer() {
-        return { keys: [], invert: false, skyExp: 0, skyTemp: 0, skyTint: 0, skySat: 0, skyHi: 0,
+        // faceSelMemo: 마지막 부위를 끌 때 버려지는 face@ 선택의 백업(세션 한정, 직렬화 안 됨 —
+        // skyEditParams 가 필드를 명시 나열하므로 사이드카에 새지 않는다). 부위를 다시 켤 때
+        // '가장 큰 얼굴' 대신 직전 선택을 복원하는 용도(toggleMaskKey).
+        return { keys: [], invert: false, faceSelMemo: [],
+                 skyExp: 0, skyTemp: 0, skyTint: 0, skySat: 0, skyHi: 0,
                  skyShadows: 0, skyContrast: 1.0, skyTexture: 0, skyClarity: 0, skyDehaze: 0 }
     }
     property var layers: [ _newLayer(), _newLayer(), _newLayer(), _newLayer(), _newLayer() ]
@@ -387,21 +391,35 @@ ApplicationWindow {
         var i = a.indexOf(key)
         if (on && i < 0) a.push(key)
         else if (!on && i >= 0) a.splice(i, 1)
-        // 얼굴 부위를 **처음** 켤 때만 기본 대상 = 가장 큰 얼굴 1명(faceKeys[0]).
-        // 안 하면 '선택 없음 = 전체'가 되어 배경 인물까지 딸려 들어간다.
+        // 얼굴 부위를 **처음** 켤 때만 기본 대상을 넣는다: 직전 선택(faceSelMemo — 마지막 부위를
+        // 끌 때 백업해 둔 것) 우선, 없으면 가장 큰 얼굴 1명(faceKeys[0]). 기본 없이 두면
+        // '선택 없음 = 전체'가 되어 배경 인물까지 딸려 들어간다. memo 는 현재 검출 목록에 있는
+        // key 만 복원한다 — 사진이 바뀌면 좌표가 안 맞아 자연히 기본(가장 큰 얼굴)으로 떨어진다.
         // ⚠️hadFacePart 검사가 없으면 두 명을 고른 상태에서 부위를 하나 더 켜는 순간
         //   '선택 없음'으로 보여 한 명으로 접힌다.
         if (on && win._isFacePart(key) && !hadFacePart && !win._hasFaceSel(a)
-                && controller.faceCount > 1 && controller.faceKeys.length > 0)
-            a.push(controller.faceKeys[0])
+                && controller.faceCount > 1 && controller.faceKeys.length > 0) {
+            var all = controller.faceKeys
+            var memo = win.layers[win.activeLayer].faceSelMemo || []
+            var restored = 0
+            for (var r = 0; r < memo.length; r++)
+                if (all.indexOf(memo[r]) >= 0) { a.push(memo[r]); restored++ }
+            if (restored === 0) a.push(all[0])
+        }
         // 마지막 부위를 끄면 얼굴 선택 key 도 같이 버린다 — 남겨두면 keys 가 안 비어서
         // clearLayer 대신 setMaskClasses 가 불리고 배치 export 가 마스크를 기다린다.
+        // 버리기 전에 faceSelMemo 에 백업 — 부위를 다시 켤 때 위에서 그대로 복원한다.
+        // (명시 선택이 없던 '전체' 상태면 memo 를 건드리지 않는다 — 전체는 커밋 정규화로
+        //  face@ 가 안 남는 상태라 구분할 실체가 없고, 기본 폴백이 종전과 같은 동작을 준다)
         if (!on) {
             var part = false
             for (var j = 0; j < a.length; j++) if (win._isFacePart(a[j])) { part = true; break }
             if (!part) {
-                var b = []
-                for (var m = 0; m < a.length; m++) if (!win._isFaceSel(a[m])) b.push(a[m])
+                var b = [], drop = []
+                for (var m = 0; m < a.length; m++)
+                    if (win._isFaceSel(a[m])) drop.push(a[m])
+                    else b.push(a[m])
+                if (drop.length > 0) win.layers[win.activeLayer].faceSelMemo = drop
                 a = b
             }
         }

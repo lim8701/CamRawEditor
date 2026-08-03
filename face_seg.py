@@ -98,6 +98,38 @@ FACE_GUIDED_EPS = 1e-4
 # 완벽한 사각형이었고, 그래서 cloth 는 목록에서 제외했다). 경계에서 0 으로 감쇠시켜 잘림을 눈에
 # 안 띄게 한다. 크롭 안에서 끝나는 부위(skin/eyes/lips 등)는 경계에 값이 없으므로 영향 없음.
 CROP_FEATHER = 0.06
+# 라이벌 얼굴 억제. 크롭(박스 1.9배)에 **다른 사람** 얼굴이 걸치면 파싱 모델은 그 피부도 skin 으로
+# 분류한다 — 모델은 크롭 안에 얼굴이 하나라고 가정하고 학습됐다(실측 DSCF1962 볼맞댐 2인: 한 명만
+# 선택해도 상대 얼굴 박스 평균 알파 0.38). 선택 안 된 사람의 픽셀은 소유권을 따져 감쇠한다.
+#
+# 소유권은 **양쪽 파싱 확률 비교**가 기본이다(_rival_suppress). 검출 박스 거리 같은 기하만으로는
+# 볼-이마 접촉(실측 DSCF1618)에서 경계를 정확히 못 긋는다 — 큰 얼굴이 작은 얼굴의 이마를 집어삼켜
+# 한쪽은 침범, 반대쪽은 자기 이마가 깎인다. 그래서 라이벌도 파싱한다(rivals_for — 크롭이 겹치는
+# 라이벌만, 이미지당 1회 캐시).
+# 전환 폭: 소유권 비율 0.5 둘레 smoothstep 반폭. 좁을수록 경계가 칼같고, 최종 경계는 뒤의
+# guided filter 가 실제 이미지 엣지(볼/이마 주름·음영)에 맞춰 다듬는다.
+RIVAL_SHARP = 0.12
+# 기하 프라이어: 자기 박스 내접 타원 반경 E0 까지는 1, E1 밖에서 FLOOR — 파싱 확률이 둘 다 높은
+# 접촉부(양쪽 크롭 모두 '피부'로 봄)에서 '내 박스에서 얼마나 먼가'로 승부를 가른다.
+RIVAL_PRIOR_E0, RIVAL_PRIOR_E1 = 0.8, 1.8
+RIVAL_PRIOR_FLOOR = 0.15
+# YuNet 박스는 눈썹~턱에 타이트해서 **이마/정수리가 박스 위**에 있다 — 타원을 그대로 쓰면 이마가
+# '임자 없는 땅'이 되어, 붙어 있는 상대 파싱(피부 연속)이 이겨 이마에 쐐기 모양 구멍이 난다
+# (실측 DSCF1617). 타원 중심을 위로 올리고 세로를 늘려 이마를 자기 영토에 넣는다(크롭의 CROP_UP
+# 과 같은 '화면 위쪽 = 머리' 가정).
+RIVAL_PRIOR_UP = 0.20       # 중심 상향(박스 높이 비율)
+RIVAL_PRIOR_WX, RIVAL_PRIOR_WY = 1.1, 1.35   # 반경 확대(가로, 세로)
+# 이마 잔머리 bg 재정규화. 모델이 이마에 흘러내린 성긴 잔머리를 hair 도 아닌 **background** 로
+# 분류한다(실측 DSCF1617: bg 0.66/skin 0.30/hair 0.03 → skin 이 FACE_LO 바로 아래로 떨어져 이마에
+# 뾰족한 구멍). 얼굴 타원 코어 **상부**에서는 배경이 기하적으로 불가능하므로 bg 확률을 빼고
+# 재정규화한다(p/(1-bg·w) — skin 0.30/(1-0.66)=0.88). 하부(입/턱)는 게이트로 제외 — 손·치발기 등
+# 진짜 가림물(실측 DSCF1962)이 그 높이에 오고, 그건 마스크에서 빠져야 맞다.
+FACE_BG_E0, FACE_BG_E1 = 0.9, 1.2       # 코어 감쇠(프라이어 타원 반경 단위)
+FACE_BG_EY0, FACE_BG_EY1 = -0.15, 0.25  # 상부 게이트(타원 세로좌표: 위<0, 눈높이≈-0.2~0)
+_OWN_CLS = slice(1, 18)     # 소유권용 '사람 머리' 확률 = 클래스 1..17 합(bg/cloth 제외)
+# 폴백(라이벌 파싱이 없을 때)용 원형 창: R0 안 전부 억제, R1 밖 무영향 + 정규화 거리 비교 게이트.
+RIVAL_R0, RIVAL_R1 = 1.15, 1.75
+RIVAL_CLAIM = 0.25
 
 # ── 부위 그룹 (UI 체크박스) ──────────────────────────────────────────────────
 # CelebAMask-HQ 19클래스: 0 background, 1 skin, 2 nose, 3 eye_g(안경), 4 l_eye, 5 r_eye,
@@ -508,24 +540,173 @@ def parse_faces(rgb_u8, dets, on_face=None):
     return out
 
 
-def compose_face_mask(parsed, rgb_u8, class_ids):
+def rivals_for(want, dets):
+    """want 크롭의 라이벌 억제에 파싱이 필요한 검출 인덱스(want 제외).
+
+    라이벌 창(박스×E1)이 want 크롭 정사각과 겹치는 것만 — 떨어져 있는 얼굴은 억제가 발동하지
+    않으므로 파싱(얼굴당 ~0.8s)이 낭비다. 호출측(main)은 이 목록을 todo 에 합쳐 want 와 같은
+    이미지당 캐시에 쌓는다."""
+    reach_k = max(RIVAL_R1, RIVAL_PRIOR_E1) * 0.5
+    rects = []
+    for i in want:
+        if 0 <= i < len(dets):
+            gx, gy, gs = crop_geom(dets[i])
+            rects.append((gx, gy, gx + gs, gy + gs))
+    out = []
+    for j, d in enumerate(dets):
+        if j in want:
+            continue
+        bx, by, bw, bh = d["box"]
+        cx, cy = bx + bw * 0.5, by + bh * 0.5
+        rx, ry = bw * reach_k, bh * reach_k
+        if any(cx + rx > a0 and cx - rx < a1 and cy + ry > b0 and cy - ry < b1
+               for a0, b0, a1, b1 in rects):
+            out.append(j)
+    return out
+
+
+def _prior(sq, sc, box, x0, y0):
+    """검출 박스 기준 기하 프라이어(sq² float32, [FLOOR,1]). 소유권 무승부 판정용.
+
+    타원은 박스 내접이 아니라 **위로 시프트 + 확대**(RIVAL_PRIOR_UP/WX/WY) — 이마·정수리까지
+    자기 영토로 포함시키기 위함(상수 주석의 DSCF1617 사례)."""
+    bx, by, bw, bh = box
+    xs = np.arange(sq, dtype=np.float32) + 0.5
+    ex = (xs[None, :] - (bx + bw * 0.5 - x0) * sc) / max(1e-6, bw * 0.5 * RIVAL_PRIOR_WX * sc)
+    ey = ((xs[:, None] - (by + bh * (0.5 - RIVAL_PRIOR_UP) - y0) * sc)
+          / max(1e-6, bh * 0.5 * RIVAL_PRIOR_WY * sc))
+    e = np.hypot(ex, ey)
+    return 1.0 - (1.0 - RIVAL_PRIOR_FLOOR) * sky_seg._smoothstep(
+        RIVAL_PRIOR_E0, RIVAL_PRIOR_E1, e)
+
+
+def _map_probs(face_p, rgeom, geom, sq):
+    """라이벌 크롭 좌표계의 얼굴 확률맵(hm,wm) → 내 크롭 sq 그리드로 재표본(밖은 0).
+
+    두 크롭 모두 프록시 좌표의 축정렬 정사각이라 매핑은 scale+translate 아핀 하나다."""
+    import cv2
+    hm, wm = face_p.shape
+    rx0, ry0, rside = rgeom
+    x0, y0, side = geom
+    ax = side * wm / (sq * rside)               # dst px → src px (x)
+    ay = side * hm / (sq * rside)
+    bx = (x0 - rx0) * wm / rside + 0.5 * ax - 0.5
+    by = (y0 - ry0) * hm / rside + 0.5 * ay - 0.5
+    M = np.float32([[ax, 0.0, bx], [0.0, ay, by]])
+    return cv2.warpAffine(face_p, M, (sq, sq),
+                          flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+                          borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+
+
+def _bg_renorm_w(hw, geom, box):
+    """이마 잔머리 bg 재정규화 가중치 w (확률맵 해상도, [0,1]). FACE_BG_* 상수 주석 참조.
+
+    w = 얼굴 코어(프라이어 타원과 같은 시프트/확대) × 상부 게이트. 확률맵(128²)에서 바로 계산 —
+    크롭 해상도로 올리기 전이라 비용이 없다시피 하다."""
+    hm, wm = hw
+    x0, y0, side = geom
+    bx, by, bw, bh = box
+    xs = (np.arange(wm, dtype=np.float32) + 0.5) * (side / wm) + x0
+    ys = (np.arange(hm, dtype=np.float32) + 0.5) * (side / hm) + y0
+    ex = (xs[None, :] - (bx + bw * 0.5)) / max(1e-6, bw * 0.5 * RIVAL_PRIOR_WX)
+    ey = (ys[:, None] - (by + bh * (0.5 - RIVAL_PRIOR_UP))) / max(1e-6, bh * 0.5 * RIVAL_PRIOR_WY)
+    core = 1.0 - sky_seg._smoothstep(FACE_BG_E0, FACE_BG_E1, np.hypot(ex, ey))
+    upper = 1.0 - sky_seg._smoothstep(FACE_BG_EY0, FACE_BG_EY1, ey)
+    return core * upper
+
+
+def _rival_suppress(m, geom, si, own, own_probs, all_dets, all_parsed, sel_boxes):
+    """크롭 안에 걸친 **다른**(선택 안 된) 검출 얼굴 영역을 감쇠(in-place 곱, m 반환).
+
+    파싱 모델은 크롭당 얼굴 하나를 가정해서, 남의 얼굴이 걸치면 그 피부/부위도 똑같이 라벨링한다.
+    픽셀 소유권 = '얼굴 확률(자기 크롭 파싱) × 기하 프라이어' 비교 — 접촉부(볼-이마)는 검출 박스
+    거리만으로 못 가르고(실측 DSCF1618: 큰 얼굴이 작은 얼굴 이마를 침범/삭제), 확률 비교는 모델이
+    실제로 본 픽셀로 경계를 긋는다. 라이벌 파싱이 없으면 원형 창 폴백(파싱 실패 시 안전망).
+
+    같은 선택에 든 얼굴(sel_boxes)은 건너뛴다 — 합집합이 어차피 양쪽을 덮고, 서로 억제하면
+    이음선에 알파 골만 생긴다."""
+    x0, y0, side = geom
+    # 억제 창은 매끄러운 저주파 함수라 저해상도로 계산해 업샘플해도 결과가 같다 — 크롭 원해상도
+    # (최대 ~1900²)로 그리드 배열을 만들면 재조합이 라이벌당 +150ms 라 512 로 상한(실측 +15ms).
+    sq = min(si, 512)
+    sc = sq / max(float(side), 1e-6)
+    ox, oy, ow, oh = own["box"]
+    ocx, ocy = (ox + ow * 0.5 - x0) * sc, (oy + oh * 0.5 - y0) * sc
+    orad = max(1e-6, max(ow, oh) * 0.5 * sc)
+    xs = np.arange(sq, dtype=np.float32) + 0.5      # sq 그리드 픽셀 중심(좌표도 sc 로 동일 스케일)
+    keep = None                         # 라이벌이 실제로 걸칠 때만 계산(대부분의 크롭은 무관)
+    r_own = None
+    own_claim = None                    # 얼굴확률×프라이어 — 파싱된 라이벌이 있을 때만 계산
+    for j, d in enumerate(all_dets):
+        if d is own or d["box"] == own["box"] or tuple(d["box"]) in sel_boxes:
+            continue
+        bx, by, bw, bh = d["box"]
+        rcx, rcy = (bx + bw * 0.5 - x0) * sc, (by + bh * 0.5 - y0) * sc
+        rrad = max(1e-6, max(bw, bh) * 0.5 * sc)
+        reach = rrad * max(RIVAL_R1, RIVAL_PRIOR_E1)
+        if not (-reach <= rcx <= sq + reach and -reach <= rcy <= sq + reach):
+            continue                    # 라이벌이 크롭에 안 걸침
+        rp = None if all_parsed is None else all_parsed.get(j)
+        if rp is not None:
+            if own_claim is None:
+                oface = _resize(own_probs[_OWN_CLS].sum(axis=0), (sq, sq))
+                own_claim = oface * _prior(sq, sc, own["box"], x0, y0)
+            rgeom, rprobs = rp
+            rface = _map_probs(rprobs[_OWN_CLS].sum(axis=0), rgeom, geom, sq)
+            riv_claim = rface * _prior(sq, sc, d["box"], x0, y0)
+            ratio = riv_claim / (own_claim + riv_claim + 1e-6)
+            w = 1.0 - sky_seg._smoothstep(0.5 - RIVAL_SHARP, 0.5 + RIVAL_SHARP, ratio)
+        else:
+            # 폴백: 원형 창(R0 안 억제, R1 밖 무영향) × '라이벌이 더 가까움' 게이트
+            if r_own is None:
+                r_own = np.hypot(xs[None, :] - ocx, xs[:, None] - ocy) / orad
+            r_riv = np.hypot(xs[None, :] - rcx, xs[:, None] - rcy) / rrad
+            inside = 1.0 - sky_seg._smoothstep(RIVAL_R0, RIVAL_R1, r_riv)
+            claim = sky_seg._smoothstep(-RIVAL_CLAIM, RIVAL_CLAIM, r_own - r_riv)
+            w = 1.0 - inside * claim
+        keep = w if keep is None else keep * w
+    if keep is not None:
+        m *= _resize(keep, (si, si))
+    return m
+
+
+def compose_face_mask(parsed, rgb_u8, class_ids, own_dets=None, all_dets=None,
+                      all_parsed=None):
     """선택 부위 합산 → 프록시 해상도 soft alpha float32 [0,1]. 추론 없이 빠르게 재조합.
 
-    부위 확률을 크롭 해상도로 올려 결정 곡선 → **크롭 휘도 기준** guided filter 로 엣지 정제 →
-    원위치에 np.maximum 누적. 정제를 크롭 공간에서 하는 이유는 FACE_GUIDED_R 주석 참조.
+    부위 확률을 크롭 해상도로 올려 결정 곡선 → 라이벌 억제 → **크롭 휘도 기준** guided filter 로
+    엣지 정제 → 원위치에 np.maximum 누적. 정제를 크롭 공간에서 하는 이유는 FACE_GUIDED_R 주석
+    참조. 억제를 guided **앞**에 두는 이유: 소유권 경계(접촉부)가 guided 를 거치며 실제 이미지
+    엣지(볼/이마 음영선)에 달라붙는다.
 
     parsed 에 들어온 얼굴을 **전부** 합친다 — 어떤 얼굴을 쓸지는 호출측이 골라서 넘긴다
-    (선택된 얼굴만 파싱하므로 여기서 다시 거를 이유가 없다)."""
+    (선택된 얼굴만 파싱하므로 여기서 다시 거를 이유가 없다).
+
+    own_dets(parsed 와 나란한 각 크롭의 원 검출)·all_dets(그 이미지의 전체 검출)를 주면 크롭에
+    걸친 **선택 안 된** 얼굴을 감쇠한다(_rival_suppress). all_parsed({검출 인덱스: (geom,probs)},
+    라이벌 포함 파싱 캐시)까지 주면 확률 비교 소유권, 없으면 원형 창 폴백. 셋 다 안 주면 종전대로
+    크롭 안 전부를 합친다."""
     h, w = rgb_u8.shape[:2]
     canvas = np.zeros((h, w), np.float32)
     if not class_ids or not parsed:
         return canvas
     ids = list(class_ids)
-    for geom, probs in parsed:
+    sel_boxes = (set() if own_dets is None
+                 else {tuple(d["box"]) for d in own_dets})
+    for k, (geom, probs) in enumerate(parsed):
         x0, y0, side = geom
         si = max(1, int(round(side)))
-        m = _resize(probs[ids].sum(axis=0), (si, si)).astype(np.float32)
+        msum = probs[ids].sum(axis=0)
+        if own_dets is not None:
+            # 이마 잔머리 bg 재정규화(_bg_renorm_w 주석) — 검출 박스가 있어야 타원을 잡는다.
+            # 분모 하한 0.2: bg≈1 인 진짜 배경에서 0 나눗셈/폭주 방지(그런 곳은 분자도 ≈0).
+            w_bg = _bg_renorm_w(probs.shape[1:], geom, own_dets[k]["box"])
+            msum = msum / np.clip(1.0 - probs[0] * w_bg, 0.2, 1.0)
+        m = _resize(msum, (si, si)).astype(np.float32)
         m = sky_seg._smoothstep(FACE_LO, FACE_HI, m)
+        if own_dets is not None and all_dets is not None and len(all_dets) > 1:
+            m = _rival_suppress(m, geom, si, own_dets[k], probs, all_dets,
+                                all_parsed, sel_boxes)
         guide = (_crop_square(rgb_u8, geom).astype(np.float32) / 255.0) @ sky_seg._LUMA
         m = np.clip(_guided(guide, m, int(si * FACE_GUIDED_R), FACE_GUIDED_EPS), 0.0, 1.0)
         ramp = _border_ramp(si)         # 크롭 모서리 직사각형 자국 방지(분리형 → 행·열 각각)

@@ -3340,7 +3340,10 @@ class Controller(QObject):
                     # 인덱스가 아니라 좌표인 이유는 face_seg.face_key 주석 참조.
                     sel = face_seg.match_faces(face_seg.face_sel_from_keys(keys), dets, hw)
                     want = list(range(len(dets))) if sel is None else list(sel)
-                    todo = [i for i in want if i not in cache]
+                    # 선택 크롭에 걸치는 라이벌 얼굴도 파싱 — 접촉부 소유권(확률 비교)에 필요.
+                    # 떨어져 있는 얼굴은 안 파싱하고, 결과는 같은 캐시라 선택을 바꿔도 재사용된다.
+                    need = want + face_seg.rivals_for(want, dets)
+                    todo = [i for i in need if i not in cache]
                     if todo:
                         status_set = True
 
@@ -3357,7 +3360,13 @@ class Controller(QObject):
                     # ⚠️락 안에서 지역 리스트로 잡고 나간다. 메인 스레드가 이미지 전환 시 락 없이
                     #   재바인딩하므로, 나간 뒤 self. 로 다시 읽으면 옛 이미지 좌표가 섞인다.
                     parsed = [cache[i] for i in want if i in cache]
-                fm = face_seg.compose_face_mask(parsed, rgb8, face_ids)
+                    own_dets = [dets[i] for i in want if i in cache]
+                    all_parsed = dict(cache)
+                # own/all 검출 + 파싱 캐시를 같이 넘겨 크롭에 걸친 **선택 안 된** 얼굴을 감쇠한다
+                # (붙어 있는 두 얼굴에서 남의 피부까지 마스크에 들어오는 것 방지, 경계는 양쪽
+                # 파싱 확률 비교로 — face_seg._rival_suppress).
+                fm = face_seg.compose_face_mask(parsed, rgb8, face_ids, own_dets, dets,
+                                                all_parsed)
                 mask = fm if mask is None else np.maximum(mask, fm)
 
             # 방금 만든 Scene∪Face 성분을 캐시(깊이 합집합 **전** 상태여야 재사용 가능).
