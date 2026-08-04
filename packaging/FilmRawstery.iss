@@ -15,6 +15,11 @@ AppId={{B7C31C4E-2A9D-4F5B-9E62-D18A40F3C7A2}
 AppName=Film Rawstery
 AppVersion={#AppVersion}
 AppPublisher=Film Rawstery
+; setup.exe 자체의 버전 리소스(우클릭>속성>세부 정보). AppVersion 은 '프로그램 추가/제거'
+; 표시용이라 이걸 따로 안 주면 setup.exe 는 0.0.0.0 으로 나온다.
+VersionInfoVersion={#AppVersion}
+VersionInfoProductName=Film Rawstery
+VersionInfoDescription=Film Rawstery Setup
 ; OS 드라이브 \Program Files\Film Rawstery (64bit 모드라 (x86) 아님). 관리자 설치(UAC 1회).
 ; 설치 폴더는 읽기 전용이어도 안전 — 모델 다운로드는 %LocalAppData%\FilmRawstery\models,
 ; 사이드카는 사진 폴더 옆이라 앱이 설치 폴더에 쓸 일이 없다(app_dirs.py).
