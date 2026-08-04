@@ -59,10 +59,7 @@ Any Fujifilm body works out of the box (everything is driven by per-file metadat
 - **Per-mask develop** — Exposure / Temp / Tint / Contrast / Highlights / Shadows / Texture / Clarity / Dehaze / Saturation, applied only to the masked region in both preview and export
 - Masks persist per-image (regenerated from the saved classes on reopen)
 
-Depth masking runs at ~0.75 s per photo (GPU via DirectML; ~1.2 s on CPU), and after that dragging
-the Near/Far range updates continuously at ~100 ms because only the band-pass is recomputed — the
-depth map itself is estimated once and cached per image. See
-[`docs/depth_masking.md`](docs/depth_masking.md).
+#### Face masking
 
 Face masking is two models working together: **YuNet** locates faces (232 KB), then **SegFormer-B5
 trained on CelebAMask-HQ** parses each face crop into 19 classes. The detector only decides where to
@@ -70,6 +67,21 @@ crop — boundary precision comes from parsing plus the guided filter, so masks 
 and jaw rather than a box. Opening the Face tab runs detection alone (~60 ms) so the thumbnails appear
 before the 340 MB parser is ever fetched; only the faces you actually select are parsed (~0.8 s each),
 and part toggles after that are ~10 ms.
+
+<p align="center">
+  <img src="docs/masking_face_seg.jpg" alt="Film Rawstery — face masking: one portrait parsed into selectable parts, each shown as a red mask overlay — skin, nose, eyes, brows, lips, ears, hair, and neck" width="100%">
+</p>
+
+#### Depth masking
+
+Depth masking runs at ~0.75 s per photo (GPU via DirectML; ~1.2 s on CPU), and after that dragging
+the Near/Far range updates continuously at ~100 ms because only the band-pass is recomputed — the
+depth map itself is estimated once and cached per image. See
+[`docs/depth_masking.md`](docs/depth_masking.md).
+
+<p align="center">
+  <img src="docs/masking_depth.png" alt="Film Rawstery — depth masking: the same scene selected by distance. Left: Near 0.00–Far 0.57 masks the foreground objects (red overlay); right: Near 0.85–Far 1.00 masks only the far wall behind them" width="100%">
+</p>
 
 ### AI Caption
 - **On-device English captions** — Microsoft **Florence-2** running locally via ONNX (MIT-licensed model); no cloud, no account
