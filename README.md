@@ -196,7 +196,7 @@ Open a `.RAF` from the left file explorer (double-click). Shaders auto-recompile
 
 ### Windows
 
-The primary development/test platform. A prebuilt zip (no Python required) is available on the [Releases](https://github.com/lim8701/FilmRawstery/releases) page — extract and run `FilmRawstery.exe`.
+The primary development/test platform. A prebuilt installer (no Python required) is available on the [Releases](https://github.com/lim8701/FilmRawstery/releases) page — run `FilmRawstery-vX.Y.Z-setup.exe` and launch **Film Rawstery** from the Start menu. It installs to `Program Files`, adds an uninstaller, and upgrades in place when a newer setup is run.
 
 ### macOS
 
