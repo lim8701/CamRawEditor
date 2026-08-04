@@ -14,6 +14,7 @@ datas += [
     ("shaders", "shaders"),   # .frag + 미리 컴파일된 .qsb (frozen 은 런타임 재컴파일 안 함)
     ("fonts", "fonts"),       # DSEG7Classic-Bold.ttf
     ("assets", "assets"),     # 후원 팝업의 카카오페이 QR (Main.qml 이 ../assets 로 참조)
+    (os.path.join("icons", "app.ico"), "icons"),   # 창/작업표시줄 아이콘(main.py setWindowIcon)
     # 라이선스/고지(비상업 배포 시 동봉 의무) — MIT + 제3자 라이선스 + 종합 NOTICE.
     ("LICENSE", "."),
     ("NOTICE.txt", "."),
@@ -89,7 +90,7 @@ exe = EXE(
     strip=False,
     upx=False,          # UPX off — Qt DLL 손상 방지
     console=CONSOLE,
-    icon=None,
+    icon=os.path.join("icons", "app.ico"),   # 생성: packaging/make_icon.py (RAW/R 멀티사이즈)
     version=os.path.join("packaging", "version_info.txt"),   # exe 속성>세부정보 버전 표시
     contents_directory="lib",   # onedir 하위폴더 이름(기본 _internal → lib)
 )

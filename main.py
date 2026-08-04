@@ -20,8 +20,8 @@ from pathlib import Path
 
 from PySide6.QtCore import (Property, QBuffer, QEvent, QFileSystemWatcher, QObject,
                             QPointF, QSettings, QSize, Qt, QTimer, Signal, Slot, QUrl)
-from PySide6.QtGui import (QDesktopServices, QGuiApplication, QImage, QImageReader,
-                           QTransform)
+from PySide6.QtGui import (QDesktopServices, QGuiApplication, QIcon, QImage,
+                           QImageReader, QTransform)
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickImageProvider, QQuickItem
 
@@ -4003,6 +4003,10 @@ def main() -> int:
         _prefer_high_performance_gpu()   # 외장 GPU 우선(다음 실행부터). Windows 한정.
 
     app = QGuiApplication(sys.argv)
+    # 창/작업표시줄 아이콘. exe 리소스 아이콘(spec icon=)과 같은 파일 — dev 실행에서도 동일하게.
+    _icon = BASE / "icons" / "app.ico"
+    if _icon.is_file():
+        app.setWindowIcon(QIcon(str(_icon)))
     # 단일 인스턴스 가드 — splash/무거운 임포트 *전*에 확인해 두 번째 실행은 즉시 끝나게.
     proceed, si_server = _acquire_single_instance(sys.argv[1] if len(sys.argv) > 1 else "")
     if not proceed:
