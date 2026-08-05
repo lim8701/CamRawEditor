@@ -848,7 +848,7 @@ class Controller(QObject):
     depthAutoResolved = Signal(int, float, float, float)   # layer, near, far, feather
     _renderReady = Signal(object)  # (내부) 워커 스레드 -> 메인 스레드 결과 전달
     _fullDecoded = Signal(bool)  # (내부) 풀해상도 디코드 워커 -> 메인 스레드
-    _skyReady = Signal(object)   # (내부) 마스크 워커 -> 메인 스레드 (img_gen, layer, lseq, mask)
+    _skyReady = Signal(object)   # (내부) 마스크 워커 -> 메인 스레드 (img_gen, layer, lseq, mask, strokes)
     _segStatusSig = Signal(str)  # (내부) 세그 워커 -> 메인 스레드 상태 문구 전달
     _segDlSig = Signal(object)   # (내부) 세그 워커 -> 메인 스레드 (downloading, 진행률 0..1)
     _depthAutoSig = Signal(object)  # (내부) 마스크 워커 -> 메인 (img_gen, layer, near, far, feather)
@@ -931,6 +931,24 @@ class Controller(QObject):
         self._seg_guide = None      # 캐시된 원본 휘도(guided filter 가이드)
         self._seg_size = None       # 캐시된 마스크 출력 크기(H,W)
         self._layer_keys = [[] for _ in range(5)]  # 레이어별 선택 클래스 그룹 key 목록
+        # 레이어별 브러시 획(벡터 목록, brush.py 참조). 영속화 진실원은 QML win.layers[i].strokes
+        # (사이드카 skyEditParams) — 여기는 워커 래스터용 미러(setStrokes/addStroke 로 동기).
+        # _layer_mask_strokes = 현재 _layer_masks[i] 를 만든 획 스냅샷 — setMaskClasses no-op
+        # 판정용(undo 가 setStrokes+같은 keys 로 와도 획이 다르면 재생성돼야 한다).
+        self._layer_strokes = [[] for _ in range(5)]
+        self._layer_mask_strokes = [[] for _ in range(5)]
+        # 자동(장면∪얼굴∪깊이, 획 적용 **전**) 마스크 캐시 — Undo/Clear stroke 가 세그 워커
+        # (세그 입력 재구성 ~1s 가능 → dim/프로그레스) 없이 동기 리플레이하기 위한 base.
+        # 워커 완료(_on_sky_ready)가 채우고, 이미지 전환/레이어 해제가 무효화.
+        self._layer_automask = [None] * 5
+        self._layer_automask_valid = [False] * 5
+        # 획별 패치 스냅샷(꼬리 정렬) — addStroke(증분)가 획이 바꿀 bbox 의 **이전 픽셀**을
+        # 저장, popStroke 는 되돌려쓰기만(래스터 0회 = 획 수 무관 즉각). 항목 =
+        # (y0,y1,x0,x1, region float32 | None=마스크가 없었음(0)). 워커 리플레이/복원/이미지
+        # 전환은 스택을 비움(그 후 pop 은 automask 리플레이 폴백). 메모리 상한 초과 시 오래된
+        # 것부터 폐기(꼬리 정렬이라 최근 undo 는 계속 즉각).
+        self._stroke_patches = [[] for _ in range(5)]
+        self._PATCH_CAP_BYTES = 96 * 1024 * 1024   # 레이어당 상한(풀프레임 float32 ≈ 17.5MB)
         self._mask_ran = False      # 이 이미지에서 마스크 워커가 한 번이라도 끝났는지(maskSettled)
         self._seg_rgb8 = None       # 캐시된 세그 입력(중성 display sRGB) — 장면/얼굴/깊이 공용
         # 캐시된 거리 맵(프록시 해상도 float32, 정제 완료) — 이미지당 추론 1회(레이어 5개 공유).
@@ -2772,9 +2790,16 @@ class Controller(QObject):
         if not (0 <= layer < 5):
             return
         keys_list = [str(k) for k in keys]
-        if keys_list == self._layer_keys[layer] and self._layer_masks[layer] is not None:
+        # no-op 은 keys 뿐 아니라 획 목록도 마스크와 일치해야 한다 — undo/복원이 setStrokes 후
+        # 같은 keys 로 재커밋할 때 획만 달라진 경우 재생성돼야 함(값 비교, 목록이 작아 저렴).
+        if (keys_list == self._layer_keys[layer] and self._layer_masks[layer] is not None
+                and self._layer_strokes[layer] == self._layer_mask_strokes[layer]):
             return
         self._layer_keys[layer] = keys_list
+        self._spawn_mask_worker(layer)
+
+    def _spawn_mask_worker(self, layer: int) -> None:
+        """현재 keys+strokes 로 레이어 마스크 워커 스폰(공통 경로 — 클래스 커밋/브러시 획)."""
         if self._proxy_img is None:
             return
         self._layer_seq[layer] += 1
@@ -2782,8 +2807,143 @@ class Controller(QObject):
         self._sky_busy = True
         self.skyBusyChanged.emit()
         threading.Thread(target=self._mask_worker,
-                         args=(self._img_gen, layer, self._layer_seq[layer], list(keys_list)),
+                         args=(self._img_gen, layer, self._layer_seq[layer],
+                               list(self._layer_keys[layer]),
+                               list(self._layer_strokes[layer])),
                          daemon=True).start()
+
+    @staticmethod
+    def _sanitize_stroke(stroke):
+        """QML JS 객체 → 순수 dict(사이드카와 동형). 형 강제 + 홀수 좌표 절단."""
+        pts = [float(v) for v in (stroke.get("points") or [])]
+        return {"sign": 1.0 if float(stroke.get("sign", 1)) >= 0 else -1.0,
+                "radius": float(stroke.get("radius", 0.05)),
+                "feather": float(stroke.get("feather", 0.5)),
+                "points": pts[: (len(pts) // 2) * 2]}
+
+    def _proxy_hw(self):
+        """프록시 마스크 해상도 (H,W). 프록시 없으면 None."""
+        img = self._proxy_img
+        if img is None or img.width() < 1 or img.height() < 1:
+            return None
+        return (img.height(), img.width())
+
+    def _apply_stroke_incremental(self, layer: int, stroke) -> "object":
+        """현재 canonical 마스크 위에 획 1개를 얹은 새 마스크 반환(획 수와 무관한 상수 비용).
+
+        새 획은 항상 목록의 **맨 끝**이므로 전체 리플레이(워커)와 수학적으로 동일하다 —
+        추가 = max, 빼기 = ×(1-α) 모두 마지막 적용이 결합법칙을 만족. 전부 0 이면 None."""
+        import brush
+        hw = self._proxy_hw()
+        if hw is None:
+            return None
+        m = brush.apply_strokes(self._layer_masks[layer], hw, [stroke])
+        return m if m.any() else None
+
+    @Slot(int, "QVariantMap")
+    def addStroke(self, layer, stroke) -> None:  # noqa: N802 (QML 슬롯)
+        """브러시 획 1개 추가(릴리즈 커밋). canonical 마스크에 **증분 적용**이라 획 수와
+        무관하게 즉시 반영 — 전체 리플레이 워커는 pop/clear/복원/재디코딩만 담당.
+        예외: 워커 진행 중이면 증분 기반(canonical)이 유동적이라 리플레이 경로로 폴백
+        (스폰 스냅샷에 방금 획이 포함되므로 순서 안전)."""
+        layer = int(layer)
+        if not (0 <= layer < 5):
+            return
+        s = self._sanitize_stroke(stroke)
+        self._layer_strokes[layer].append(s)
+        if self._sky_pending > 0 or self._proxy_hw() is None:
+            self._stroke_patches[layer] = []     # 워커가 마스크를 재구성 → 패치 정렬 깨짐
+            self._spawn_mask_worker(layer)
+            return
+        self._push_stroke_patch(layer, s)        # 적용 **전** 픽셀 저장(즉각 undo 용)
+        self._mask_ran = True                # 워커 없이 확정 — maskSettled 게이트 충족
+        self._layer_mask_strokes[layer] = list(self._layer_strokes[layer])
+        self._set_layer_mask(layer, self._apply_stroke_incremental(layer, s))
+
+    def _push_stroke_patch(self, layer: int, stroke) -> None:
+        """획이 변경할 bbox 의 현재(적용 전) 픽셀을 패치 스택에 저장 + 메모리 상한 관리."""
+        import brush
+        hw = self._proxy_hw()
+        bbox = brush.stroke_bbox(stroke, hw) if hw is not None else None
+        if bbox is None:
+            self._stroke_patches[layer].append((0, 0, 0, 0, None))   # 무효 획 = 빈 패치
+            return
+        y0, y1, x0, x1 = bbox
+        base = self._layer_masks[layer]
+        region = None if base is None else base[y0:y1, x0:x1].copy()
+        patches = self._stroke_patches[layer]
+        patches.append((y0, y1, x0, x1, region))
+        total = sum(r.nbytes for *_, r in patches if r is not None)
+        while patches and total > self._PATCH_CAP_BYTES:
+            old = patches.pop(0)                 # 오래된 것부터 폐기(최근 undo 는 유지)
+            if old[4] is not None:
+                total -= old[4].nbytes
+
+    @Slot(int)
+    def popStroke(self, layer) -> None:  # noqa: N802 (QML 슬롯) — 마지막 획 취소
+        layer = int(layer)
+        if not (0 <= layer < 5) or not self._layer_strokes[layer]:
+            return
+        self._layer_strokes[layer].pop()
+        # 즉각 경로: 마지막 획의 패치(적용 전 픽셀)를 되돌려쓰기 — 래스터 0회, 획 수 무관.
+        # 패치 스택이 비었으면(워커 재구성 후 등) automask 리플레이 폴백.
+        patches = self._stroke_patches[layer]
+        if patches and self._sky_pending == 0:
+            import numpy as np
+            y0, y1, x0, x1, region = patches.pop()
+            hw = self._proxy_hw()
+            if hw is not None:
+                base = self._layer_masks[layer]
+                m = (np.zeros(hw, np.float32) if base is None
+                     else base.astype(np.float32, copy=True))
+                m[y0:y1, x0:x1] = 0.0 if region is None else region
+                if not m.any():
+                    m = None
+                self._mask_ran = True
+                self._layer_mask_strokes[layer] = list(self._layer_strokes[layer])
+                self._set_layer_mask(layer, m)
+                return
+        self._replay_strokes_fast(layer)
+
+    @Slot(int)
+    def clearStrokes(self, layer) -> None:  # noqa: N802 (QML 슬롯) — 획 전체 삭제
+        layer = int(layer)
+        if 0 <= layer < 5 and self._layer_strokes[layer]:
+            self._layer_strokes[layer] = []
+            self._stroke_patches[layer] = []
+            self._replay_strokes_fast(layer)
+
+    def _replay_strokes_fast(self, layer: int) -> None:
+        """획 편집(pop/clear) 반영: 자동 마스크 캐시 위에 남은 획을 동기 리플레이 —
+        세그 워커를 안 태우므로 dim/프로그레스 없음(사용자 보고: undo stroke 지연).
+        캐시 미확보(keys 있는데 워커가 아직 안 돌았음)·워커 진행 중이면 전체 워커 폴백.
+        keys 없는(브러시 전용) 레이어는 자동 마스크가 정의상 None 이라 캐시 불필요."""
+        import brush
+        hw = self._proxy_hw()
+        auto_ok = self._layer_automask_valid[layer] or not self._layer_keys[layer]
+        if hw is None or self._sky_pending > 0 or not auto_ok:
+            self._spawn_mask_worker(layer)
+            return
+        base = self._layer_automask[layer] if self._layer_automask_valid[layer] else None
+        strokes = self._layer_strokes[layer]
+        if base is None and not strokes:
+            m = None
+        else:
+            m = brush.apply_strokes(base, hw, strokes)
+            if not m.any():
+                m = None
+        self._mask_ran = True
+        self._layer_mask_strokes[layer] = list(strokes)
+        self._set_layer_mask(layer, m)
+
+    @Slot(int, "QVariantList")
+    def setStrokes(self, layer, strokes) -> None:  # noqa: N802 (QML 슬롯)
+        """획 목록 통째 설정(사이드카 복원·레이어 시프트 재동기용). 재생성은 안 함 —
+        복원 경로가 이어서 부르는 setMaskClasses 가 담당(setLayerRefine 과 같은 분업)."""
+        layer = int(layer)
+        if 0 <= layer < 5:
+            self._layer_strokes[layer] = [self._sanitize_stroke(s) for s in (strokes or [])]
+            self._stroke_patches[layer] = []   # 목록 교체 → 증분 이력과 정렬 깨짐
 
     @staticmethod
     def _qimage_to_rgb(qimg):
@@ -3248,12 +3408,15 @@ class Controller(QObject):
     faceKeys = Property("QVariantList", _face_keys, notify=facesChanged)
     faceScanning = Property(bool, _get_face_scanning, notify=facesChanged)
 
-    def _mask_worker(self, img_gen: int, layer: int, lseq: int, keys) -> None:
+    def _mask_worker(self, img_gen: int, layer: int, lseq: int, keys, strokes) -> None:
         """레이어 마스크 생성. keys 는 장면(sky_seg)·얼굴(face_seg) 그룹과 깊이 범위
         (depth `depth@near,far,feather`)가 섞여 올 수 있고, 각 소스가 만든 알파를
         np.maximum 으로 합집합한다. 추론 결과는 이미지당 캐시 —
-        체크박스/슬라이더 재조합만으로는 재추론하지 않는다."""
+        체크박스/슬라이더 재조합만으로는 재추론하지 않는다.
+        strokes(브러시 획)는 합집합 **최종** 마스크 위에 리플레이(brush.apply_strokes) —
+        keys 없이 획만 있는 레이어 = 순수 수동 마스크(닷징/버닝)."""
         mask = None
+        automask = None      # 획 적용 전 자동 마스크 스냅샷(pop/clear 동기 리플레이 base)
         status_set = False
         try:
             # ⚠️import 는 반드시 try 안에서 — 여기서 예외가 나면 _skyReady 가 발화하지 않아
@@ -3265,8 +3428,8 @@ class Controller(QObject):
             ade_ids = sky_seg.class_ids_for(keys)
             face_ids = face_seg.class_ids_for(keys)
             drange = depth.range_from_keys(keys)
-            if not ade_ids and not face_ids and drange is None:
-                self._skyReady.emit((img_gen, layer, lseq, None))
+            if not ade_ids and not face_ids and drange is None and not strokes:
+                self._skyReady.emit((img_gen, layer, lseq, None, strokes, None))
                 return
 
             # 세그 입력(중성 display sRGB)과 휘도 가이드는 두 소스 공용 — 예전엔 ADE 추론 분기
@@ -3276,7 +3439,7 @@ class Controller(QObject):
             #   rgb8 만 살아 있는 찢긴 조합을 읽을 수 있다. 하나라도 비면 다시 만든다.
             rgb8, hw, guide = self._seg_input(img_gen)
             if rgb8 is None:                         # 준비 중 이미지 전환 → stale
-                self._skyReady.emit((img_gen, layer, lseq, None))
+                self._skyReady.emit((img_gen, layer, lseq, None, strokes, None))
                 return
 
             # ── Scene∪Face 성분 캐시 ──────────────────────────────────────────
@@ -3311,7 +3474,7 @@ class Controller(QObject):
                     # 캐시를 비움) 이전 이미지의 softmax 를 되살려 다음 워커가 '이전 이미지
                     # 마스크를 현재 이미지에' 합성하는 레이스가 있었음. stale 워커는 여기서 종료.
                     if img_gen != self._img_gen:
-                        self._skyReady.emit((img_gen, layer, lseq, None))
+                        self._skyReady.emit((img_gen, layer, lseq, None, strokes, None))
                         return
                     self._seg_probs = probs
                 else:
@@ -3351,7 +3514,7 @@ class Controller(QObject):
                             self._segStatusSig.emit(f"Analyzing face {i + 1} of {n}…")
                         fresh = face_seg.parse_faces(rgb8, [dets[i] for i in todo], on_face=_fp)
                         if img_gen != self._img_gen:     # 파싱 중 이미지 전환 → 캐시 안 함
-                            self._skyReady.emit((img_gen, layer, lseq, None))
+                            self._skyReady.emit((img_gen, layer, lseq, None, strokes, None))
                             return
                         for i, pr in zip(todo, fresh):
                             cache[i] = pr
@@ -3373,7 +3536,7 @@ class Controller(QObject):
             # ⚠️img_gen 가드 — 합성 중 이미지가 바뀌면 이전 이미지 성분을 되살리게 된다(_seg_probs 와 동일).
             if not seg_cached and seg_keys:
                 if img_gen != self._img_gen:
-                    self._skyReady.emit((img_gen, layer, lseq, None))
+                    self._skyReady.emit((img_gen, layer, lseq, None, strokes, None))
                     return
                 self._layer_segmask[layer] = mask
                 self._layer_segkeys[layer] = seg_keys
@@ -3398,7 +3561,7 @@ class Controller(QObject):
                         # ⚠️캐시 쓰기 세대 가드 — sky_seg 캐시와 같은 레이스(추론 중 이미지 전환 시
                         #   이전 이미지의 거리 맵을 되살려 다음 워커가 현재 이미지에 합성).
                         if img_gen != self._img_gen:
-                            self._skyReady.emit((img_gen, layer, lseq, None))
+                            self._skyReady.emit((img_gen, layer, lseq, None, strokes, None))
                             return
                         self._depth_map = dm
                     dm = self._depth_map
@@ -3409,8 +3572,16 @@ class Controller(QObject):
                     self._depthAutoSig.emit((img_gen, layer) + tuple(drange))
                 dmask = depth.compose_mask(dm, *drange)
                 mask = dmask if mask is None else np.maximum(mask, dmask)
-            # 전부 0(예: 얼굴 없는 사진에 Face 선택) → 마스크 없음으로 되돌린다. 안 그러면
-            # 레이어에 ● 가 붙고 빈 오버레이가 번쩍이며 export 가 0 배열을 들고 다닌다.
+            # ── 브러시 획 리플레이(자동 마스크 합집합 **뒤**) ──────────────────
+            # mask=None(빈 레이어)이면 0 캔버스에서 시작 = 순수 수동 마스크.
+            # apply_strokes 는 항상 새 배열 반환 → _layer_segmask 캐시 비오염.
+            automask = mask                  # 획 적용 전 스냅샷(아래 페이로드로 전달·캐시)
+            if strokes:
+                import brush
+                mask = brush.apply_strokes(mask, hw, strokes)
+
+            # 전부 0(예: 얼굴 없는 사진에 Face 선택, 빼기 획만 있는 빈 레이어) → 마스크 없음.
+            # 안 그러면 레이어에 ● 가 붙고 빈 오버레이가 번쩍이며 export 가 0 배열을 들고 다닌다.
             if mask is not None and not mask.any():
                 mask = None
         except Exception as exc:
@@ -3420,7 +3591,7 @@ class Controller(QObject):
             # "Analyzing N face(s)…" 를 먼저 끝난 워커가 꺼버린다.
             if status_set:
                 self._segStatusSig.emit("")
-        self._skyReady.emit((img_gen, layer, lseq, mask))
+        self._skyReady.emit((img_gen, layer, lseq, mask, strokes, automask))
 
     @Slot(object)
     def _on_depth_auto(self, payload) -> None:
@@ -3447,7 +3618,7 @@ class Controller(QObject):
 
     @Slot(object)
     def _on_sky_ready(self, payload) -> None:
-        img_gen, layer, lseq, mask = payload
+        img_gen, layer, lseq, mask, strokes, automask = payload
         self._sky_pending -= 1
         if self._sky_pending <= 0:       # 모든 in-flight 워커 종료 → busy 해제
             self._sky_pending = 0
@@ -3459,6 +3630,10 @@ class Controller(QObject):
         #   켜버리면 새 이미지가 아직 마스크를 만들기도 전에 maskSettled 가 참이 돼,
         #   배치 export 가 마스크 없이 저장해 버린다.
         self._mask_ran = True            # 결과가 None 이어도 '요청은 끝났다'(maskSettled)
+        self._layer_mask_strokes[layer] = strokes   # 이 마스크가 어떤 획 목록으로 만들어졌나
+        self._layer_automask[layer] = automask      # 획 적용 전 자동 마스크(pop/clear 동기 base)
+        self._layer_automask_valid[layer] = True
+        self._stroke_patches[layer] = []            # 재구성 → 증분 패치 이력 무효(pop 은 리플레이 폴백)
         self._set_layer_mask(layer, mask)
         if mask is not None:
             self.skySelected.emit()      # 갱신 완료 → QML 이 마스크 오버레이 자동 표시
@@ -3492,6 +3667,11 @@ class Controller(QObject):
         if 0 <= layer < 5:
             self._layer_seq[layer] += 1      # 해당 레이어 in-flight 워커만 무효화(전역 아님)
             self._layer_keys[layer] = []
+            self._layer_strokes[layer] = []
+            self._layer_mask_strokes[layer] = []
+            self._layer_automask[layer] = None
+            self._layer_automask_valid[layer] = False
+            self._stroke_patches[layer] = []
             self._set_layer_mask(layer, None)
 
     def _clear_sky(self) -> None:
@@ -3500,6 +3680,11 @@ class Controller(QObject):
         for i in range(5):
             self._layer_seq[i] += 1
             self._layer_keys[i] = []
+            self._layer_strokes[i] = []
+            self._layer_mask_strokes[i] = []
+            self._layer_automask[i] = None
+            self._layer_automask_valid[i] = False
+            self._stroke_patches[i] = []
             self._set_layer_mask(i, None)
 
     def _get_layer_urls(self):
@@ -3679,6 +3864,9 @@ class Controller(QObject):
         prev_layer_keys = [list(k) for k in self._layer_keys]   # 레이어별 선택 스냅샷(재정렬용)
         self._img_gen += 1               # 이미지 세대↑ → 이전 이미지의 진행 중 세그 워커 결과 무효화
         for _i in range(5):
+            self._layer_automask[_i] = None       # 자동 마스크 캐시도 프록시 기준 → 무효
+            self._layer_automask_valid[_i] = False
+            self._stroke_patches[_i] = []         # 패치 스냅샷도 프록시 기준
             self._set_layer_mask(_i, None)   # 새 프록시 → 이전 마스크 무효(곧 재생성/복원)
         # 디헤이즈 물리(DCP): 이전 추정 무효화(준비 전엔 conf=0 → 톤모델 폴백) 후 백그라운드 재추정.
         self._haze_seq += 1
@@ -3715,10 +3903,12 @@ class Controller(QObject):
         # fresh load 는 applyEdits 가 저장본에서 복원하므로 여기선 건드리지 않는다.
         if not self._fresh_load:         # 비-fresh 재디코딩 → 각 레이어 마스크 재정렬(렌즈/기하 변경)
             for _i in range(5):
-                if prev_layer_keys[_i]:
+                if prev_layer_keys[_i] or self._layer_strokes[_i]:   # 획만 있는 레이어도 재정렬
                     self.setMaskClasses(_i, prev_layer_keys[_i])
         else:
             self._layer_keys = [[] for _ in range(5)]
+            self._layer_strokes = [[] for _ in range(5)]     # 복원은 applySkyEdits→setStrokes
+            self._layer_mask_strokes = [[] for _ in range(5)]
         self._update_stamp_layer()       # 날짜 스탬프 프리뷰 레이어(프록시, 우하단)
         self._compute_histogram(img)     # 톤커브 배경 히스토그램(디코딩된 프록시)
         print(f"[load] {self._path}  ({img.width()}x{img.height()})  "

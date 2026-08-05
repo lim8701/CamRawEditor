@@ -127,6 +127,63 @@ ApplicationWindow {
 
     // 마스크 선택영역 오버레이 표시(프리뷰 전용, 활성 레이어 마스크)
     property bool showSkyMask: false
+
+    // ---- 브러시(수동 마스킹) — 활성 레이어 마스크 위에 획 추가/빼기 ----
+    // 획은 벡터로 레이어 dict(strokes)에 저장(사이드카/undo 는 skyEditParams 로 자동 편승),
+    // 컨트롤러 미러(addStroke 등)가 자동 마스크 위에 리플레이한다(brush.py).
+    property int brushMode: 0          // 0=끔, 1=추가(+), 2=지우기(−). 마스킹 패널에서만.
+    property real brushSize: 0.06      // 반경(프록시 짧은 변 대비 비율)
+    property real brushFeather: 0.5    // 반경 중 falloff 비중(0=하드, 1=전부 소프트)
+    readonly property int activeStrokeCount: {
+        win.layers                      // 재대입 추적(획 커밋마다 slice 재대입됨)
+        return (win.layers[win.activeLayer].strokes || []).length
+    }
+    function setBrushMode(m) {          // 같은 버튼 재클릭 = 끄기(토글)
+        win.brushMode = (win.brushMode === m) ? 0 : m
+        if (win.brushMode !== 0) win.showSkyMask = true   // 칠하는 대상이 보이게
+    }
+    // ⚠️획 undo 는 **전역 Ctrl+Z 하나로 통일**(라이트룸식). 별도 "Undo stroke" 버튼은
+    // 이중 undo 체계(버튼의 되돌림 자체가 또 전역 스텝이 됨 → Ctrl+Z 가 지운 획을 되살리는
+    // 꼬임)라 기각·제거. 전역 undo 의 획 변경은 applySkyEdits 가 tail-diff 로 감지해
+    // popStroke/addStroke 즉각 경로를 탄다. 획 1개 = 스냅샷 1개(commitEditSnapshot 즉시).
+    function commitBrushStroke(stroke) {
+        var L = win.layers[win.activeLayer]
+        var s = (L.strokes || []).slice(); s.push(stroke); L.strokes = s
+        win.layers = win.layers.slice()   // notify → 자동저장 watch
+        controller.addStroke(win.activeLayer, stroke)
+        win.commitEditSnapshot()          // 디바운스 코얼레싱 방지 — 획 1개 = undo 스텝 1개
+    }
+    function clearBrushStrokes() {
+        var L = win.layers[win.activeLayer]
+        if ((L.strokes || []).length === 0) return
+        L.strokes = []
+        win.layers = win.layers.slice()
+        controller.clearStrokes(win.activeLayer)
+        win.commitEditSnapshot()
+    }
+    // 브러시 모드 단축키(마스킹 패널 + 사진 로드 시에만): A=Add, S=Subtract — 재입력=끄기
+    // (버튼 토글과 동일), ESC=끄기. A/S 는 나란한 키라 확대/패닝과 오가는 한 손 워크플로우에
+    // 최적. 용어는 라이트룸 마스킹(Add/Subtract)과 동일 — Erase 는 도구 은유가 섞여 기각.
+    Shortcut {
+        sequence: "A"
+        enabled: !win._typing && win.activePanel === 2 && controller.imagePath !== ""
+        onActivated: win.setBrushMode(1)
+    }
+    Shortcut {
+        sequence: "S"
+        enabled: !win._typing && win.activePanel === 2 && controller.imagePath !== ""
+        onActivated: win.setBrushMode(2)
+    }
+    // O = 마스크 오버레이(빨강) 토글 — 라이트룸 Show Overlay 와 동일 키. 마스킹 패널 한정.
+    Shortcut {
+        sequence: "O"
+        enabled: !win._typing && win.activePanel === 2 && controller.imagePath !== ""
+        onActivated: win.showSkyMask = !win.showSkyMask
+    }
+    // ESC = 브러시 끄기(브러시 켜졌을 때만 — 다른 ESC 소비자와 enabled 로 비충돌)
+    Shortcut { sequence: "Escape"; enabled: win.brushMode !== 0; onActivated: win.brushMode = 0 }
+    // 마스킹 패널을 떠나면 브러시도 끔(다른 패널에서 오조작 방지)
+    onActivePanelChanged: if (activePanel !== 2) win.brushMode = 0
     // 로컬 마스크 레이어(동적 생성/삭제, 최대 5) — 각 {keys, invert, 10 조정}. 슬라이더/체크박스는
     // activeLayer 를 편집. layers 는 항상 길이 5(고정 슬롯=셰이더/컨트롤러 정합), layerCount 개만 활성.
     property int activeLayer: 0
@@ -136,7 +193,7 @@ ApplicationWindow {
         // faceSelMemo: 마지막 부위를 끌 때 버려지는 face@ 선택의 백업(세션 한정, 직렬화 안 됨 —
         // skyEditParams 가 필드를 명시 나열하므로 사이드카에 새지 않는다). 부위를 다시 켤 때
         // '가장 큰 얼굴' 대신 직전 선택을 복원하는 용도(toggleMaskKey).
-        return { keys: [], invert: false, faceSelMemo: [],
+        return { keys: [], invert: false, strokes: [], faceSelMemo: [],
                  skyExp: 0, skyTemp: 0, skyTint: 0, skySat: 0, skyHi: 0,
                  skyShadows: 0, skyContrast: 1.0, skyTexture: 0, skyClarity: 0, skyDehaze: 0 }
     }
@@ -144,8 +201,13 @@ ApplicationWindow {
     // 컨트롤러 마스크를 현재 layers 슬롯에 재동기(삭제로 시프트된 뒤 등). 캐시된 확률이라 재조합 저렴.
     function _resyncLayers() {
         for (var q = 0; q < win.maxLayers; q++) {
-            if (q < win.layerCount && win.layers[q].keys.length > 0) controller.setMaskClasses(q, win.layers[q].keys)
-            else controller.clearLayer(q)
+            var hasContent = q < win.layerCount
+                && (win.layers[q].keys.length > 0 || (win.layers[q].strokes || []).length > 0)
+            if (hasContent) {
+                // 획을 먼저 밀어야 setMaskClasses 워커가 옳은 획으로 돈다(시프트 후 슬롯 불일치 방지)
+                controller.setStrokes(q, win.layers[q].strokes || [])
+                controller.setMaskClasses(q, win.layers[q].keys)
+            } else controller.clearLayer(q)
         }
     }
     function addLayer() {                     // 새 빈 레이어 추가 → 그 레이어로 전환
@@ -552,7 +614,8 @@ ApplicationWindow {
         var out = []
         for (var i = 0; i < win.layerCount; i++) {   // 존재하는 레이어만 저장 → 재로드 시 개수 복원
             var L = win.layers[i]
-            var o = { "keys": (L.keys || []).slice(), "skyInvert": L.invert }
+            var o = { "keys": (L.keys || []).slice(), "skyInvert": L.invert,
+                      "strokes": (L.strokes || []).slice() }
             for (var j = 0; j < win.skyAdjustKeys.length; j++) { var k = win.skyAdjustKeys[j]; o[k] = L[k] }
             out.push(o)
         }
@@ -560,8 +623,21 @@ ApplicationWindow {
     }
     // skyContrast 는 곱셈자라 중립=1.0(전역 Contrast 와 동일), 나머지는 0.0.
     function _skyDefault(k) { return k === "skyContrast" ? 1.0 : 0.0 }
+    // 획 목록 tail-diff: b == a 에서 마지막 1개 뺀 것 → "pop", a == b 에서 마지막 1개 뺀 것 → "push".
+    // 전역 undo/redo 의 획 한 개 변경을 감지해 워커 리플레이 대신 즉각 경로(popStroke/addStroke)로.
+    function _strokeTailDiff(a, b) {
+        if (a.length === b.length + 1
+            && JSON.stringify(a.slice(0, b.length)) === JSON.stringify(b)) return "pop"
+        if (b.length === a.length + 1
+            && JSON.stringify(b.slice(0, a.length)) === JSON.stringify(a)) return "push"
+        return null
+    }
     // 복원: 레이어별 조정값 + 선택 클래스. 마스크는 클래스로부터 재생성. 구 평면 스키마는 레이어0 매핑(하위호환).
-    function applySkyEdits(p) {
+    // fastMasks=true(undo/redo 한정): 획 tail-diff 즉각 경로 허용. ⚠️fresh 파일 로드 복원은
+    // prevLayers 가 **이전 사진** 것이라 절대 fast 금지(같아 보여도 컨트롤러는 초기화 상태).
+    function applySkyEdits(p, fastMasks) {
+        var prevLayers = win.layers          // 획 tail-diff 비교용(교체 전 상태)
+        var prevCount = win.layerCount
         var ml = win._ev(p, "maskLayers", null)
         if (!ml) {                          // 하위호환: 구 평면(maskKeys + sky*) → 레이어 0
             var flat = { keys: (win._ev(p, "maskKeys", []) || []).slice(), invert: win._ev(p, "skyInvert", false) }
@@ -574,18 +650,37 @@ ApplicationWindow {
             var src = ml[i]; var L = newLayers[i]
             L.keys = (win._ev(src, "keys", []) || []).slice()
             L.invert = win._ev(src, "skyInvert", false)
+            L.strokes = (win._ev(src, "strokes", []) || []).slice()
             for (var m = 0; m < win.skyAdjustKeys.length; m++) { var kk = win.skyAdjustKeys[m]; L[kk] = win._ev(src, kk, win._skyDefault(kk)) }
         }
         win._loadingLayer = true
         win.layers = newLayers
         win.layerCount = cnt
         win.activeLayer = 0
-        win.showSkyMask = false
+        // 오버레이는 undo/redo(fastMasks)에서는 현재 상태 유지 — 켠 채로 획을 되돌리는
+        // 흐름이 끊기지 않게(사용자 요청). 새 파일 복원/붙여넣기만 초기화.
+        if (fastMasks !== true) win.showSkyMask = false
         win._loadingLayer = false
         win.loadActiveToSliders()           // 레이어0 값을 슬라이더/체크박스로
-        for (var q = 0; q < win.maxLayers; q++) {   // 각 레이어 마스크 재생성(클래스로부터)/비활성 슬롯 해제
-            if (q < cnt && newLayers[q].keys.length > 0) { win._maskRestore = true; controller.setMaskClasses(q, newLayers[q].keys) }
-            else controller.clearLayer(q)
+        for (var q = 0; q < win.maxLayers; q++) {   // 각 레이어 마스크 재생성(클래스+획으로부터)/비활성 슬롯 해제
+            var hasContent = q < cnt
+                && (newLayers[q].keys.length > 0 || newLayers[q].strokes.length > 0)
+            if (!hasContent) { controller.clearLayer(q); continue }
+            // 전역 undo/redo 즉각 경로: keys 동일 + 획만 꼬리 1개 차이(pop/push)면 컨트롤러의
+            // 패치/증분 경로 사용(워커 리플레이·dim 없음). keys 동일 + 획도 동일이면 재생성
+            // 자체를 생략(마스크 무관 편집의 undo 가 마스크를 건드리지 않게).
+            var prev = (fastMasks === true && q < prevCount) ? prevLayers[q] : null
+            if (prev && JSON.stringify((prev.keys || [])) === JSON.stringify(newLayers[q].keys)) {
+                var od = prev.strokes || []
+                var nd = newLayers[q].strokes
+                if (JSON.stringify(od) === JSON.stringify(nd)) continue
+                var td = win._strokeTailDiff(od, nd)
+                if (td === "pop") { controller.popStroke(q); continue }
+                if (td === "push") { controller.addStroke(q, nd[nd.length - 1]); continue }
+            }
+            controller.setStrokes(q, newLayers[q].strokes)   // 획 먼저(워커 스폰 전 동기)
+            win._maskRestore = true
+            controller.setMaskClasses(q, newLayers[q].keys)
         }
     }
 
@@ -686,7 +781,8 @@ ApplicationWindow {
     function _ev(p, k, d) { return p[k] !== undefined ? p[k] : d }
 
     // 저장된 편집을 컨트롤에 복원. 반드시 _applying 가드 안에서 호출(자동저장/WB 재디코딩 방지).
-    function applyEdits(p) {
+    // fastMasks: applySkyEdits 의 획 즉각 경로 허용(undo/redo 전용 — applySnapshot 만 true).
+    function applyEdits(p, fastMasks) {
         expSlider.value = _ev(p, "exposure", 0.0); conSlider.value = _ev(p, "contrast", 1.0)
         hiSlider.value = _ev(p, "highlights", 0.0); shSlider.value = _ev(p, "shadows", 0.0)
         whSlider.value = _ev(p, "whites", 0.0); blSlider.value = _ev(p, "blacks", 0.0)
@@ -750,7 +846,7 @@ ApplicationWindow {
         win.setCropRect(_ev(p,"cropX",0.0), _ev(p,"cropY",0.0), _ev(p,"cropW",1.0), _ev(p,"cropH",1.0))
         geoVSlider.value = _ev(p, "geoV", 0); geoHSlider.value = _ev(p, "geoH", 0)
         geoScaleSlider.value = _ev(p, "geoScale", 100)
-        win.applySkyEdits(p)   // 마스킹(선택 클래스 + 조정) 복원 — 마스크는 클래스로부터 재생성
+        win.applySkyEdits(p, fastMasks === true)   // 마스킹 복원 — fast 는 undo/redo 한정
     }
 
     // 하늘(로컬) 조정 초기화 — 슬라이더 + 마스크 + 오버레이. 새 파일 로드/Reset 에서 호출.
@@ -1133,7 +1229,7 @@ ApplicationWindow {
     function applySnapshot(snapStr) {
         var p = JSON.parse(snapStr)
         win._applying = true
-        win.applyEdits(p)
+        win.applyEdits(p, true)          // undo/redo = 획 tail-diff 즉각 경로 허용
         win._applying = false
         controller.setWb(tempSlider.value, tintSlider.value)
         controller.setCurve(curveEditor.allLuts())
@@ -4513,6 +4609,161 @@ ApplicationWindow {
                             }
                         }
                     }
+
+                    // ---- 브러시 페인트 서피스 (마스킹 패널 + 브러시 모드에서만) ----
+                    // 좌표는 mapToItem(pipeView)가 뷰 변환 체인(플립/회전/원근/fit/줌·팬)을 전부
+                    // 역산해 주므로 프록시 정규화 좌표가 바로 나온다. 릴리즈 시 획 1개 커밋
+                    // (= undo 스텝 1개), 드래그 중엔 반투명 트레일만 표시.
+                    Item {
+                        id: brushSurface
+                        anchors.fill: parent
+                        visible: win.activePanel === 2 && win.brushMode !== 0 && cropClip.visible
+                        // 화면상 브러시 반경(px): 프록시 px 반경을 pipeView→화면 스케일로 환산
+                        function screenRadius() {
+                            var rpx = win.brushSize * Math.min(viewport.procW, viewport.procH)
+                            var p0 = pipeView.mapToItem(brushSurface, 0, 0)
+                            var p1 = pipeView.mapToItem(brushSurface, rpx, 0)
+                            return Math.hypot(p1.x - p0.x, p1.y - p0.y)
+                        }
+                        // 커서용 캐시 반경 — 함수는 리액티브하지 않아 프로퍼티로 미러(같은 값
+                        // 재대입은 notify 를 안 울려 커서 repaint 가 실제 변경 때만 일어난다).
+                        property real curRc: 0
+                        MouseArea {
+                            id: brushArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.BlankCursor
+                            acceptedButtons: Qt.LeftButton
+                            property var pts: []          // 현재 획(프록시 정규화 xy 평탄 배열)
+                            property real lastX: -1e9
+                            property real lastY: -1e9
+                            property real mx: -1000       // 커서 표시 위치(서피스 좌표)
+                            property real my: -1000
+                            function addPoint(x, y) {
+                                // 화면 이동량 < 반경/4 이면 스킵(획당 점 수 제한 — 사이드카 경량)
+                                var minStep = Math.max(2, brushSurface.screenRadius() / 4)
+                                if (pts.length > 0 && Math.hypot(x - lastX, y - lastY) < minStep) return
+                                lastX = x; lastY = y
+                                var p = brushArea.mapToItem(pipeView, x, y)
+                                pts.push(p.x / Math.max(1, pipeView.width))
+                                pts.push(p.y / Math.max(1, pipeView.height))
+                                trailCanvas.trail.push(Qt.point(x, y))
+                                trailCanvas.requestPaint()
+                            }
+                            onPressed: (mouse) => {
+                                pts = []; trailCanvas.trail = []; lastX = -1e9; lastY = -1e9
+                                addPoint(mouse.x, mouse.y)
+                            }
+                            onPositionChanged: (mouse) => {
+                                mx = mouse.x; my = mouse.y                       // 커서 이동 = 아이템 x/y (repaint 없음)
+                                brushSurface.curRc = brushSurface.screenRadius() // 줌/핏 변화 추종(동값이면 no-op)
+                                if (pressed) addPoint(mouse.x, mouse.y)
+                            }
+                            onReleased: {
+                                // 드래그 중엔 트레일만 표시, 마스크 반영은 릴리즈 1회(증분
+                                // 커밋 ~50ms 상수). 실시간 마스크 미리보기는 시도 후 제거 —
+                                // 빨간 오버레이+트레일과 중복이고 미세한 부자연스러움만 남았음.
+                                if (pts.length >= 2)
+                                    win.commitBrushStroke({ sign: win.brushMode === 1 ? 1 : -1,
+                                                            radius: win.brushSize,
+                                                            feather: win.brushFeather,
+                                                            points: pts })
+                                pts = []; trailCanvas.trail = []; trailCanvas.requestPaint()
+                            }
+                            onExited: { mx = -1000; my = -1000 }   // visible 바인딩이 커서 숨김
+                        }
+                        // 휠 = 브러시 크기, Shift+휠 = 페더(라이트룸 관례). 슬라이더에도 반영.
+                        // ⚠️Shift+휠은 장치/OS 에 따라 가로축(angleDelta.x)으로 올 수 있어 y→x 폴백.
+                        WheelHandler {
+                            onWheel: (ev) => {
+                                var d = ev.angleDelta.y !== 0 ? ev.angleDelta.y : ev.angleDelta.x
+                                if (d === 0) return
+                                if (ev.modifiers & Qt.ShiftModifier) {
+                                    win.brushFeather = Math.max(0.0, Math.min(1.0,
+                                        win.brushFeather + (d > 0 ? 0.05 : -0.05)))
+                                    brushFeatherSlider.value = win.brushFeather
+                                } else {
+                                    var f = d > 0 ? 1.12 : 1.0 / 1.12
+                                    win.brushSize = Math.max(0.003, Math.min(0.20, win.brushSize * f))
+                                    brushSizeSlider.value = win.brushSize
+                                }
+                                // 커서 갱신은 curRc/ro 바인딩(크기 변화)이 처리 — 수동 repaint 불필요
+                            }
+                        }
+                        // 드래그 중 임시 트레일(커밋되면 실제 마스크 오버레이가 이어받음)
+                        Canvas {
+                            id: trailCanvas
+                            anchors.fill: parent
+                            property var trail: []
+                            onPaint: {
+                                var ctx = getContext("2d")
+                                ctx.clearRect(0, 0, width, height)
+                                if (trail.length === 0) return
+                                ctx.strokeStyle = win.brushMode === 2 ? "rgba(80,160,255,0.55)"
+                                                                      : "rgba(255,80,80,0.55)"
+                                ctx.lineWidth = Math.max(2, brushSurface.screenRadius() * 2)
+                                ctx.lineCap = "round"; ctx.lineJoin = "round"
+                                ctx.beginPath()
+                                ctx.moveTo(trail[0].x, trail[0].y)
+                                if (trail.length === 1) ctx.lineTo(trail[0].x + 0.1, trail[0].y)
+                                for (var ti = 1; ti < trail.length; ti++) ctx.lineTo(trail[ti].x, trail[ti].y)
+                                ctx.stroke()
+                            }
+                        }
+                        // 브러시 커서 — 얇은 흰 링 + 부드러운 그림자(PS/LR 식). 라이트룸 모델:
+                        // 안쪽 실선=Size(코어), 바깥 점선=페더 외곽. 중앙 글리프=＋빨강/−파랑.
+                        // ⚠️Canvas 는 **커서 크기만큼만** 잡고 이동은 아이템 x/y 로 — 화면 전체
+                        // Canvas 를 마우스 이동마다 repaint 하면 페더(shadowBlur 면적)가 클수록
+                        // 커서가 버벅인다(실측). repaint 는 크기/페더/모드 변경 때만.
+                        Item {
+                            id: brushCursorItem
+                            visible: brushArea.mx > -100
+                            // 외곽 반경 — 2.0 = brush.py FEATHER_SCALE (반드시 일치)
+                            readonly property real ro: brushSurface.curRc * (1.0 + 2.0 * win.brushFeather)
+                            width: 2 * ro + 16                 // 여유 8px(그림자 블러+글리프)
+                            height: width
+                            x: brushArea.mx - width / 2
+                            y: brushArea.my - height / 2
+                            Canvas {
+                                id: brushCursor
+                                anchors.fill: parent
+                                onWidthChanged: requestPaint()   // 크기/페더 변경 → 캔버스 크기 변화로 갱신
+                                onPaint: {
+                                    var ctx = getContext("2d")
+                                    ctx.clearRect(0, 0, width, height)
+                                    var x = width / 2, y = height / 2
+                                    var rc = brushSurface.curRc
+                                    var ro = brushCursorItem.ro
+                                    ctx.shadowColor = "rgba(0,0,0,0.65)"   // 어두운 배경 가시성은 그림자로
+                                    ctx.shadowBlur = 4
+                                    ctx.lineCap = "round"
+                                    ctx.strokeStyle = "rgba(255,255,255,0.95)"
+                                    ctx.lineWidth = 1.2
+                                    ctx.beginPath(); ctx.arc(x, y, rc, 0, Math.PI * 2); ctx.stroke()
+                                    if (ro > rc + 2) {                     // 페더 외곽(은은한 점선)
+                                        ctx.setLineDash([3, 5])
+                                        ctx.strokeStyle = "rgba(255,255,255,0.55)"
+                                        ctx.lineWidth = 1.0
+                                        ctx.beginPath(); ctx.arc(x, y, ro, 0, Math.PI * 2); ctx.stroke()
+                                        ctx.setLineDash([])
+                                    }
+                                    var g = 4.5                            // 중앙 모드 글리프(고정 소형)
+                                    ctx.strokeStyle = win.brushMode === 2 ? "#7db8ff" : "#ff7d7d"
+                                    ctx.lineWidth = 1.6
+                                    ctx.beginPath(); ctx.moveTo(x - g, y); ctx.lineTo(x + g, y)
+                                    if (win.brushMode === 1) { ctx.moveTo(x, y - g); ctx.lineTo(x, y + g) }
+                                    ctx.stroke()
+                                    ctx.shadowBlur = 0
+                                }
+                            }
+                        }
+                        // 모드 전환(크기 동일) → 글리프만 갱신 / Size 변경 → 화면 반경 재계산
+                        Connections {
+                            target: win
+                            function onBrushModeChanged() { brushCursor.requestPaint() }
+                            function onBrushSizeChanged() { brushSurface.curRc = brushSurface.screenRadius() }
+                        }
+                    }
                 }
             }
 
@@ -6629,6 +6880,9 @@ ApplicationWindow {
                                     else win.showSkyMask = true
                                 }
                             }
+
+                            // 마스크 전체 옵션(오버레이/반전) — Brush 섹션 **위**에 배치(브러시
+                            // 하위 기능으로 오독 방지). 설명은 라벨 대신 툴팁으로.
                             RowLayout {
                                 Layout.fillWidth: true; spacing: 6
                                 CheckBox {
@@ -6643,19 +6897,104 @@ ApplicationWindow {
                                     value: win.showSkyMask
                                 }
                                 Label {
-                                    Layout.fillWidth: true; text: "Show mask overlay (red)"
+                                    Layout.fillWidth: true; text: "Show mask overlay  (O)"
                                     color: "white"; font.pixelSize: 12; verticalAlignment: Text.AlignVCenter
+                                    HoverHandler { id: skyShowHover }
+                                    ToolTip.visible: skyShowHover.hovered
+                                    ToolTip.delay: 500
+                                    ToolTip.text: "Highlight the selected area in red (preview only)"
                                 }
                             }
                             RowLayout {
                                 Layout.fillWidth: true; spacing: 6
                                 CheckBox { id: skyInvertCheck }
                                 Label {
-                                    Layout.fillWidth: true; text: "Invert mask (everything but the selection)"
+                                    Layout.fillWidth: true; text: "Invert mask"
                                     color: "white"; font.pixelSize: 12; verticalAlignment: Text.AlignVCenter
+                                    HoverHandler { id: skyInvertHover }
+                                    ToolTip.visible: skyInvertHover.hovered
+                                    ToolTip.delay: 500
+                                    ToolTip.text: "Apply the adjustments to everything but the selection"
                                 }
                             }
 
+                            Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+
+                            // ---- Brush: 활성 레이어 마스크에 수동 획 추가/빼기 ----
+                            // AI 마스크 디테일 수정 + 빈 레이어에 칠하면 순수 수동 마스크.
+                            Label {
+                                text: "Brush"
+                                color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                                font.capitalization: Font.AllUppercase
+                            }
+                            // 세그먼트 토글(톤커브 RGB 채널 셀렉터와 동일 스타일) — 재클릭=끄기
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 4
+                                Repeater {
+                                    model: [{ m: 1, t: "＋ Add  (A)", c: "#ff7d7d",
+                                              tip: "Paint to add to the mask (A to toggle, Esc to stop)" },
+                                            { m: 2, t: "− Subtract  (S)", c: "#7db8ff",
+                                              tip: "Paint to subtract from the mask (S to toggle, Esc to stop)" }]
+                                    delegate: Rectangle {
+                                        required property var modelData
+                                        readonly property bool active: win.brushMode === modelData.m
+                                        Layout.fillWidth: true
+                                        implicitHeight: 28
+                                        radius: 4
+                                        opacity: controller.imagePath !== "" ? 1.0 : 0.4
+                                        color: active ? "#3a4a6b" : (segHover.hovered ? "#333333" : "#2a2a2a")
+                                        border.color: active ? modelData.c : "#444"
+                                        border.width: 1
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: modelData.t
+                                            color: active ? modelData.c : "#c9c9c9"
+                                            font.pixelSize: 12; font.bold: active
+                                        }
+                                        HoverHandler { id: segHover; cursorShape: Qt.PointingHandCursor }
+                                        TapHandler {
+                                            enabled: controller.imagePath !== ""
+                                            onTapped: win.setBrushMode(modelData.m)
+                                        }
+                                        ToolTip.visible: segHover.hovered
+                                        ToolTip.delay: 500
+                                        ToolTip.text: modelData.tip
+                                    }
+                                }
+                            }
+                            ColumnLayout {
+                                visible: win.brushMode !== 0
+                                Layout.fillWidth: true
+                                spacing: 8
+                                SkySlider {
+                                    id: brushSizeSlider
+                                    host: win; label: "Size"; suffix: "  (wheel)"
+                                    keepOverlay: true    // 브러시 크기 조절 중에도 마스크 오버레이 유지
+                                    // 하한 0.003 ≈ 프록시 짧은 변의 0.3%(코어 ~5px) — 미세 디테일용
+                                    from: 0.003; to: 0.20; value: 0.06; defaultValue: 0.06
+                                    onValueChanged: win.brushSize = value
+                                }
+                                SkySlider {
+                                    id: brushFeatherSlider
+                                    host: win; label: "Feather"; suffix: "  (Shift+wheel)"
+                                    keepOverlay: true
+                                    from: 0.0; to: 1.0; value: 0.5; defaultValue: 0.5
+                                    onValueChanged: win.brushFeather = value
+                                }
+                                Button {
+                                    Layout.fillWidth: true
+                                    text: "Clear strokes"
+                                    enabled: win.activeStrokeCount > 0
+                                    onClicked: win.clearBrushStrokes()
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: win.activeStrokeCount + " stroke" + (win.activeStrokeCount === 1 ? "" : "s")
+                                          + " on this layer  ·  undo: Ctrl+Z"
+                                    color: "#9a9a9a"; font.pixelSize: 11
+                                }
+                            }
                             Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
 
                             // ---- Adjustments (활성 마스크 영역 전용) ----
