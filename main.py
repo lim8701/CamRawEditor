@@ -2913,15 +2913,20 @@ class Controller(QObject):
             self._stroke_patches[layer] = []
             self._replay_strokes_fast(layer)
 
+    # 동기 리플레이 획 수 상한 — 이 이상이면(패치 상한 초과 후 undo 등 드문 폴백) 메인
+    # 스레드가 획×ROI 래스터로 수백 ms 굳을 수 있어 워커(비동기+busy 표시)로 넘긴다.
+    _REPLAY_SYNC_MAX = 24
+
     def _replay_strokes_fast(self, layer: int) -> None:
         """획 편집(pop/clear) 반영: 자동 마스크 캐시 위에 남은 획을 동기 리플레이 —
         세그 워커를 안 태우므로 dim/프로그레스 없음(사용자 보고: undo stroke 지연).
-        캐시 미확보(keys 있는데 워커가 아직 안 돌았음)·워커 진행 중이면 전체 워커 폴백.
+        캐시 미확보(keys 있는데 워커가 아직 안 돌았음)·워커 진행 중·획 과다면 워커 폴백.
         keys 없는(브러시 전용) 레이어는 자동 마스크가 정의상 None 이라 캐시 불필요."""
         import brush
         hw = self._proxy_hw()
         auto_ok = self._layer_automask_valid[layer] or not self._layer_keys[layer]
-        if hw is None or self._sky_pending > 0 or not auto_ok:
+        if (hw is None or self._sky_pending > 0 or not auto_ok
+                or len(self._layer_strokes[layer]) > self._REPLAY_SYNC_MAX):
             self._spawn_mask_worker(layer)
             return
         base = self._layer_automask[layer] if self._layer_automask_valid[layer] else None

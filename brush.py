@@ -62,10 +62,12 @@ def stroke_bbox(stroke, hw):
     return g[3] if g is not None else None
 
 
-def _rasterize(stroke, hw):
-    """획 1개 → soft alpha(H,W float32 [0,1]). 점 없으면 None."""
+def _rasterize_roi(stroke, hw):
+    """획 1개 → (soft alpha ROI float32 [0,1], (y0,y1,x0,x1)). 무효 획이면 None.
+
+    ROI 밖은 alpha=0 이라 적용(max/×(1-α))이 항등 — 풀프레임 연산과 비트 동일하면서
+    획당 비용이 ROI 크기에 비례(리플레이 누적 시 풀프레임 할당+연산은 아까움)."""
     import cv2
-    h, w = int(hw[0]), int(hw[1])
     g = _stroke_geom(stroke, hw)
     if g is None:
         return None
@@ -83,26 +85,26 @@ def _rasterize(stroke, hw):
     # 코어(dist<=r_core)=1.0, 코어~외곽(r_out)은 smoothstep 으로 0 까지 falloff
     t = np.clip((r_out - dist) / max(r_out - r_core, 1e-3), 0.0, 1.0)
     alpha_roi = (t * t * (3.0 - 2.0 * t)).astype(np.float32)
-
-    alpha = np.zeros((h, w), dtype=np.float32)
-    alpha[y0:y1, x0:x1] = alpha_roi
-    return alpha
+    return alpha_roi, (y0, y1, x0, x1)
 
 
 def apply_strokes(mask, hw, strokes):
     """자동 마스크(또는 None=빈 레이어) 위에 획 목록을 순서대로 적용한 마스크 반환.
 
     반환은 항상 새 배열(입력/캐시 비오염). 획이 전부 무효면 입력 그대로(복사) 반환.
+    적용은 획 ROI 안에서만(밖은 항등) — 결과는 풀프레임 적용과 동일.
     """
     h, w = int(hw[0]), int(hw[1])
     out = (np.zeros((h, w), dtype=np.float32) if mask is None
            else np.clip(mask.astype(np.float32, copy=True), 0.0, 1.0))
     for s in strokes or []:
-        alpha = _rasterize(s, hw)
-        if alpha is None:
+        ra = _rasterize_roi(s, hw)
+        if ra is None:
             continue
+        alpha, (y0, y1, x0, x1) = ra
+        view = out[y0:y1, x0:x1]
         if float(s.get("sign", 1)) >= 0:
-            np.maximum(out, alpha, out=out)      # 추가 = union
+            np.maximum(view, alpha, out=view)    # 추가 = union
         else:
-            out *= (1.0 - alpha)                 # 빼기 = soft erase
+            view *= (1.0 - alpha)                # 빼기 = soft erase
     return out
