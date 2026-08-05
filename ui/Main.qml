@@ -69,6 +69,10 @@ ApplicationWindow {
     // 클리핑 경고 오버레이(프리뷰): 하이라이트=빨강 / 섀도=파랑. J 키로 토글(라이트룸과 동일).
     property bool clipWarn: false
     Shortcut { sequence: "J"; enabled: !win._typing; onActivated: win.clipWarn = !win.clipWarn }
+    // 존 시스템 오버레이(프리뷰): 휘도를 안셀 아담스 존 0..X(1존=1스톱, V=18% 그레이)로
+    // 양자화 표시. Z 키 토글. export 불변(진단 전용).
+    property bool zoneOverlay: false
+    Shortcut { sequence: "Z"; enabled: !win._typing; onActivated: win.zoneOverlay = !win.zoneOverlay }
     // Undo / Redo (편집 스냅샷)
     Shortcut { sequences: [StandardKey.Undo]; onActivated: win.undo() }                    // Ctrl+Z
     Shortcut { sequences: [StandardKey.Redo, "Ctrl+Shift+Z"]; onActivated: win.redo() }    // Ctrl+Y / Ctrl+Shift+Z
@@ -3450,6 +3454,7 @@ ApplicationWindow {
                         property real grainSize: grainSizeSlider.value
                         property real grainAspect: width / Math.max(1, height)
                         property real clipWarn: 0.0   // export 는 클리핑 오버레이 미적용
+                        property real zoneShow: 0.0   // export 는 존 시스템 오버레이 미적용
                         property real displayCM: 0.0  // export 는 디스플레이 색관리 미적용(표준 sRGB)
                         property variant cmLut: cmLutImage
                         property real cmLutSize: controller.cmLutN
@@ -3775,6 +3780,7 @@ ApplicationWindow {
                         property real grainSize: grainSizeSlider.value
                         property real grainAspect: viewport.procW / Math.max(1, viewport.procH)
                         property real clipWarn: win.clipWarn ? 1.0 : 0.0   // 클리핑 경고 오버레이(프리뷰 전용)
+                        property real zoneShow: win.zoneOverlay ? 1.0 : 0.0 // 존 시스템 오버레이(프리뷰 전용)
                         // 디스플레이 색관리(프리뷰 전용): 토글 ON + 유효 CM LUT 있을 때만.
                         property real displayCM: (win.displayCM && controller.hasDisplayCM) ? 1.0 : 0.0
                         property variant cmLut: cmLutImage
@@ -4458,6 +4464,50 @@ ApplicationWindow {
                                         text: modelData.value
                                         color: "#e6e6e6"; font.pixelSize: 11
                                         horizontalAlignment: Text.AlignRight
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 존 시스템 범례 (Z 키 토글 시) — 하단 중앙, 존 0..X 스와치.
+                    // 셰이더 zoneShow 표시색과 동일(0=파랑, X=빨강, 나머지 존/10 그레이).
+                    Rectangle {
+                        visible: win.zoneOverlay && cropClip.visible
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        anchors.bottom: parent.bottom
+                        anchors.margins: 12
+                        radius: 6
+                        color: "#cc1e1e1e"
+                        border.color: "#55ffffff"; border.width: 1
+                        width: zoneLegendCol.implicitWidth + 24
+                        height: zoneLegendCol.implicitHeight + 16
+                        ColumnLayout {
+                            id: zoneLegendCol
+                            anchors.centerIn: parent
+                            spacing: 4
+                            Label {
+                                text: "Zone System  (Z) — 1 zone = 1 stop, V = mid gray"
+                                color: "#8ab4f8"; font.pixelSize: 11; font.bold: true
+                            }
+                            Row {
+                                spacing: 2
+                                Repeater {
+                                    model: ["0","I","II","III","IV","V","VI","VII","VIII","IX","X"]
+                                    delegate: Column {
+                                        spacing: 2
+                                        Rectangle {
+                                            width: 30; height: 14; radius: 2
+                                            color: index === 0 ? Qt.rgba(0.10, 0.25, 0.62, 1)
+                                                 : index === 10 ? Qt.rgba(0.82, 0.16, 0.16, 1)
+                                                 : Qt.rgba(index / 10, index / 10, index / 10, 1)
+                                            border.color: "#33ffffff"; border.width: 1
+                                        }
+                                        Label {
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                            text: modelData
+                                            color: "#c9c9c9"; font.pixelSize: 10
+                                        }
                                     }
                                 }
                             }
@@ -5201,9 +5251,37 @@ ApplicationWindow {
                     Binding { target: clipWarnCheck; property: "checked"; value: win.clipWarn }
                     Label {
                         Layout.fillWidth: true
-                        text: "Clipping warning  (J) — highlights red / shadows blue"
+                        text: "Clipping warning  (J)"
                         color: "white"; font.pixelSize: 12
+                        elide: Text.ElideRight    // 라벨은 한 줄 유지, 상세 설명은 툴팁
                         verticalAlignment: Text.AlignVCenter
+                        HoverHandler { id: clipWarnHover }
+                        ToolTip.visible: clipWarnHover.hovered
+                        ToolTip.delay: 500
+                        ToolTip.text: "Highlights red / shadows blue"
+                    }
+                }
+
+                // 존 시스템 오버레이 토글(프리뷰 전용): 휘도를 존 0..X 11단계로 양자화 표시.
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    CheckBox {
+                        id: zoneOverlayCheck
+                        onToggled: win.zoneOverlay = checked
+                    }
+                    // J 토글과 동일 사유: 단축키 변경을 독립 Binding 으로 재푸시.
+                    Binding { target: zoneOverlayCheck; property: "checked"; value: win.zoneOverlay }
+                    Label {
+                        Layout.fillWidth: true
+                        text: "Zone System overlay  (Z)"
+                        color: "white"; font.pixelSize: 12
+                        elide: Text.ElideRight    // 라벨은 한 줄 유지, 상세 설명은 툴팁
+                        verticalAlignment: Text.AlignVCenter
+                        HoverHandler { id: zoneOverlayHover }
+                        ToolTip.visible: zoneOverlayHover.hovered
+                        ToolTip.delay: 500
+                        ToolTip.text: "Luminance zones 0–X (1 zone = 1 stop, V = mid gray)"
                     }
                 }
 
@@ -5222,9 +5300,14 @@ ApplicationWindow {
                     Binding { target: displayCmCheck; property: "checked"; value: win.displayCM }
                     Label {
                         Layout.fillWidth: true
-                        text: "Display color management  (Ctrl+Shift+M) — match monitor gamut"
+                        text: "Display color management  (Ctrl+Shift+M)"
                         color: "white"; font.pixelSize: 12
+                        elide: Text.ElideRight    // 라벨은 한 줄 유지, 상세 설명은 툴팁
                         verticalAlignment: Text.AlignVCenter
+                        HoverHandler { id: displayCmHover }
+                        ToolTip.visible: displayCmHover.hovered
+                        ToolTip.delay: 500
+                        ToolTip.text: "Match monitor gamut (preview only, export stays sRGB)"
                     }
                 }
 

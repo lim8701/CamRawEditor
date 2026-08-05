@@ -88,6 +88,7 @@ layout(std140, binding = 0) uniform buf {
     float dehazeKResid;  // 물리 복원 위 잔여 톤모델 비율(라이트룸 체감 보정)
     float nrOn;          // 1=nrBase(디노이즈드 중성 luma) 준비됨. 0이면 휘도 NR 무동작(로드 직후 잠깐)
     float nrChroma;      // 1=nrBase 가 AI RGB 베이스(크로마 유효) → 컬러 NR 이 AI 크로마 사용
+    float zoneShow;      // [프리뷰 전용] 1=존 시스템 오버레이(휘도를 존 0..X 로 양자화 표시). export=0.
 } ubuf;
 
 layout(binding = 1) uniform sampler2D src;       // 원본(카메라네이티브 감마 인코딩)
@@ -514,6 +515,18 @@ void main() {
     if (ubuf.clipWarn > 0.5) {
         if (max(max(rgb.r, rgb.g), rgb.b) >= 0.9961)      rgb = vec3(1.0, 0.0, 0.0);
         else if (min(min(rgb.r, rgb.g), rgb.b) <= 0.0039) rgb = vec3(0.1, 0.45, 1.0);
+    }
+
+    // 존 시스템 오버레이(프리뷰 전용 진단): 최종 display 휘도를 안셀 아담스 존 0..X 로 양자화.
+    //   1존 = 1스톱(선형 log2), 존 V = 18% 미들그레이 기준. 표시는 균등 11단계 그레이 램프(존/10),
+    //   양 끝단만 유채색(존 0=파랑, 존 X=빨강 — 클리핑 경고와 동일 색 언어). export 는 zoneShow=0.
+    if (ubuf.zoneShow > 0.5) {
+        float linL = dot(srgbToLinear(rgb), vec3(0.2126, 0.7152, 0.0722));
+        float z = 5.0 + log2(max(linL, 1e-6) / 0.18);
+        float zi = clamp(floor(z + 0.5), 0.0, 10.0);
+        rgb = (zi < 0.5) ? vec3(0.10, 0.25, 0.62)
+            : (zi > 9.5) ? vec3(0.82, 0.16, 0.16)
+            : vec3(zi / 10.0);
     }
 
     // [프리뷰 전용] 디스플레이 색관리: sRGB 출력을 광색역 패널(Display-P3) 보정.
