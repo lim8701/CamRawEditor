@@ -811,7 +811,7 @@ ApplicationWindow {
         hslLumSlider.value = win.hslL[win.hslBand]
         vignetteSlider.value = _ev(p, "vignette", 0.0)
         grainSlider.value = _ev(p, "grainAmt", 0.0); grainSizeSlider.value = _ev(p, "grainSize", 0.5)
-        grainRoughSlider.value = _ev(p, "grainRough", 0.5)
+        grainRoughSlider.value = _ev(p, "grainRough", 0.1)
         grainColorSlider.value = _ev(p, "grainColor", 0.3)
         controller.setStampGrainSrc(grainSlider.value)   // 스탬프 그레인 연동(프리뷰)
         sharpAmtSlider.value = _ev(p, "sharpenAmt", 0.0); sharpRadiusSlider.value = _ev(p, "sharpenRadius", 1.0)
@@ -897,7 +897,7 @@ ApplicationWindow {
         lumaNrSlider.value = 0.0; colorNrSlider.value = 0.0
         aiNrCheck.checked = false; controller.setAiNr(false)
         vignetteSlider.value = 0.0; grainSlider.value = 0.0; grainSizeSlider.value = 0.5
-        grainRoughSlider.value = 0.5; grainColorSlider.value = 0.3
+        grainRoughSlider.value = 0.1; grainColorSlider.value = 0.3
         controller.setStampGrainSrc(0.0)
         tempSlider.value = controller.asShotKelvin; tintSlider.value = controller.asShotTint
         simCombo.currentIndex = 0; simStrengthSlider.value = 1.0
@@ -6000,8 +6000,11 @@ ApplicationWindow {
                     }
                 }
 
-                // 거칠기 = 멀티 옥타브(fBm) 감쇠비. 0=단일 옥타브(균질·규칙적),
-                // ↑=거친 옥타브가 섞여 결정 뭉침(clumping)처럼 불규칙해진다. 세기(σ)는 불변.
+                // 거칠기 = 멀티 옥타브(fBm) 감쇠비. 0=단일 옥타브, ↑=거친 옥타브가 섞여
+                // 결정 뭉침(clumping)처럼 불규칙해진다. 세기(σ)는 불변.
+                // 기본 0.1 = **실측 피팅값**: 필름 스캔 acf(lag1..8)에 (gridN, Roughness, USM)을
+                // 동시 피팅하니 가정한 샤프닝과 무관하게 0~0.2 로 수렴(0.5 는 잔차 8배).
+                // 즉 실제 필름은 이 해상도에서 픽셀 너머 구조가 거의 없다. 굵은 뭉침을 원하면 올린다.
                 Label {
                     text: "Grain Roughness:  " + grainRoughSlider.value.toFixed(2) + "  (even ↔ clumpy)"
                     color: "white"
@@ -6009,8 +6012,8 @@ ApplicationWindow {
                 Slider {
                     id: grainRoughSlider
                     Layout.fillWidth: true
-                    from: 0.0; to: 1.0; value: 0.5
-                    property real defaultValue: 0.5
+                    from: 0.0; to: 1.0; value: 0.1
+                    property real defaultValue: 0.1
                     property real _lastPressMs: 0
                     property bool _pendingReset: false
                     onPressedChanged: {

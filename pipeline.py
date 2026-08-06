@@ -507,7 +507,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     lut_strength = float(p.get("lutStrength", 1.0))
     grain_amt = float(p.get("grainAmt", 0))
     grain_size = float(p.get("grainSize", 0.5))
-    grain_rough = float(p.get("grainRough", 0.5))    # 옥타브 감쇠비(거칠기)
+    grain_rough = float(p.get("grainRough", 0.1))    # 옥타브 감쇠비(거칠기, 실측 피팅 기본값)
     grain_color = float(p.get("grainColor", 0.3))    # 3층 독립도(색 얼룩)
     sharp_amt = float(p.get("sharpenAmt", 0.0))
     sharp_radius = float(p.get("sharpenRadius", 1.0))
