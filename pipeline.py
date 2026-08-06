@@ -674,10 +674,16 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         for y in range(0, h, strip):                       # 스트립 = 26MP 풀 float 사본 회피
             y1 = min(y + strip, h)
             f = out[y:y1].astype(np.float32) / maxv
-            g = _grain_field(y, y1, h, w, grain_grid_n, w / h, grain_rough, grain_color)
-            # 노출 의존 진폭 — 셰이더 12단계와 동일(특성곡선 기울기 벨, 미드톤 w=1).
-            # ⚠️K>1(실측 1.28)이면 끝단에서 음수 → max(0,·) 필수(음수면 노이즈 반전).
-            lg = np.clip(f @ LUMA, 0.0, 1.0) ** np.float32(coeffs.GRAIN_TONE_GAMMA)
+            # 왜도 계수 — 섀도는 밝은 점(+), 하이라이트는 어두운 점(−). skew≈6cσ, σ=1/√12
+            # (샘플 단위 필드의 해석적 표준편차). ⚠️셰이더 12단계와 동일 식.
+            l0 = np.clip(f @ LUMA, 0.0, 1.0)
+            skew_c = (np.float32(coeffs.GRAIN_SKEW) * (1.0 - 2.0 * l0)
+                      * np.float32(np.sqrt(12.0) / 6.0))[..., None]
+            g = _grain_field(y, y1, h, w, grain_grid_n, w / h, grain_rough, grain_color,
+                             skew_c)
+            # 노출 의존 진폭 — 특성곡선 기울기 벨(미드톤 w=1).
+            # ⚠️K>1(실측 1.29)이면 끝단에서 음수 → max(0,·) 필수(음수면 노이즈 반전).
+            lg = l0 ** np.float32(coeffs.GRAIN_TONE_GAMMA)
             wt = np.maximum(0.0, 1.0 + coeffs.GRAIN_TONE
                             * (np.sqrt(4.0 * lg * (1.0 - lg)) - 1.0))
             f += g * (gk * wt[..., None])
@@ -757,19 +763,19 @@ def _grain_cell(gx, gy):
     return _grain_hash12(X[None, :], Y[:, None])[np.ix_(cy, cx)]
 
 
-def _grain_field(y0, y1, h, w, grid_n, aspect, clump, color):
+def _grain_field(y0, y1, h, w, grid_n, aspect, clump, color, skew_c):
     """(y1-y0, w, 3) float32 그레인 필드(채널별, 평균 0). 셰이더 12단계와 동일 수식.
     실제 필름에 맞춰 셀이 픽셀보다 작아졌으므로 **2x2 서브픽셀 평균**(스캐너의 면적 적분에
     대응)으로 샘플한다 — 점 샘플링하면 접힌다(⚠️_GRAIN_SS 는 셰이더와 일치)."""
     out = None
     for sy in _GRAIN_SS:
         for sx in _GRAIN_SS:
-            o = _grain_field_1(y0, y1, h, w, grid_n, aspect, clump, color, sx, sy)
+            o = _grain_field_1(y0, y1, h, w, grid_n, aspect, clump, color, skew_c, sx, sy)
             out = o if out is None else out + o
     return (out / np.float32(len(_GRAIN_SS) ** 2)).astype(np.float32)
 
 
-def _grain_field_1(y0, y1, h, w, grid_n, aspect, clump, color, sx, sy):
+def _grain_field_1(y0, y1, h, w, grid_n, aspect, clump, color, skew_c, sx, sy):
     """서브픽셀 오프셋 (sx,sy) 픽셀 단위에서의 단일 샘플. uv=(i+0.5+sx)/N = qt_TexCoord0 + sx·texel."""
     u = (np.arange(w, dtype=np.float32) + np.float32(0.5 + sx)) / w
     v = (np.arange(y0, y1, dtype=np.float32) + np.float32(0.5 + sy)) / h
@@ -796,8 +802,16 @@ def _grain_field_1(y0, y1, h, w, grid_n, aspect, clump, color, sx, sy):
     a_len = np.float32(np.sqrt(sum(x * x for x in _GRAIN_LAMP)))
     k = np.float32(color)
     mono = e.sum(axis=-1, keepdims=True) / a_len
-    n = (mono + (e - mono) * k) * np.float32(_grain_color_norm(color))   # = mix(mono, e, k)
-    return n.astype(np.float32)
+    nrm = np.float32(_grain_color_norm(color))
+    n = (mono + (e - mono) * k) * nrm                                    # = mix(mono, e, k)
+    # 왜도(3차) — **서브픽셀 평균 전, 샘플 단위**. 이 지점의 채널별 분산은 해석적으로 알 수
+    # 있어(셀 값이 정확히 균일분포 → 분산 1/12) 평균이 **정확히 0**. 공칭 σ 를 쓰면 어긋난
+    # 만큼 그레인이 밝기를 옮긴다. ⚠️셰이더 grainField 와 동일 식.
+    #   Var_i = [(1−k)² + k²aᵢ² + 2(1−k)k·aᵢ²/|a|] · nrm²/12
+    aa = np.asarray(_GRAIN_LAMP, np.float32) ** 2
+    v2 = (((1.0 - k) ** 2 + k * k * aa + 2.0 * (1.0 - k) * k * aa / a_len)
+          * (nrm * nrm / np.float32(12.0)))
+    return (n + skew_c * (n * n - v2)).astype(np.float32)
 
 
 def save_image(arr, path) -> bool:

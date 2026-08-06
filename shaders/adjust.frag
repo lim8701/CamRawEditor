@@ -82,6 +82,7 @@ layout(std140, binding = 0) uniform buf {
     float grainK;       // 필름 그레인 강도
     float grainToneK;   // 그레인 노출 의존(0=균일, 1=미드톤 집중 — 특성곡선 기울기 모사)
     float grainToneGammaK;  // 위 벨의 비대칭 지수 γ (l^γ, γ<1 = 섀도 쪽으로 치우침)
+    float grainSkewK;       // 그레인 왜도(3차): skew(l)=K·(1−2l) — 섀도 밝은점 / 하이라이트 어두운점
     float sharpenK;     // 언샤프 마스크 강도
     float hslHueDegK;   // HSL hue 시프트 최대(도)
     float hslLumK;      // HSL 휘도 조정 스케일
@@ -251,7 +252,7 @@ float grainLayer(vec2 g0, float r, float sizeMul, vec2 off) {
 //    감당이 안 되고, 프록시/풀해상도에서 다르게 접혀 프리뷰≠export 가 된다.
 // 3층 에멀전(R/G/B 발색층) — 컬러 필름엔 '휘도 입자'가 따로 없고 휘도 요동은 세 층의 합이다.
 // 그래서 층을 먼저 만들고 공통 성분(mono)을 거기서 뽑는다. 층마다 입자 크기·진폭이 다르다.
-vec3 grainField(vec2 suv, float gridN, float r, float k) {
+vec3 grainField(vec2 suv, float gridN, float r, float k, float skewC) {
     vec2 g0 = suv * vec2(gridN, gridN / ubuf.grainAspect);   // 정사각 셀 좌표
     vec3 e = vec3(grainLayer(g0, r, GRAIN_LSIZE.r, GRAIN_LOFF0),
                   grainLayer(g0, r, GRAIN_LSIZE.g, GRAIN_LOFF1),
@@ -266,7 +267,15 @@ vec3 grainField(vec2 suv, float gridN, float r, float k) {
     vec3 la = LUMA * GRAIN_LAMP;
     float nrm = inversesqrt((1.0 - k) * (1.0 - k) + k * k * dot(la, la)
                             + 2.0 * (1.0 - k) * k * dot(LUMA, GRAIN_LAMP * GRAIN_LAMP) / aLen);
-    return mix(vec3(mono), e, k) * nrm;
+    vec3 n = mix(vec3(mono), e, k) * nrm;
+    // 왜도(3차) — **서브픽셀 평균 전, 샘플 단위**로 건다. 이 지점의 채널별 분산은 해석적으로
+    // 알 수 있어(셀 값이 정확히 균일분포 → 분산 1/12) 평균이 **정확히 0** 이 된다. 평균을
+    // 모르면 그레인이 미세한 밝기 이동을 만든다(측정: 공칭 σ 쓰면 최대 0.6/255).
+    //   Var_i = [(1−k)² + k²aᵢ² + 2(1−k)k·aᵢ²/|a|] · nrm²/12
+    vec3 aa = GRAIN_LAMP * GRAIN_LAMP;
+    vec3 v2 = ((1.0 - k) * (1.0 - k) + k * k * aa + 2.0 * (1.0 - k) * k * aa / aLen)
+              * (nrm * nrm / 12.0);
+    return n + skewC * (n * n - v2);
 }
 
 // 디헤이즈 톤모델 — 전역 dehaze(6단계) + 하늘 dehaze(9.7단계) 공용. amt=강도(하늘은 ×마스크),
@@ -565,12 +574,16 @@ void main() {
         // 점 샘플링하면 접히므로 **2x2 서브픽셀 평균** — 스캐너가 픽셀 면적을 적분하는 것에 대응.
         // ⚠️ GRAIN_SS / gridN 범위는 pipeline._GRAIN_SS 및 grain_grid_n 과 반드시 일치.
         float gridN = mix(4500.0, 1300.0, ubuf.grainSize);
+        // 왜도 계수 — 실측: 섀도는 밝은 점(+), 하이라이트는 어두운 점(−). skew≈6cσ (가우시안 근사),
+        // σ=1/√12 (샘플 단위 필드의 해석적 표준편차). ⚠️pipeline 과 동일 식.
+        float l0 = clamp(dot(rgb, LUMA), 0.0, 1.0);
+        float skewC = ubuf.grainSkewK * (1.0 - 2.0 * l0) * sqrt(12.0) / 6.0;
         vec3 n = vec3(0.0);
         for (int syi = 0; syi < 2; ++syi) {
             for (int sxi = 0; sxi < 2; ++sxi) {
                 vec2 suv = uv + vec2((sxi == 0 ? -0.25 : 0.25) * ubuf.grainTexelW,
                                      (syi == 0 ? -0.25 : 0.25) * ubuf.grainTexelH);
-                n += grainField(suv, gridN, ubuf.grainRough, ubuf.grainColor);
+                n += grainField(suv, gridN, ubuf.grainRough, ubuf.grainColor, skewC);
             }
         }
         n *= 0.25;
@@ -579,8 +592,8 @@ void main() {
         // 노이즈가 뿌려지던 '디지털' 느낌 제거. 미드톤(l=0.5)은 w=1 이라 기존 룩 그대로.
         // display 공간 휘도라 벨이 이미 섀도 쪽으로 치우침(disp 0.5 ≈ linear 0.21)
         // = 실제 필름에서 그레인이 하이라이트보다 섀도에 더 보이는 것과 일치.
-        // ⚠️K>1(실측 1.28)이면 끝단에서 음수가 되므로 max(0,·) 필수 — 음수면 노이즈가 반전된다.
-        float lg = pow(clamp(dot(rgb, LUMA), 0.0, 1.0), ubuf.grainToneGammaK);
+        // ⚠️K>1(실측 1.29)이면 끝단에서 음수가 되므로 max(0,·) 필수 — 음수면 노이즈가 반전된다.
+        float lg = pow(l0, ubuf.grainToneGammaK);
         float w = max(0.0, mix(1.0, sqrt(4.0 * lg * (1.0 - lg)), ubuf.grainToneK));
         rgb += n * ubuf.grainAmt * ubuf.grainK * w;
     }
