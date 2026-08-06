@@ -54,7 +54,8 @@ Grain is modelled on what film emulsion actually does, not sprinkled on as noise
 - **Tone-dependent amplitude** — visible tone fluctuation is grain density × the slope of the
   characteristic curve, so grain peaks in the midtones and disappears from blown highlights and
   crushed blacks. Uniform-amplitude grain speckling a white sky is the main thing that reads as
-  "digital"; the middle panel below is the old behaviour, the right one is this model. This curve is
+  "digital"; the middle panel below is the previous behaviour, the right one is this model, both at
+  the same maximum Grain setting (σ 6.6 against 10.9/255 on that crop). This curve is
   **fitted to real film** — 11,512 flat patches from 151 frames across four rolls of Noritsu-scanned
   negative, the fitted constant agreeing to within 5.5% between rolls.
 - **Multi-octave** — real emulsion has a crystal size distribution and clumping, so its Wiener
@@ -71,7 +72,7 @@ stays put as you dial them, and both are saved per photo. ⚠️ Judge grain at 
 averages it away.
 
 <p align="center">
-  <img src="docs/grain_overview.png" alt="Film Rawstery — film grain: grain off, the old uniform model speckling the blown sky, and the current emulsion model leaving the sky clean while keeping grain in the foliage" width="100%">
+  <img src="docs/grain_overview.png" alt="Film Rawstery — film grain: grain off, the previous uniform model, and the current emulsion model, both at the same maximum Grain setting" width="100%">
 </p>
 
 Four controls — Amount, Size, Roughness and **Colour** — where Lightroom's Effects panel exposes
