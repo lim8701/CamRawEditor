@@ -507,6 +507,8 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     lut_strength = float(p.get("lutStrength", 1.0))
     grain_amt = float(p.get("grainAmt", 0))
     grain_size = float(p.get("grainSize", 0.5))
+    grain_rough = float(p.get("grainRough", 0.5))    # 옥타브 감쇠비(거칠기)
+    grain_color = float(p.get("grainColor", 0.3))    # 3층 독립도(색 얼룩)
     sharp_amt = float(p.get("sharpenAmt", 0.0))
     sharp_radius = float(p.get("sharpenRadius", 1.0))
     sharp_detail = float(p.get("sharpenDetail", 0.25))
@@ -627,18 +629,9 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     else:
         vig_mask = None
 
-    # 필름 그레인 필드(흑백 단색, 전체 H,W 1회 생성 -> 스트립 시드 이음매 방지).
-    # 셰이더 value-noise 와 '성격(셀 크기/강도)' 일치: gridN=mix(1500,500,size),
-    # 정사각 입자(gridN/aspect)로 거친 그리드를 bilinear 업샘플. 패턴 픽셀일치는 기대 안 함.
-    if grain_amt > 0.0:
-        gridN = int(round(1500.0 + (500.0 - 1500.0) * grain_size))  # 셰이더 mix 와 동일
-        gx, gy = gridN, max(1, int(round(gridN * h / w)))           # gridN / aspect(W/H)
-        rng = np.random.default_rng(12345)                          # 재export 결정적
-        grid = (rng.random((gy + 1, gx + 1), dtype=np.float32) - 0.5)
-        grain2d = zoom(grid, (h / (gy + 1), w / (gx + 1)), order=1)
-        grain2d = grain2d[:h, :w].astype(np.float32)
-    else:
-        grain2d = None
+    # 필름 그레인 — 셰이더 12단계와 동일한 절차적 필드(_grain_field)를 스트립마다 생성.
+    # 좌표가 uv 절대값 기반이라 스트립 경계 이음매 없음(예전 격자+zoom 방식과 달리 시드 불필요).
+    grain_grid_n = 1500.0 + (500.0 - 1500.0) * grain_size if grain_amt > 0.0 else 0.0
 
     # 하늘(로컬) 조정용 중성 하이패스(nd_texhi/nd_lc)는 전역 단계에서 이미 계산·공유됨
     # (전역 텍스처/클래리티/디헤이즈와 동일한 중성 베이스 — 셰이더 texBlur/claBlur 대응).
@@ -676,10 +669,17 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         _prog(0.55 + 0.40 * min(1.0, (y + strip) / float(h)))   # LUT/대비/커브/비네팅 스트립 진행
 
     # 필름 그레인 — 장면(에멀전 입자, 셰이더와 동일). 스탬프는 크롭 후 최종 프레임에 찍는다.
-    if grain2d is not None:
-        f = out.astype(np.float32) / maxv
-        f += grain2d[..., None] * grain_amt * coeffs.GRAIN
-        out = np.rint(np.clip(f, 0.0, 1.0) * maxv).astype(dt)
+    if grain_grid_n > 0.0:
+        gk = grain_amt * coeffs.GRAIN
+        for y in range(0, h, strip):                       # 스트립 = 26MP 풀 float 사본 회피
+            y1 = min(y + strip, h)
+            f = out[y:y1].astype(np.float32) / maxv
+            g = _grain_field(y, y1, h, w, grain_grid_n, w / h, grain_rough, grain_color)
+            # 노출 의존 진폭 — 셰이더 12단계와 동일(특성곡선 기울기 벨, 미드톤 w=1).
+            lg = np.clip(f @ LUMA, 0.0, 1.0)
+            wt = 1.0 + coeffs.GRAIN_TONE * (np.sqrt(4.0 * lg * (1.0 - lg)) - 1.0)
+            f += g * (gk * wt[..., None])
+            out[y:y1] = np.rint(np.clip(f, 0.0, 1.0) * maxv).astype(dt)
 
     _prog(0.97)   # 그레인 완료 — 남은 건 지오메트리/스탬프/저장(빠름)
     # === 지오메트리(회전/크롭) — 현상 끝난 이미지에 마지막 적용(프리뷰 뷰 변환과 동일) ===
@@ -694,6 +694,80 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
                                 grain_amt=float(p.get("grainAmt", 0.0)))   # 스탬프 그레인=사진 그레인 연동
 
     return out
+
+
+# ---------- 필름 그레인 필드 (셰이더 adjust.frag 12단계의 numpy 판) ----------
+# 예전엔 export 가 np.random 격자+zoom 이라 프리뷰와 '성격'만 맞췄지만, 옥타브 회전이
+# 들어가면서 격자 방식으로는 재현이 불가능해져 절차적 해시를 그대로 이식했다.
+# → 이제 양쪽이 **동일한 연속 노이즈 필드**를 샘플한다(구조 일치). 다만 프리뷰는 프록시,
+#   export 는 풀해상도라 '샘플링 밀도'가 달라 픽셀 단위 일치는 여전히 아니다.
+# ⚠️ 오프셋/옥타브 배율(0.5)은 adjust.frag 의 GRAIN_OFF1/2 리터럴과 반드시 일치.
+# 오프셋이 없으면 세 격자가 원점에서 같은 정수 셀을 공유 → hash23 이 같은 값 → 옥타브가
+# 독립이 아니게 되고 1/√(1+r²+r⁴) 정규화(독립 가정)가 어긋난다.
+_GRAIN_OFFSETS = ((0.0, 0.0), (37.1, 17.3), (91.7, 63.9))
+
+
+def _grain_hash23(x, y):
+    """GLSL hash23(Dave Hoskins) — 한 좌표에서 무상관 난수 3개(R/G/B 발색층용).
+    반환 (X,Y,Z) 튜플. 각 성분 [0,1)."""
+    px = x * 0.1031; px -= np.floor(px)
+    py = y * 0.1030; py -= np.floor(py)
+    pz = x * 0.0973; pz -= np.floor(pz)                       # vec3(p.xyx) → z 는 x 기반
+    d = px * (py + 33.33) + py * (px + 33.33) + pz * (pz + 33.33)   # dot(p3, p3.yxz + 33.33)
+    a = px + d; b = py + d; c = pz + d
+    out = []
+    for u, v in (((a + b), c), ((a + c), b), ((b + c), a)):   # (p3.xxy + p3.yzz) * p3.zyx
+        r = u * v
+        out.append(r - np.floor(r))
+    return out
+
+
+def _grain_vnoise3(gx, gy):
+    """GLSL valueNoise3 — 정수 격자 해시(3층)의 smoothstep 이중선형 보간. 반환 3개 (rows,w).
+    gx=(w,) 열 좌표, gy=(rows,) 행 좌표 — 회전이 없어 좌표가 **분리형**이므로 해시를
+    격자(ny×nx)에서 1회만 구하고 정수 인덱싱으로 픽셀에 펼친다. 픽셀마다 같은 셀 해시를
+    재계산하던 낭비(셀당 ~17px)를 없앤 것뿐이라 결과는 순진한 평가와 **비트 단위 동일**."""
+    ix, iy = np.floor(gx), np.floor(gy)
+    fx = gx - ix; fx = (fx * fx * (3.0 - 2.0 * fx))[None, :]
+    fy = gy - iy; fy = (fy * fy * (3.0 - 2.0 * fy))[:, None]
+    X = np.arange(ix[0], ix[-1] + 2.0, dtype=np.float32)      # 격자 x 좌표 (nx,)
+    Y = np.arange(iy[0], iy[-1] + 2.0, dtype=np.float32)      # 격자 y 좌표 (ny,)
+    cx = (ix - ix[0]).astype(np.intp)                         # 열 -> 격자 인덱스
+    cy = (iy - iy[0]).astype(np.intp)
+    out = []
+    for L in _grain_hash23(X[None, :], Y[:, None]):           # 유일하게 비싼 연산 (ny×nx)
+        # x 보간을 **격자 행(ny)** 에서 먼저 끝낸다 — ny ≪ rows 라 전체 크기 연산이 절반.
+        # 연산 순서는 mix(mix(a,b,fx), mix(c,d,fx), fy) 그대로라 결과는 동일.
+        a = L[:, cx]
+        Lx = a + (L[:, cx + 1] - a) * fx                      # (ny, w)
+        top = Lx[cy]
+        out.append(top + (Lx[cy + 1] - top) * fy)             # (rows, w)
+    return out
+
+
+def _grain_field(y0, y1, h, w, grid_n, aspect, clump, color):
+    """(y1-y0, w, 3) float32 그레인 필드(채널별, 평균 0). 셰이더 12단계와 동일 수식.
+    uv=픽셀 중심 (i+0.5)/N = qt_TexCoord0."""
+    u = (np.arange(w, dtype=np.float32) + 0.5) / w
+    v = (np.arange(y0, y1, dtype=np.float32) + 0.5) / h
+    gx = u * np.float32(grid_n)                 # 정사각 셀 좌표(셰이더 g0 와 동일), 1-D
+    gy = v * np.float32(grid_n / aspect)
+    e, amp = None, np.float32(1.0)
+    for i, (ox, oy) in enumerate(_GRAIN_OFFSETS):
+        if i and amp < 1e-4:
+            break                                # clump=0 이면 단일 옥타브 — 나머지 계산 생략
+        s = np.float32(0.5 ** i)                 # f, f/2, f/4 (거친 쪽 — 미세 쪽은 에일리어싱)
+        o = _grain_vnoise3(gx * s + np.float32(ox), gy * s + np.float32(oy))
+        o = [(t - np.float32(0.5)) * amp for t in o]
+        e = o if e is None else [p + q for p, q in zip(e, o)]
+        amp = amp * np.float32(clump)
+    r = float(clump)
+    e = np.stack(e, axis=-1) * np.float32((1.0 + r * r + r ** 4) ** -0.5)   # 옥타브 RMS 보존
+    # 3층 혼합 — mono(층 합)와 층 자체를 k 로 섞고, 휘도 σ 를 보존하도록 정규화.
+    k = np.float32(color)
+    mono = e.sum(axis=-1, keepdims=True) * np.float32(coeffs._INV_SQRT3)
+    n = (mono + (e - mono) * k) * np.float32(coeffs.grain_color_norm(color))   # = mix(mono,e,k)
+    return n.astype(np.float32)
 
 
 def save_image(arr, path) -> bool:

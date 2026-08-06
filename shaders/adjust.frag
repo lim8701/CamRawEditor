@@ -27,6 +27,8 @@ layout(std140, binding = 0) uniform buf {
     int   lutEnabled;   // 0=미적용
     float grainAmt;     // 필름 그레인 강도 0..1 (0=미적용)
     float grainSize;    // 입자 크기 0..1 (0=미세, 1=굵음)
+    float grainRough;   // 입자 거칠기 0..1 = 옥타브 감쇠비(0=단일 옥타브, ↑=뭉침/불규칙)
+    float grainColor;   // 층 독립도 0..1 (0=흑백 단층 필름, 1=R/G/B 3층 완전 독립=컬러 필름)
     float grainAspect;  // 프록시 가로/세로비 W/H (정사각 입자용)
     float stampOn;      // 날짜 스탬프 표시 1/0
     float stampStrength;// 날짜 스탬프 가산 강도
@@ -74,6 +76,7 @@ layout(std140, binding = 0) uniform buf {
     float toneWhBlK;    // Whites/Blacks 끝단 레벨 이동
     float vignetteK;    // 비네팅 방사 강도
     float grainK;       // 필름 그레인 강도
+    float grainToneK;   // 그레인 노출 의존(0=균일, 1=미드톤 집중 — 특성곡선 기울기 모사)
     float sharpenK;     // 언샤프 마스크 강도
     float hslHueDegK;   // HSL hue 시프트 최대(도)
     float hslLumK;      // HSL 휘도 조정 스케일
@@ -195,20 +198,26 @@ vec3 hslMixer(vec3 rgb) {
 }
 
 // 의사난수 해시 + value noise (필름 그레인용, 절차적·결정적)
-// hash12: Dave Hoskins (https://www.shadertoy.com/view/4djSRW) — 곱셈해시의
-// 세로/대각 줄무늬 아티팩트를 피한 고품질 해시.
-float hash12(vec2 p) {
-    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-    p3 += dot(p3, p3.yzx + 33.33);
-    return fract((p3.x + p3.y) * p3.z);
+// hash23: Dave Hoskins (https://www.shadertoy.com/view/4djSRW) — 곱셈해시의 세로/대각
+// 줄무늬 아티팩트를 피한 고품질 해시. 한 좌표에서 무상관 난수 3개를 낸다: 컬러 필름의
+// R/G/B 발색층은 각자 독립 현상되므로 층마다 독립 난수가 필요하고, 스칼라 해시를
+// 3번 부르는 것보다 싸다(흑백 그레인은 k=0 으로 세 층을 완전 상관시켜 얻는다).
+vec3 hash23(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+    p3 += dot(p3, p3.yxz + 33.33);
+    return fract((p3.xxy + p3.yzz) * p3.zyx);
 }
-float valueNoise(vec2 p) {
+vec3 valueNoise3(vec2 p) {          // valueNoise 의 3층 판(격자/보간 동일)
     vec2 i = floor(p), f = fract(p);
     f = f * f * (3.0 - 2.0 * f);
-    float a = hash12(i), b = hash12(i + vec2(1.0, 0.0));
-    float c = hash12(i + vec2(0.0, 1.0)), d = hash12(i + vec2(1.0, 1.0));
+    vec3 a = hash23(i), b = hash23(i + vec2(1.0, 0.0));
+    vec3 c = hash23(i + vec2(0.0, 1.0)), d = hash23(i + vec2(1.0, 1.0));
     return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
+// 그레인 옥타브 오프셋 — 없으면 세 격자가 원점에서 같은 정수 셀을 공유해 hash23 이 **같은 값**을
+// 내고 옥타브가 독립이 아니게 된다(RMS 정규화 전제가 깨짐). ⚠️ pipeline._GRAIN_OFFSETS 와 일치.
+const vec2 GRAIN_OFF1 = vec2(37.1, 17.3);
+const vec2 GRAIN_OFF2 = vec2(91.7, 63.9);
 
 // 디헤이즈 톤모델 — 전역 dehaze(6단계) + 하늘 dehaze(9.7단계) 공용. amt=강도(하늘은 ×마스크),
 // lc=로컬대비(휘도). 계수는 uniform(coeffs.py). pipeline._dehaze_core 와 동일 수식.
@@ -503,9 +512,37 @@ void main() {
     // 12) 필름 그레인 (에멀전 입자) — 맨 끝: 장면과 날짜 스탬프 모두에 입혀짐.
     if (ubuf.grainAmt > 0.0) {
         float gridN = mix(1500.0, 500.0, ubuf.grainSize);
-        vec2 gco = uv * vec2(gridN, gridN / ubuf.grainAspect);
-        float n = valueNoise(gco) - 0.5;
-        rgb += n * ubuf.grainAmt * ubuf.grainK;
+        vec2 g0 = uv * vec2(gridN, gridN / ubuf.grainAspect);   // 정사각 셀 좌표
+        // 멀티 옥타브(fBm) — 단일 옥타브는 셀 크기가 하나뿐이라 규칙적/디지털하다.
+        // 실제 에멀전은 결정 크기 분포 + 뭉침(clumping)으로 Wiener 스펙트럼이 넓다.
+        // ⚠️ 옥타브는 '거친 쪽'(f/2, f/4)으로만 쌓는다: 미세 쪽은 프록시에서 셀<2px 라
+        //    Nyquist 미만 → 에일리어싱이 프록시/풀해상도에서 다르게 접혀 프리뷰≠export.
+        float r = ubuf.grainRough;
+        vec3 e = (valueNoise3(g0) - 0.5)
+               + (valueNoise3(g0 * 0.5  + GRAIN_OFF1) - 0.5) * r
+               + (valueNoise3(g0 * 0.25 + GRAIN_OFF2) - 0.5) * r * r;
+        e *= inversesqrt(1.0 + r * r + r * r * r * r);   // RMS 보존(독립 노이즈 합 σ=√Σaᵢ²)
+        // 3층 에멀전(R/G/B 발색층) — 컬러 필름엔 '휘도 입자'가 따로 없고, 휘도 요동은
+        // 세 층의 합이다. 그래서 층을 먼저 만들고 공통 성분(mono)을 거기서 뽑는다.
+        //   k=0 → 세 층 완전 상관 = 흑백 단층 필름(2단계 동작)
+        //   k=1 → 세 층 완전 독립 = 컬러 필름의 물리 (단, 실제 필름은 층별 입상도가
+        //         다르고 염료 구름이 확산돼 색얼룩이 이보다 약함 → 기본값은 중간)
+        float k = ubuf.grainColor;
+        float mono = (e.r + e.g + e.b) * inversesqrt(3.0);   // 층 공통 성분(단위분산 유지)
+        // 휘도 σ 보존 정규화. mono 가 층들의 합이라 층과 상관이 있어 교차항 2(1−k)k/√3 이 붙는다
+        // → k 를 돌려도 그레인 '세기'는 불변, 색 얼룩만 늘어난다. pipeline.grain_color_norm 과 동일.
+        // 상수는 LUMA 에서 유도(리터럴 중복 없음) — 리터럴 인자라 컴파일 타임 폴딩.
+        float nrm = inversesqrt((1.0 - k) * (1.0 - k) + k * k * dot(LUMA, LUMA)
+                                + 2.0 * (1.0 - k) * k * inversesqrt(3.0));
+        vec3 n = mix(vec3(mono), e, k) * nrm;
+        // 노출 의존 진폭(에멀전 물리): 보이는 톤 요동 = 밀도 요동 × 특성곡선 기울기.
+        // 기울기가 미드톤 최대·양 끝 0 이므로 벨 곡선으로 변조 — 흰 하늘/검은 그림자에
+        // 노이즈가 뿌려지던 '디지털' 느낌 제거. 미드톤(l=0.5)은 w=1 이라 기존 룩 그대로.
+        // display 공간 휘도라 벨이 이미 섀도 쪽으로 치우침(disp 0.5 ≈ linear 0.21)
+        // = 실제 필름에서 그레인이 하이라이트보다 섀도에 더 보이는 것과 일치.
+        float lg = clamp(dot(rgb, LUMA), 0.0, 1.0);
+        float w = mix(1.0, sqrt(4.0 * lg * (1.0 - lg)), ubuf.grainToneK);
+        rgb += n * ubuf.grainAmt * ubuf.grainK * w;
     }
 
     rgb = clamp(rgb, 0.0, 1.0);

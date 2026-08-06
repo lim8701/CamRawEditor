@@ -760,6 +760,7 @@ ApplicationWindow {
             "cgHighHue": cgHiHueSlider.value, "cgHighSat": cgHiSatSlider.value,
             "cgBalance": cgBalanceSlider.value,
             "vignette": vignetteSlider.value, "grainAmt": grainSlider.value, "grainSize": grainSizeSlider.value,
+            "grainRough": grainRoughSlider.value, "grainColor": grainColorSlider.value,
             "sharpenAmt": sharpAmtSlider.value, "sharpenRadius": sharpRadiusSlider.value,
             "sharpenDetail": sharpDetailSlider.value, "sharpenMask": sharpMaskSlider.value,
             "lumaNR": lumaNrSlider.value, "colorNR": colorNrSlider.value, "aiNr": aiNrCheck.checked,
@@ -810,6 +811,8 @@ ApplicationWindow {
         hslLumSlider.value = win.hslL[win.hslBand]
         vignetteSlider.value = _ev(p, "vignette", 0.0)
         grainSlider.value = _ev(p, "grainAmt", 0.0); grainSizeSlider.value = _ev(p, "grainSize", 0.5)
+        grainRoughSlider.value = _ev(p, "grainRough", 0.5)
+        grainColorSlider.value = _ev(p, "grainColor", 0.3)
         controller.setStampGrainSrc(grainSlider.value)   // 스탬프 그레인 연동(프리뷰)
         sharpAmtSlider.value = _ev(p, "sharpenAmt", 0.0); sharpRadiusSlider.value = _ev(p, "sharpenRadius", 1.0)
         sharpDetailSlider.value = _ev(p, "sharpenDetail", 0.25); sharpMaskSlider.value = _ev(p, "sharpenMask", 0.0)
@@ -894,6 +897,7 @@ ApplicationWindow {
         lumaNrSlider.value = 0.0; colorNrSlider.value = 0.0
         aiNrCheck.checked = false; controller.setAiNr(false)
         vignetteSlider.value = 0.0; grainSlider.value = 0.0; grainSizeSlider.value = 0.5
+        grainRoughSlider.value = 0.5; grainColorSlider.value = 0.3
         controller.setStampGrainSrc(0.0)
         tempSlider.value = controller.asShotKelvin; tintSlider.value = controller.asShotTint
         simCombo.currentIndex = 0; simStrengthSlider.value = 1.0
@@ -1267,7 +1271,8 @@ ApplicationWindow {
         || cgShHueSlider.pressed || cgShSatSlider.pressed || cgMidHueSlider.pressed
         || cgMidSatSlider.pressed || cgHiHueSlider.pressed || cgHiSatSlider.pressed
         || cgBalanceSlider.pressed || vignetteSlider.pressed || grainSlider.pressed
-        || grainSizeSlider.pressed || sharpAmtSlider.pressed || sharpRadiusSlider.pressed
+        || grainSizeSlider.pressed || grainRoughSlider.pressed || grainColorSlider.pressed
+        || sharpAmtSlider.pressed || sharpRadiusSlider.pressed
         || sharpDetailSlider.pressed || sharpMaskSlider.pressed || lumaNrSlider.pressed
         || colorNrSlider.pressed || rotAngleSlider.pressed || geoVSlider.pressed
         || geoHSlider.pressed || geoScaleSlider.pressed
@@ -1306,6 +1311,7 @@ ApplicationWindow {
         cgShHueSlider.value, cgShSatSlider.value, cgMidHueSlider.value, cgMidSatSlider.value,
         cgHiHueSlider.value, cgHiSatSlider.value, cgBalanceSlider.value,
         vignetteSlider.value, grainSlider.value, grainSizeSlider.value,
+        grainRoughSlider.value, grainColorSlider.value,
         sharpAmtSlider.value, sharpRadiusSlider.value, sharpDetailSlider.value, sharpMaskSlider.value,
         lumaNrSlider.value, colorNrSlider.value, aiNrCheck.checked,
         lensCheck.checked, win.dateStamp, stampField.text,
@@ -1345,6 +1351,7 @@ ApplicationWindow {
             "sharpenDetail": sharpDetailSlider.value, "sharpenMask": sharpMaskSlider.value,
             "lumaNR": lumaNrSlider.value, "colorNR": colorNrSlider.value, "aiNr": aiNrCheck.checked,
             "vignette": vignetteSlider.value, "grainAmt": grainSlider.value, "grainSize": grainSizeSlider.value,
+            "grainRough": grainRoughSlider.value, "grainColor": grainColorSlider.value,
             "lutEnabled": simCombo.currentIndex !== 0, "simKey": win.simKeys[simCombo.currentIndex],
             "lutStrength": simStrengthSlider.value, "curves": curveEditor.allLuts(),
             "dateStamp": win.dateStamp, "stampText": stampField.text, "stampRot": controller.stampRot,
@@ -3548,6 +3555,8 @@ ApplicationWindow {
                         property real vignette: vignetteSlider.value
                         property real grainAmt: grainSlider.value
                         property real grainSize: grainSizeSlider.value
+                        property real grainRough: grainRoughSlider.value
+                        property real grainColor: grainColorSlider.value
                         property real grainAspect: width / Math.max(1, height)
                         property real clipWarn: 0.0   // export 는 클리핑 오버레이 미적용
                         property real zoneShow: 0.0   // export 는 존 시스템 오버레이 미적용
@@ -3596,6 +3605,7 @@ ApplicationWindow {
                         property real toneWhBlK: controller.adjustCoeffs["toneWhBlK"]
                         property real vignetteK: controller.adjustCoeffs["vignetteK"]
                         property real grainK: controller.adjustCoeffs["grainK"]
+                        property real grainToneK: controller.adjustCoeffs["grainToneK"]
                         property real sharpenK: controller.adjustCoeffs["sharpenK"]
                         property real hslHueDegK: controller.adjustCoeffs["hslHueDegK"]
                         property real hslLumK: controller.adjustCoeffs["hslLumK"]
@@ -3874,6 +3884,8 @@ ApplicationWindow {
                         property real vignette: vignetteSlider.value
                         property real grainAmt: grainSlider.value
                         property real grainSize: grainSizeSlider.value
+                        property real grainRough: grainRoughSlider.value
+                        property real grainColor: grainColorSlider.value
                         property real grainAspect: viewport.procW / Math.max(1, viewport.procH)
                         property real clipWarn: win.clipWarn ? 1.0 : 0.0   // 클리핑 경고 오버레이(프리뷰 전용)
                         property real zoneShow: win.zoneOverlay ? 1.0 : 0.0 // 존 시스템 오버레이(프리뷰 전용)
@@ -3924,6 +3936,7 @@ ApplicationWindow {
                         property real toneWhBlK: controller.adjustCoeffs["toneWhBlK"]
                         property real vignetteK: controller.adjustCoeffs["vignetteK"]
                         property real grainK: controller.adjustCoeffs["grainK"]
+                        property real grainToneK: controller.adjustCoeffs["grainToneK"]
                         property real sharpenK: controller.adjustCoeffs["sharpenK"]
                         property real hslHueDegK: controller.adjustCoeffs["hslHueDegK"]
                         property real hslLumK: controller.adjustCoeffs["hslLumK"]
@@ -5973,6 +5986,44 @@ ApplicationWindow {
                     property bool _pendingReset: false
                     onPressedChanged: {
                         if (pressed) _pendingReset = win.isDblPress(grainSizeSlider)
+                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                    }
+                }
+
+                // 거칠기 = 멀티 옥타브(fBm) 감쇠비. 0=단일 옥타브(균질·규칙적),
+                // ↑=거친 옥타브가 섞여 결정 뭉침(clumping)처럼 불규칙해진다. 세기(σ)는 불변.
+                Label {
+                    text: "Grain Roughness:  " + grainRoughSlider.value.toFixed(2) + "  (even ↔ clumpy)"
+                    color: "white"
+                }
+                Slider {
+                    id: grainRoughSlider
+                    Layout.fillWidth: true
+                    from: 0.0; to: 1.0; value: 0.5
+                    property real defaultValue: 0.5
+                    property real _lastPressMs: 0
+                    property bool _pendingReset: false
+                    onPressedChanged: {
+                        if (pressed) _pendingReset = win.isDblPress(grainRoughSlider)
+                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                    }
+                }
+
+                // 층 독립도 = R/G/B 발색층이 각자 독립 현상되는 정도. 0=흑백 단층 필름,
+                // 1=컬러 필름의 물리(단, 층별 입상도차·염료확산이 없어 색얼룩이 과함). 세기(σ)는 불변.
+                Label {
+                    text: "Grain Color:  " + grainColorSlider.value.toFixed(2) + "  (mono ↔ 3-layer)"
+                    color: "white"
+                }
+                Slider {
+                    id: grainColorSlider
+                    Layout.fillWidth: true
+                    from: 0.0; to: 1.0; value: 0.3
+                    property real defaultValue: 0.3
+                    property real _lastPressMs: 0
+                    property bool _pendingReset: false
+                    onPressedChanged: {
+                        if (pressed) _pendingReset = win.isDblPress(grainColorSlider)
                         else if (_pendingReset) { value = defaultValue; _pendingReset = false }
                     }
                 }

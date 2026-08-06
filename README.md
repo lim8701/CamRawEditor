@@ -44,8 +44,36 @@ Any Fujifilm body works out of the box (everything is driven by per-file metadat
 - **Color** — vibrance & saturation
 - **Detail** — texture, clarity, dehaze, and **sharpening** (amount / radius / detail / masking)
 - **Noise reduction** — edge-preserving luminance NR (guided filter) + color NR, with an optional **AI denoise** base (NAFNet, auto-downloaded ~117 MB; GPU-accelerated via DirectML when available, with a confirm prompt before falling back to the much slower CPU path)
-- **Effects** — film grain, vignette
+- **Effects** — **film grain** (emulsion model — see below) and vignette
 - **Highlight reconstruction** — hue-aware desaturation that neutralizes clipped-highlight color casts (e.g. a fire core) while preserving saturated colored light sources (neon, signs)
+
+#### Film grain
+
+Grain is modelled on what film emulsion actually does, not sprinkled on as noise:
+
+- **Tone-dependent amplitude** — visible tone fluctuation is grain density × the slope of the
+  characteristic curve, so grain peaks in the midtones and disappears from blown highlights and
+  crushed blacks. Uniform-amplitude grain speckling a white sky is the main thing that reads as
+  "digital"; the middle panel below is the old behaviour, the right one is this model.
+- **Multi-octave** — real emulsion has a crystal size distribution and clumping, so its Wiener
+  spectrum is broad rather than single-scale (`Roughness`).
+- **Three dye layers** — colour film has no separate luminance grain: the R/G/B layers develop
+  independently and the luminance fluctuation is their *sum*, which is why colour film speckles in
+  colour (`Colour`). Set it to 0 for single-layer black-and-white behaviour.
+
+`Roughness` and `Colour` change the **texture only** — the grain's strength is normalised so it
+stays put as you dial them, and both are saved per photo. ⚠️ Judge grain at 1:1 zoom; fit-to-screen
+averages it away.
+
+<p align="center">
+  <img src="docs/grain_overview.png" alt="Film Rawstery — film grain: grain off, the old uniform model speckling the blown sky, and the current emulsion model leaving the sky clean while keeping grain in the foliage" width="100%">
+</p>
+
+This reproduces those statistical behaviours but is **not a physical simulation** — the noise
+primitive is lattice value-noise rather than a stochastic model of discrete silver-halide crystals,
+and it is applied after the tone curve rather than as a density fluctuation before it. The model,
+the measurements, and the full list of what is *not* physical are in
+[`docs/film_grain.md`](docs/film_grain.md).
 
 ### Masking (local adjustments)
 - **AI selection, three families** — a **Scene** tab (SegFormer-B2 / ADE20K), a **Face** tab, and a **Depth** tab; models auto-download on first use

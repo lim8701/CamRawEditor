@@ -35,6 +35,23 @@ TONE_HISH = 1.0         # Highlights/Shadows 국소 노출 stop 스케일
 TONE_WHBL = 0.3         # Whites/Blacks 끝단 레벨 이동
 VIGNETTE = 0.8          # 비네팅 방사 강도
 GRAIN = 0.12            # 필름 그레인 강도
+# 그레인 노출 의존(에멀전 물리): 보이는 톤 요동 = 입자 밀도 요동 × 특성곡선 기울기.
+# 기울기는 미드톤(직선부) 최대, toe(섀도)/shoulder(하이라이트)에서 0 → 양 끝에서 그레인이 사라진다.
+# 0=균일(옛 동작), 1=완전 변조. 미드톤 진폭은 값과 무관하게 항상 1.0(기존 룩 보존).
+GRAIN_TONE = 0.7
+# ⚠️그레인 Roughness(옥타브 감쇠비)/Color(층 독립도)는 **계수가 아니라 사진별 슬라이더 값**
+#   (`grainRough`/`grainColor`)이다. 기본값은 다른 슬라이더와 동일하게 QML `value:` 와
+#   pipeline `p.get(...)` 에 리터럴로 둔다(0.5 / 0.3). 여기 상수로 만들면 안 됨.
+_LUMA_SQ = 0.299 ** 2 + 0.587 ** 2 + 0.114 ** 2   # |LUMA|² = 0.446966
+_INV_SQRT3 = 3.0 ** -0.5                          # 0.57735 = Cov(mono, 층)
+
+
+def grain_color_norm(k):
+    """3층 혼합 mix(mono, e, k) 후 **휘도** 그레인 σ 를 k 와 무관하게 유지하는 계수.
+    Var(dot(LUMA, n)) = (1−k)² + k²·|LUMA|² + 2(1−k)k/√3  (mono 는 층 합이라 층과 상관 있음).
+    → k 를 돌려도 그레인 '세기'는 그대로고 색 얼룩만 늘어난다(옥타브 정규화와 같은 원칙).
+    셰이더는 같은 식을 인라인 계산(슬라이더라 실시간 변동) — 수정 시 양쪽 동시."""
+    return ((1.0 - k) ** 2 + k * k * _LUMA_SQ + 2.0 * (1.0 - k) * k * _INV_SQRT3) ** -0.5
 
 # 기타 강도 계수 (샤프닝 / HSL 믹서 / 컬러 그레이딩)
 SHARPEN = 1.5           # 언샤프 마스크 강도
@@ -52,7 +69,7 @@ def as_qml_dict():
         "clarityK": CLARITY, "textureK": TEXTURE,
         "skyTempK": SKY_TEMP, "skyTintK": SKY_TINT,
         "toneHiShK": TONE_HISH, "toneWhBlK": TONE_WHBL,
-        "vignetteK": VIGNETTE, "grainK": GRAIN,
+        "vignetteK": VIGNETTE, "grainK": GRAIN, "grainToneK": GRAIN_TONE,
         "sharpenK": SHARPEN, "hslHueDegK": HSL_HUE_DEG,
         "hslLumK": HSL_LUM, "colorGradeK": COLOR_GRADE,
     }
