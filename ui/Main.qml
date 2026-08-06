@@ -3558,6 +3558,10 @@ ApplicationWindow {
                         property real grainRough: grainRoughSlider.value
                         property real grainColor: grainColorSlider.value
                         property real grainAspect: width / Math.max(1, height)
+                        // 그레인 서브픽셀 평균용 출력 텍셀 — **이 인스턴스의 실제 렌더 크기** 기준.
+                        // (texelW 는 샤프닝 공간스케일용이라 pipeFull 에서도 프록시 텍셀 → 쓰면 안 됨)
+                        property real grainTexelW: 1.0 / Math.max(1, width)
+                        property real grainTexelH: 1.0 / Math.max(1, height)
                         property real clipWarn: 0.0   // export 는 클리핑 오버레이 미적용
                         property real zoneShow: 0.0   // export 는 존 시스템 오버레이 미적용
                         property real displayCM: 0.0  // export 는 디스플레이 색관리 미적용(표준 sRGB)
@@ -3606,6 +3610,7 @@ ApplicationWindow {
                         property real vignetteK: controller.adjustCoeffs["vignetteK"]
                         property real grainK: controller.adjustCoeffs["grainK"]
                         property real grainToneK: controller.adjustCoeffs["grainToneK"]
+                        property real grainToneGammaK: controller.adjustCoeffs["grainToneGammaK"]
                         property real sharpenK: controller.adjustCoeffs["sharpenK"]
                         property real hslHueDegK: controller.adjustCoeffs["hslHueDegK"]
                         property real hslLumK: controller.adjustCoeffs["hslLumK"]
@@ -3887,6 +3892,10 @@ ApplicationWindow {
                         property real grainRough: grainRoughSlider.value
                         property real grainColor: grainColorSlider.value
                         property real grainAspect: viewport.procW / Math.max(1, viewport.procH)
+                        // 그레인 서브픽셀 평균용 출력 텍셀 — **이 인스턴스의 실제 렌더 크기** 기준.
+                        // (texelW 는 샤프닝 공간스케일용이라 pipeFull 에서도 프록시 텍셀 → 쓰면 안 됨)
+                        property real grainTexelW: 1.0 / Math.max(1, width)
+                        property real grainTexelH: 1.0 / Math.max(1, height)
                         property real clipWarn: win.clipWarn ? 1.0 : 0.0   // 클리핑 경고 오버레이(프리뷰 전용)
                         property real zoneShow: win.zoneOverlay ? 1.0 : 0.0 // 존 시스템 오버레이(프리뷰 전용)
                         // 디스플레이 색관리(프리뷰 전용): 토글 ON + 유효 CM LUT 있을 때만.
@@ -3937,6 +3946,7 @@ ApplicationWindow {
                         property real vignetteK: controller.adjustCoeffs["vignetteK"]
                         property real grainK: controller.adjustCoeffs["grainK"]
                         property real grainToneK: controller.adjustCoeffs["grainToneK"]
+                        property real grainToneGammaK: controller.adjustCoeffs["grainToneGammaK"]
                         property real sharpenK: controller.adjustCoeffs["sharpenK"]
                         property real hslHueDegK: controller.adjustCoeffs["hslHueDegK"]
                         property real hslLumK: controller.adjustCoeffs["hslLumK"]

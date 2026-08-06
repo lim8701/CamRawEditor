@@ -631,7 +631,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
 
     # 필름 그레인 — 셰이더 12단계와 동일한 절차적 필드(_grain_field)를 스트립마다 생성.
     # 좌표가 uv 절대값 기반이라 스트립 경계 이음매 없음(예전 격자+zoom 방식과 달리 시드 불필요).
-    grain_grid_n = 1500.0 + (500.0 - 1500.0) * grain_size if grain_amt > 0.0 else 0.0
+    grain_grid_n = 4500.0 + (1300.0 - 4500.0) * grain_size if grain_amt > 0.0 else 0.0
 
     # 하늘(로컬) 조정용 중성 하이패스(nd_texhi/nd_lc)는 전역 단계에서 이미 계산·공유됨
     # (전역 텍스처/클래리티/디헤이즈와 동일한 중성 베이스 — 셰이더 texBlur/claBlur 대응).
@@ -677,7 +677,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
             g = _grain_field(y, y1, h, w, grain_grid_n, w / h, grain_rough, grain_color)
             # 노출 의존 진폭 — 셰이더 12단계와 동일(특성곡선 기울기 벨, 미드톤 w=1).
             # ⚠️K>1(실측 1.28)이면 끝단에서 음수 → max(0,·) 필수(음수면 노이즈 반전).
-            lg = np.clip(f @ LUMA, 0.0, 1.0)
+            lg = np.clip(f @ LUMA, 0.0, 1.0) ** np.float32(coeffs.GRAIN_TONE_GAMMA)
             wt = np.maximum(0.0, 1.0 + coeffs.GRAIN_TONE
                             * (np.sqrt(4.0 * lg * (1.0 - lg)) - 1.0))
             f += g * (gk * wt[..., None])
@@ -712,6 +712,9 @@ _GRAIN_OFFSETS = ((0.0, 0.0), (37.1, 17.3), (91.7, 63.9))
 # 은염 결정이 크고 → 염료 구름도 가장 굵다. 적감층(시안)이 가장 곱다(녹감층 RMS 의 20~90%).
 # 염료 확산은 별도 블러가 아니라 '유효 입자 크기 증가'로 흡수 — 확산의 물리적 결과가 그것.
 # ⚠️ adjust.frag 의 GRAIN_LSIZE/GRAIN_LAMP/GRAIN_LOFF0..2 리터럴과 반드시 일치.
+# 서브픽셀 샘플 오프셋(픽셀 단위). 실제 필름에 맞춘 셀 크기가 픽셀보다 작아 점 샘플링하면
+# 에일리어싱 → 스캐너가 픽셀 면적을 적분하듯 2x2 로 평균한다. ⚠️ adjust.frag GRAIN_SS 와 일치.
+_GRAIN_SS = (-0.25, 0.25)
 _GRAIN_LSIZE = (0.85, 1.00, 1.35)
 _GRAIN_LAMP = (0.70, 1.00, 1.30)
 _GRAIN_LOFF = ((0.0, 0.0), (11.3, 47.9), (73.5, 29.1))
@@ -739,31 +742,37 @@ def _grain_hash12(x, y):
     return r - np.floor(r)
 
 
-def _grain_vnoise(gx, gy):
-    """GLSL valueNoise — 정수 격자 해시의 smoothstep 이중선형 보간. 반환 (rows,w).
-    gx=(w,) 열 좌표, gy=(rows,) 행 좌표 — 회전이 없어 좌표가 **분리형**이므로 해시를
-    격자(ny×nx)에서 1회만 구하고 x 보간까지 격자 행에서 끝낸 뒤 정수 인덱싱으로 펼친다.
-    픽셀마다 같은 셀 해시를 재계산하던 낭비(셀당 ~17px)를 없앤 것뿐이라 결과는 순진한
-    픽셀별 평가와 **비트 단위 동일**(검증됨). ⚠️ 옥타브/층 회전을 넣으면 이 최적화가 깨진다."""
+def _grain_cell(gx, gy):
+    """GLSL cellNoise — 셀마다 난수 하나, **보간 없음**. 반환 (rows,w).
+    gx=(w,) 열 좌표, gy=(rows,) 행 좌표 — 좌표가 분리형이라 해시를 격자(ny×nx)에서 1회만
+    구하고 정수 인덱싱으로 픽셀에 펼친다.
+    ⚠️보간(smoothstep/선형)을 넣으면 실측 필름 대비 결이 뭉개진다 — acf lag1(gridN 2900):
+    보간없음 0.391 / smoothstep 0.504 / 선형 0.553, 실측 필름 0.234. 서브픽셀 평균에서 σ 도
+    깎여 곱기와 진하기를 맞바꾸게 된다. 셰이더 cellNoise 주석 참조."""
     ix, iy = np.floor(gx), np.floor(gy)
-    fx = gx - ix; fx = (fx * fx * (3.0 - 2.0 * fx))[None, :]
-    fy = gy - iy; fy = (fy * fy * (3.0 - 2.0 * fy))[:, None]
-    X = np.arange(ix[0], ix[-1] + 2.0, dtype=np.float32)      # 격자 x 좌표 (nx,)
-    Y = np.arange(iy[0], iy[-1] + 2.0, dtype=np.float32)      # 격자 y 좌표 (ny,)
+    X = np.arange(ix[0], ix[-1] + 1.0, dtype=np.float32)      # 격자 x 좌표 (nx,)
+    Y = np.arange(iy[0], iy[-1] + 1.0, dtype=np.float32)      # 격자 y 좌표 (ny,)
     cx = (ix - ix[0]).astype(np.intp)                         # 열 -> 격자 인덱스
     cy = (iy - iy[0]).astype(np.intp)
-    L = _grain_hash12(X[None, :], Y[:, None])                 # 유일하게 비싼 연산 (ny×nx)
-    a = L[:, cx]
-    Lx = a + (L[:, cx + 1] - a) * fx                          # (ny, w) — x 보간은 격자 행에서
-    top = Lx[cy]
-    return top + (Lx[cy + 1] - top) * fy                      # (rows, w)
+    return _grain_hash12(X[None, :], Y[:, None])[np.ix_(cy, cx)]
 
 
 def _grain_field(y0, y1, h, w, grid_n, aspect, clump, color):
     """(y1-y0, w, 3) float32 그레인 필드(채널별, 평균 0). 셰이더 12단계와 동일 수식.
-    uv=픽셀 중심 (i+0.5)/N = qt_TexCoord0."""
-    u = (np.arange(w, dtype=np.float32) + 0.5) / w
-    v = (np.arange(y0, y1, dtype=np.float32) + 0.5) / h
+    실제 필름에 맞춰 셀이 픽셀보다 작아졌으므로 **2x2 서브픽셀 평균**(스캐너의 면적 적분에
+    대응)으로 샘플한다 — 점 샘플링하면 접힌다(⚠️_GRAIN_SS 는 셰이더와 일치)."""
+    out = None
+    for sy in _GRAIN_SS:
+        for sx in _GRAIN_SS:
+            o = _grain_field_1(y0, y1, h, w, grid_n, aspect, clump, color, sx, sy)
+            out = o if out is None else out + o
+    return (out / np.float32(len(_GRAIN_SS) ** 2)).astype(np.float32)
+
+
+def _grain_field_1(y0, y1, h, w, grid_n, aspect, clump, color, sx, sy):
+    """서브픽셀 오프셋 (sx,sy) 픽셀 단위에서의 단일 샘플. uv=(i+0.5+sx)/N = qt_TexCoord0 + sx·texel."""
+    u = (np.arange(w, dtype=np.float32) + np.float32(0.5 + sx)) / w
+    v = (np.arange(y0, y1, dtype=np.float32) + np.float32(0.5 + sy)) / h
     gx0 = u * np.float32(grid_n)                # 정사각 셀 좌표(셰이더 g0 와 동일), 1-D
     gy0 = v * np.float32(grid_n / aspect)
     r = float(clump)
@@ -777,8 +786,8 @@ def _grain_field(y0, y1, h, w, grid_n, aspect, clump, color):
             if i and amp < 1e-4:
                 break                            # clump=0 이면 단일 옥타브 — 나머지 계산 생략
             s = np.float32(0.5 ** i)             # f, f/2, f/4 (거친 쪽 — 미세 쪽은 에일리어싱)
-            o = (_grain_vnoise(gx * s + np.float32(ox),
-                               gy * s + np.float32(oy)) - np.float32(0.5)) * amp
+            o = (_grain_cell(gx * s + np.float32(ox),
+                             gy * s + np.float32(oy)) - np.float32(0.5)) * amp
             acc = o if acc is None else acc + o
             amp = amp * np.float32(clump)
         layers.append(acc * (oct_norm * np.float32(lamp)))
