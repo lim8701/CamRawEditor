@@ -702,31 +702,47 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
 # → 이제 양쪽이 **동일한 연속 노이즈 필드**를 샘플한다(구조 일치). 다만 프리뷰는 프록시,
 #   export 는 풀해상도라 '샘플링 밀도'가 달라 픽셀 단위 일치는 여전히 아니다.
 # ⚠️ 오프셋/옥타브 배율(0.5)은 adjust.frag 의 GRAIN_OFF1/2 리터럴과 반드시 일치.
-# 오프셋이 없으면 세 격자가 원점에서 같은 정수 셀을 공유 → hash23 이 같은 값 → 옥타브가
+# 오프셋이 없으면 세 격자가 원점에서 같은 정수 셀을 공유 → hash12 가 같은 값 → 옥타브가
 # 독립이 아니게 되고 1/√(1+r²+r⁴) 정규화(독립 가정)가 어긋난다.
 _GRAIN_OFFSETS = ((0.0, 0.0), (37.1, 17.3), (91.7, 63.9))
 
-
-def _grain_hash23(x, y):
-    """GLSL hash23(Dave Hoskins) — 한 좌표에서 무상관 난수 3개(R/G/B 발색층용).
-    반환 (X,Y,Z) 튜플. 각 성분 [0,1)."""
-    px = x * 0.1031; px -= np.floor(px)
-    py = y * 0.1030; py -= np.floor(py)
-    pz = x * 0.0973; pz -= np.floor(pz)                       # vec3(p.xyx) → z 는 x 기반
-    d = px * (py + 33.33) + py * (px + 33.33) + pz * (pz + 33.33)   # dot(p3, p3.yxz + 33.33)
-    a = px + d; b = py + d; c = pz + d
-    out = []
-    for u, v in (((a + b), c), ((a + c), b), ((b + c), a)):   # (p3.xxy + p3.yzz) * p3.zyx
-        r = u * v
-        out.append(r - np.floor(r))
-    return out
+# 컬러 필름 3층(R/G/B 발색층)의 상대 입자 크기·진폭·오프셋. 청감층(옐로)은 고감도가 필요해
+# 은염 결정이 크고 → 염료 구름도 가장 굵다. 적감층(시안)이 가장 곱다(녹감층 RMS 의 20~90%).
+# 염료 확산은 별도 블러가 아니라 '유효 입자 크기 증가'로 흡수 — 확산의 물리적 결과가 그것.
+# ⚠️ adjust.frag 의 GRAIN_LSIZE/GRAIN_LAMP/GRAIN_LOFF0..2 리터럴과 반드시 일치.
+_GRAIN_LSIZE = (0.85, 1.00, 1.35)
+_GRAIN_LAMP = (0.70, 1.00, 1.30)
+_GRAIN_LOFF = ((0.0, 0.0), (11.3, 47.9), (73.5, 29.1))
 
 
-def _grain_vnoise3(gx, gy):
-    """GLSL valueNoise3 — 정수 격자 해시(3층)의 smoothstep 이중선형 보간. 반환 3개 (rows,w).
+def _grain_color_norm(k):
+    """3층 혼합 mix(mono, e, k) 후 **휘도** 그레인 σ 를 k 와 무관하게 유지하는 계수.
+    e=층별 필드(진폭 aᵢ), mono=Σeᵢ/|a| 라 mono 와 층은 상관이 있고, 그래서 교차항이 붙는다:
+        Var(dot(LUMA,n)) = (1−k)² + k²·Σ(Lᵢaᵢ)² + 2(1−k)k·Σ(Lᵢaᵢ²)/|a|
+    aᵢ=1 이면 이전(층 동일) 식으로 환원된다. ⚠️ 셰이더 12단계와 동일 식(양쪽 동시 수정)."""
+    a = np.asarray(_GRAIN_LAMP, np.float64)
+    a_len = float(np.sqrt((a * a).sum()))
+    la = LUMA.astype(np.float64) * a
+    return float(((1.0 - k) ** 2 + k * k * float((la * la).sum())
+                  + 2.0 * (1.0 - k) * k * float((LUMA * a * a).sum()) / a_len) ** -0.5)
+
+
+def _grain_hash12(x, y):
+    """GLSL hash12(Dave Hoskins) 와 동일. p3=(X,Y,X) 라 z 성분은 항상 x 성분과 같다."""
+    X = x * 0.1031; X -= np.floor(X)
+    Y = y * 0.1031; Y -= np.floor(Y)
+    d = X * (Y + 33.33) + Y * (X + 33.33) + X * (X + 33.33)   # dot(p3, p3.yzx + 33.33)
+    a = X + d; b = Y + d
+    r = (a + b) * a                                            # (p3.x + p3.y) * p3.z
+    return r - np.floor(r)
+
+
+def _grain_vnoise(gx, gy):
+    """GLSL valueNoise — 정수 격자 해시의 smoothstep 이중선형 보간. 반환 (rows,w).
     gx=(w,) 열 좌표, gy=(rows,) 행 좌표 — 회전이 없어 좌표가 **분리형**이므로 해시를
-    격자(ny×nx)에서 1회만 구하고 정수 인덱싱으로 픽셀에 펼친다. 픽셀마다 같은 셀 해시를
-    재계산하던 낭비(셀당 ~17px)를 없앤 것뿐이라 결과는 순진한 평가와 **비트 단위 동일**."""
+    격자(ny×nx)에서 1회만 구하고 x 보간까지 격자 행에서 끝낸 뒤 정수 인덱싱으로 펼친다.
+    픽셀마다 같은 셀 해시를 재계산하던 낭비(셀당 ~17px)를 없앤 것뿐이라 결과는 순진한
+    픽셀별 평가와 **비트 단위 동일**(검증됨). ⚠️ 옥타브/층 회전을 넣으면 이 최적화가 깨진다."""
     ix, iy = np.floor(gx), np.floor(gy)
     fx = gx - ix; fx = (fx * fx * (3.0 - 2.0 * fx))[None, :]
     fy = gy - iy; fy = (fy * fy * (3.0 - 2.0 * fy))[:, None]
@@ -734,15 +750,11 @@ def _grain_vnoise3(gx, gy):
     Y = np.arange(iy[0], iy[-1] + 2.0, dtype=np.float32)      # 격자 y 좌표 (ny,)
     cx = (ix - ix[0]).astype(np.intp)                         # 열 -> 격자 인덱스
     cy = (iy - iy[0]).astype(np.intp)
-    out = []
-    for L in _grain_hash23(X[None, :], Y[:, None]):           # 유일하게 비싼 연산 (ny×nx)
-        # x 보간을 **격자 행(ny)** 에서 먼저 끝낸다 — ny ≪ rows 라 전체 크기 연산이 절반.
-        # 연산 순서는 mix(mix(a,b,fx), mix(c,d,fx), fy) 그대로라 결과는 동일.
-        a = L[:, cx]
-        Lx = a + (L[:, cx + 1] - a) * fx                      # (ny, w)
-        top = Lx[cy]
-        out.append(top + (Lx[cy + 1] - top) * fy)             # (rows, w)
-    return out
+    L = _grain_hash12(X[None, :], Y[:, None])                 # 유일하게 비싼 연산 (ny×nx)
+    a = L[:, cx]
+    Lx = a + (L[:, cx + 1] - a) * fx                          # (ny, w) — x 보간은 격자 행에서
+    top = Lx[cy]
+    return top + (Lx[cy + 1] - top) * fy                      # (rows, w)
 
 
 def _grain_field(y0, y1, h, w, grid_n, aspect, clump, color):
@@ -750,23 +762,30 @@ def _grain_field(y0, y1, h, w, grid_n, aspect, clump, color):
     uv=픽셀 중심 (i+0.5)/N = qt_TexCoord0."""
     u = (np.arange(w, dtype=np.float32) + 0.5) / w
     v = (np.arange(y0, y1, dtype=np.float32) + 0.5) / h
-    gx = u * np.float32(grid_n)                 # 정사각 셀 좌표(셰이더 g0 와 동일), 1-D
-    gy = v * np.float32(grid_n / aspect)
-    e, amp = None, np.float32(1.0)
-    for i, (ox, oy) in enumerate(_GRAIN_OFFSETS):
-        if i and amp < 1e-4:
-            break                                # clump=0 이면 단일 옥타브 — 나머지 계산 생략
-        s = np.float32(0.5 ** i)                 # f, f/2, f/4 (거친 쪽 — 미세 쪽은 에일리어싱)
-        o = _grain_vnoise3(gx * s + np.float32(ox), gy * s + np.float32(oy))
-        o = [(t - np.float32(0.5)) * amp for t in o]
-        e = o if e is None else [p + q for p, q in zip(e, o)]
-        amp = amp * np.float32(clump)
+    gx0 = u * np.float32(grid_n)                # 정사각 셀 좌표(셰이더 g0 와 동일), 1-D
+    gy0 = v * np.float32(grid_n / aspect)
     r = float(clump)
-    e = np.stack(e, axis=-1) * np.float32((1.0 + r * r + r ** 4) ** -0.5)   # 옥타브 RMS 보존
-    # 3층 혼합 — mono(층 합)와 층 자체를 k 로 섞고, 휘도 σ 를 보존하도록 정규화.
+    oct_norm = np.float32((1.0 + r * r + r ** 4) ** -0.5)
+    layers = []
+    for (lsize, lamp, (lox, loy)) in zip(_GRAIN_LSIZE, _GRAIN_LAMP, _GRAIN_LOFF):
+        gx = gx0 / np.float32(lsize) + np.float32(lox)   # 굵은 입자 = 셀 좌표 축소
+        gy = gy0 / np.float32(lsize) + np.float32(loy)
+        acc, amp = None, np.float32(1.0)
+        for i, (ox, oy) in enumerate(_GRAIN_OFFSETS):
+            if i and amp < 1e-4:
+                break                            # clump=0 이면 단일 옥타브 — 나머지 계산 생략
+            s = np.float32(0.5 ** i)             # f, f/2, f/4 (거친 쪽 — 미세 쪽은 에일리어싱)
+            o = (_grain_vnoise(gx * s + np.float32(ox),
+                               gy * s + np.float32(oy)) - np.float32(0.5)) * amp
+            acc = o if acc is None else acc + o
+            amp = amp * np.float32(clump)
+        layers.append(acc * (oct_norm * np.float32(lamp)))
+    e = np.stack(layers, axis=-1)
+    # 3층 혼합 — mono(층 합 = 휘도 요동)와 층 자체를 k 로 섞고, 휘도 σ 를 보존하도록 정규화.
+    a_len = np.float32(np.sqrt(sum(x * x for x in _GRAIN_LAMP)))
     k = np.float32(color)
-    mono = e.sum(axis=-1, keepdims=True) * np.float32(coeffs._INV_SQRT3)
-    n = (mono + (e - mono) * k) * np.float32(coeffs.grain_color_norm(color))   # = mix(mono,e,k)
+    mono = e.sum(axis=-1, keepdims=True) / a_len
+    n = (mono + (e - mono) * k) * np.float32(_grain_color_norm(color))   # = mix(mono, e, k)
     return n.astype(np.float32)
 
 

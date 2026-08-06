@@ -59,7 +59,10 @@ Grain is modelled on what film emulsion actually does, not sprinkled on as noise
   spectrum is broad rather than single-scale (`Roughness`).
 - **Three dye layers** — colour film has no separate luminance grain: the R/G/B layers develop
   independently and the luminance fluctuation is their *sum*, which is why colour film speckles in
-  colour (`Colour`). Set it to 0 for single-layer black-and-white behaviour.
+  colour (`Colour`). The layers are **not identical**: the blue-sensitive layer needs a fast emulsion,
+  which means large silver-halide crystals and therefore the coarsest dye clouds, while the
+  red-sensitive layer is the finest — so the colour speckle lands mostly on the blue–yellow axis, and
+  coarse, which is exactly where the eye is least able to resolve it. Set `Colour` to 0 to drop chroma.
 
 `Roughness` and `Colour` change the **texture only** — the grain's strength is normalised so it
 stays put as you dial them, and both are saved per photo. ⚠️ Judge grain at 1:1 zoom; fit-to-screen

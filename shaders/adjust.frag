@@ -198,26 +198,47 @@ vec3 hslMixer(vec3 rgb) {
 }
 
 // 의사난수 해시 + value noise (필름 그레인용, 절차적·결정적)
-// hash23: Dave Hoskins (https://www.shadertoy.com/view/4djSRW) — 곱셈해시의 세로/대각
-// 줄무늬 아티팩트를 피한 고품질 해시. 한 좌표에서 무상관 난수 3개를 낸다: 컬러 필름의
-// R/G/B 발색층은 각자 독립 현상되므로 층마다 독립 난수가 필요하고, 스칼라 해시를
-// 3번 부르는 것보다 싸다(흑백 그레인은 k=0 으로 세 층을 완전 상관시켜 얻는다).
-vec3 hash23(vec2 p) {
-    vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
-    p3 += dot(p3, p3.yxz + 33.33);
-    return fract((p3.xxy + p3.yzz) * p3.zyx);
+// hash12: Dave Hoskins (https://www.shadertoy.com/view/4djSRW) — 곱셈해시의
+// 세로/대각 줄무늬 아티팩트를 피한 고품질 해시.
+float hash12(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
 }
-vec3 valueNoise3(vec2 p) {          // valueNoise 의 3층 판(격자/보간 동일)
+float valueNoise(vec2 p) {
     vec2 i = floor(p), f = fract(p);
     f = f * f * (3.0 - 2.0 * f);
-    vec3 a = hash23(i), b = hash23(i + vec2(1.0, 0.0));
-    vec3 c = hash23(i + vec2(0.0, 1.0)), d = hash23(i + vec2(1.0, 1.0));
+    float a = hash12(i), b = hash12(i + vec2(1.0, 0.0));
+    float c = hash12(i + vec2(0.0, 1.0)), d = hash12(i + vec2(1.0, 1.0));
     return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
-// 그레인 옥타브 오프셋 — 없으면 세 격자가 원점에서 같은 정수 셀을 공유해 hash23 이 **같은 값**을
+// 그레인 옥타브 오프셋 — 없으면 세 격자가 원점에서 같은 정수 셀을 공유해 hash12 가 **같은 값**을
 // 내고 옥타브가 독립이 아니게 된다(RMS 정규화 전제가 깨짐). ⚠️ pipeline._GRAIN_OFFSETS 와 일치.
 const vec2 GRAIN_OFF1 = vec2(37.1, 17.3);
 const vec2 GRAIN_OFF2 = vec2(91.7, 63.9);
+
+// ── 컬러 필름 3층(R/G/B 발색층) — 층마다 입자 크기와 진폭이 다르다 ──────────────
+// 청감층(옐로 발색): 고감도가 필요해 은염 결정이 크고 → 염료 구름도 가장 굵다
+//   ("고감도 에멀전을 얻는 주된 방법이 큰 은염 결정이고, 이는 청감층에 필요" — Weaver & Long)
+// 적감층(시안 발색): 가장 곱다 (실측 스펙상 녹감층 RMS 의 20~90%, 여기선 중간값 채택)
+// **염료 확산은 별도 블러가 아니라 '유효 입자 크기 증가'로 흡수**했다 — 확산의 물리적 결과가
+// 현상 단위가 커지는 것이므로. 그래서 컬러 그레인이 흑백보다 부드럽게 나온다.
+// ⚠️ 아래 세 상수는 pipeline._GRAIN_LSIZE/_GRAIN_LAMP/_GRAIN_LOFF 와 반드시 일치.
+// ⚠️ 층별 크기가 다르므로 한 좌표에서 난수 3개를 뽑는 hash23 트릭은 쓸 수 없다(격자가 다름).
+const vec3 GRAIN_LSIZE = vec3(0.85, 1.00, 1.35);   // R,G,B 상대 입자 크기
+const vec3 GRAIN_LAMP  = vec3(0.70, 1.00, 1.30);   // R,G,B 상대 진폭
+const vec2 GRAIN_LOFF0 = vec2(0.0, 0.0);           // 층별 오프셋(크기가 같아도 독립 보장)
+const vec2 GRAIN_LOFF1 = vec2(11.3, 47.9);
+const vec2 GRAIN_LOFF2 = vec2(73.5, 29.1);
+
+// 한 발색층의 멀티옥타브 필드(단위분산). sizeMul>1 = 셀 좌표 축소 = 입자가 굵어짐.
+float grainLayer(vec2 g0, float r, float sizeMul, vec2 off) {
+    vec2 g = g0 / sizeMul + off;
+    return ((valueNoise(g)                     - 0.5)
+          + (valueNoise(g * 0.5  + GRAIN_OFF1) - 0.5) * r
+          + (valueNoise(g * 0.25 + GRAIN_OFF2) - 0.5) * r * r)
+         * inversesqrt(1.0 + r * r + r * r * r * r);   // 옥타브 RMS 보존
+}
 
 // 디헤이즈 톤모델 — 전역 dehaze(6단계) + 하늘 dehaze(9.7단계) 공용. amt=강도(하늘은 ×마스크),
 // lc=로컬대비(휘도). 계수는 uniform(coeffs.py). pipeline._dehaze_core 와 동일 수식.
@@ -517,23 +538,24 @@ void main() {
         // 실제 에멀전은 결정 크기 분포 + 뭉침(clumping)으로 Wiener 스펙트럼이 넓다.
         // ⚠️ 옥타브는 '거친 쪽'(f/2, f/4)으로만 쌓는다: 미세 쪽은 프록시에서 셀<2px 라
         //    Nyquist 미만 → 에일리어싱이 프록시/풀해상도에서 다르게 접혀 프리뷰≠export.
-        float r = ubuf.grainRough;
-        vec3 e = (valueNoise3(g0) - 0.5)
-               + (valueNoise3(g0 * 0.5  + GRAIN_OFF1) - 0.5) * r
-               + (valueNoise3(g0 * 0.25 + GRAIN_OFF2) - 0.5) * r * r;
-        e *= inversesqrt(1.0 + r * r + r * r * r * r);   // RMS 보존(독립 노이즈 합 σ=√Σaᵢ²)
         // 3층 에멀전(R/G/B 발색층) — 컬러 필름엔 '휘도 입자'가 따로 없고, 휘도 요동은
         // 세 층의 합이다. 그래서 층을 먼저 만들고 공통 성분(mono)을 거기서 뽑는다.
-        //   k=0 → 세 층 완전 상관 = 흑백 단층 필름(2단계 동작)
-        //   k=1 → 세 층 완전 독립 = 컬러 필름의 물리 (단, 실제 필름은 층별 입상도가
-        //         다르고 염료 구름이 확산돼 색얼룩이 이보다 약함 → 기본값은 중간)
+        // 층마다 입자 크기(GRAIN_LSIZE)와 진폭(GRAIN_LAMP)이 다르다 — 위 상수 주석 참조.
+        float r = ubuf.grainRough;
+        vec3 e = vec3(grainLayer(g0, r, GRAIN_LSIZE.r, GRAIN_LOFF0),
+                      grainLayer(g0, r, GRAIN_LSIZE.g, GRAIN_LOFF1),
+                      grainLayer(g0, r, GRAIN_LSIZE.b, GRAIN_LOFF2)) * GRAIN_LAMP;
+        //   k=0 → 색 성분 제거(휘도 요동만) · k=1 → 세 층 완전 독립 = 컬러 필름의 물리
         float k = ubuf.grainColor;
-        float mono = (e.r + e.g + e.b) * inversesqrt(3.0);   // 층 공통 성분(단위분산 유지)
-        // 휘도 σ 보존 정규화. mono 가 층들의 합이라 층과 상관이 있어 교차항 2(1−k)k/√3 이 붙는다
-        // → k 를 돌려도 그레인 '세기'는 불변, 색 얼룩만 늘어난다. pipeline.grain_color_norm 과 동일.
-        // 상수는 LUMA 에서 유도(리터럴 중복 없음) — 리터럴 인자라 컴파일 타임 폴딩.
-        float nrm = inversesqrt((1.0 - k) * (1.0 - k) + k * k * dot(LUMA, LUMA)
-                                + 2.0 * (1.0 - k) * k * inversesqrt(3.0));
+        float aLen = length(GRAIN_LAMP);
+        float mono = (e.r + e.g + e.b) / aLen;               // 층 합 = 휘도 요동(단위분산)
+        // 휘도 σ 보존 정규화 — Var(dot(LUMA,n)) = (1−k)² + k²·Σ(Lᵢaᵢ)² + 2(1−k)k·Σ(Lᵢaᵢ²)/|a|.
+        // mono 가 층들의 합이라 층과 상관이 있어 교차항이 붙는다 → k 를 돌려도 그레인 '세기'는
+        // 불변, 색 얼룩만 늘어난다. 상수는 LUMA·GRAIN_LAMP 에서 유도(리터럴 중복 없음, 상수
+        // 폴딩됨). ⚠️ pipeline._grain_color_norm 과 동일 식.
+        vec3 la = LUMA * GRAIN_LAMP;
+        float nrm = inversesqrt((1.0 - k) * (1.0 - k) + k * k * dot(la, la)
+                                + 2.0 * (1.0 - k) * k * dot(LUMA, GRAIN_LAMP * GRAIN_LAMP) / aLen);
         vec3 n = mix(vec3(mono), e, k) * nrm;
         // 노출 의존 진폭(에멀전 물리): 보이는 톤 요동 = 밀도 요동 × 특성곡선 기울기.
         // 기울기가 미드톤 최대·양 끝 0 이므로 벨 곡선으로 변조 — 흰 하늘/검은 그림자에
