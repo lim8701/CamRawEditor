@@ -562,8 +562,9 @@ void main() {
         // 노이즈가 뿌려지던 '디지털' 느낌 제거. 미드톤(l=0.5)은 w=1 이라 기존 룩 그대로.
         // display 공간 휘도라 벨이 이미 섀도 쪽으로 치우침(disp 0.5 ≈ linear 0.21)
         // = 실제 필름에서 그레인이 하이라이트보다 섀도에 더 보이는 것과 일치.
+        // ⚠️K>1(실측 1.28)이면 끝단에서 음수가 되므로 max(0,·) 필수 — 음수면 노이즈가 반전된다.
         float lg = clamp(dot(rgb, LUMA), 0.0, 1.0);
-        float w = mix(1.0, sqrt(4.0 * lg * (1.0 - lg)), ubuf.grainToneK);
+        float w = max(0.0, mix(1.0, sqrt(4.0 * lg * (1.0 - lg)), ubuf.grainToneK));
         rgb += n * ubuf.grainAmt * ubuf.grainK * w;
     }
 

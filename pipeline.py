@@ -676,8 +676,10 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
             f = out[y:y1].astype(np.float32) / maxv
             g = _grain_field(y, y1, h, w, grain_grid_n, w / h, grain_rough, grain_color)
             # 노출 의존 진폭 — 셰이더 12단계와 동일(특성곡선 기울기 벨, 미드톤 w=1).
+            # ⚠️K>1(실측 1.28)이면 끝단에서 음수 → max(0,·) 필수(음수면 노이즈 반전).
             lg = np.clip(f @ LUMA, 0.0, 1.0)
-            wt = 1.0 + coeffs.GRAIN_TONE * (np.sqrt(4.0 * lg * (1.0 - lg)) - 1.0)
+            wt = np.maximum(0.0, 1.0 + coeffs.GRAIN_TONE
+                            * (np.sqrt(4.0 * lg * (1.0 - lg)) - 1.0))
             f += g * (gk * wt[..., None])
             out[y:y1] = np.rint(np.clip(f, 0.0, 1.0) * maxv).astype(dt)
 
