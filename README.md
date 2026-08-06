@@ -74,6 +74,15 @@ averages it away.
   <img src="docs/grain_overview.png" alt="Film Rawstery — film grain: grain off, the old uniform model speckling the blown sky, and the current emulsion model leaving the sky clean while keeping grain in the foliage" width="100%">
 </p>
 
+Four controls — Amount, Size, Roughness and **Colour** — where Lightroom's Effects panel exposes
+three and has no colour-grain axis. More to the point, the tone behaviour is automatic and fitted
+to measurement: at the same settings, amplitude runs ×0.00 in a blown highlight, ×0.99 in the
+midtones and ×0.85 in shadow, while skewness runs −0.92 (dark specks) to +0.51 (bright specks).
+
+<p align="center">
+  <img src="docs/grain_controls.png" alt="The four grain control axes: Amount, Size, Roughness and Colour" width="100%">
+</p>
+
 This reproduces those statistical behaviours but is **not a physical simulation** — the noise
 primitive is lattice value-noise rather than a stochastic model of discrete silver-halide crystals,
 and it is applied after the tone curve rather than as a density fluctuation before it. The model,
