@@ -509,6 +509,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     grain_size = float(p.get("grainSize", 0.5))
     grain_rough = float(p.get("grainRough", 0.1))    # 옥타브 감쇠비(거칠기, 실측 피팅 기본값)
     grain_color = float(p.get("grainColor", 0.3))    # 3층 독립도(색 얼룩)
+    grain_shape = float(p.get("grainShape", 0.0))    # 0=사각 셀(기본) / 1=원판
     sharp_amt = float(p.get("sharpenAmt", 0.0))
     sharp_radius = float(p.get("sharpenRadius", 1.0))
     sharp_detail = float(p.get("sharpenDetail", 0.25))
@@ -632,6 +633,11 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     # 필름 그레인 — 셰이더 12단계와 동일한 절차적 필드(_grain_field)를 스트립마다 생성.
     # 좌표가 uv 절대값 기반이라 스트립 경계 이음매 없음(예전 격자+zoom 방식과 달리 시드 불필요).
     grain_grid_n = 4500.0 + (1300.0 - 4500.0) * grain_size if grain_amt > 0.0 else 0.0
+    # ⚠️셀 크기는 **긴 변** 기준 — 격자 좌표가 가로폭 기준(u*gridN)이라 보정 없이는 세로 사진의
+    #   셀이 가로 대비 1.5배 잘아져(0.88→0.59px) 서브픽셀 평균에 σ 17% 를 잃고 입자가 픽셀
+    #   아래로 내려가 결정이 안 보였다(실측: 같은 설정 σ 0.210 vs 0.175). 필름은 방향과 무관하고,
+    #   원래 캘리브레이션도 필름 스캔(가로 3024)과 '같은 출력 폭' 비교였다. min(1,W/H) 를 곱해
+    #   cellPx = 긴변/gridN 으로 고정한다(가로는 불변, 세로만 굵어짐). ⚠️셰이더 12단계와 동일.
 
     # 하늘(로컬) 조정용 중성 하이패스(nd_texhi/nd_lc)는 전역 단계에서 이미 계산·공유됨
     # (전역 텍스처/클래리티/디헤이즈와 동일한 중성 베이스 — 셰이더 texBlur/claBlur 대응).
@@ -669,6 +675,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         _prog(0.55 + 0.40 * min(1.0, (y + strip) / float(h)))   # LUT/대비/커브/비네팅 스트립 진행
 
     # 필름 그레인 — 장면(에멀전 입자, 셰이더와 동일). 스탬프는 크롭 후 최종 프레임에 찍는다.
+    grain_grid_n *= min(1.0, w / h)          # 긴 변 기준 셀 크기(위 주석)
     if grain_grid_n > 0.0:
         gk = grain_amt * coeffs.GRAIN
         for y in range(0, h, strip):                       # 스트립 = 26MP 풀 float 사본 회피
@@ -680,11 +687,12 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
             skew_c = (np.float32(coeffs.GRAIN_SKEW) * (1.0 - 2.0 * l0)
                       * np.float32(np.sqrt(12.0) / 6.0))[..., None]
             g = _grain_field(y, y1, h, w, grain_grid_n, w / h, grain_rough, grain_color,
-                             skew_c)
+                             skew_c, grain_shape)
             # 노출 의존 진폭 — 특성곡선 기울기 벨(미드톤 w=1).
-            # ⚠️K>1(실측 1.29)이면 끝단에서 음수 → max(0,·) 필수(음수면 노이즈 반전).
+            # ⚠️K>1(실측 1.29)이면 끝단에서 음수 → 클램프 필수(음수면 노이즈 반전).
+            #   하한은 0 이 아니라 GRAIN_TONE_FLOOR — 실측이 밝은 끝에서 0 으로 가지 않는다.
             lg = l0 ** np.float32(coeffs.GRAIN_TONE_GAMMA)
-            wt = np.maximum(0.0, 1.0 + coeffs.GRAIN_TONE
+            wt = np.maximum(coeffs.GRAIN_TONE_FLOOR, 1.0 + coeffs.GRAIN_TONE
                             * (np.sqrt(4.0 * lg * (1.0 - lg)) - 1.0))
             f += g * (gk * wt[..., None])
             out[y:y1] = np.rint(np.clip(f, 0.0, 1.0) * maxv).astype(dt)
@@ -763,19 +771,56 @@ def _grain_cell(gx, gy):
     return _grain_hash12(X[None, :], Y[:, None])[np.ix_(cy, cx)]
 
 
-def _grain_field(y0, y1, h, w, grid_n, aspect, clump, color, skew_c):
+_GRAIN_DISK_R = 0.55
+"""원판 원시체의 반지름(**셀 단위**). 셀 원시체와 acf lag1(곱기)이 맞도록 고른 값 —
+1.44 px/셀에서 셀 0.404 vs 원판 0.383, 3.21 px/셀에서 0.720 vs 0.727. 즉 모양을 바꿔도
+입자 굵기는 그대로고 분포만 달라진다. ⚠️셰이더 GRAIN_DISK_R 과 일치."""
+
+
+def _grain_disk(gx, gy):
+    """원판 원시체 — 셀마다 해시로 **위치와 진폭**을 뽑아 반지름 _GRAIN_DISK_R 원판을 하나
+    뿌리고 3x3 이웃을 합산. 반환 (rows,w), 평균 0 · **분산 1/12**(= _grain_cell 과 동일).
+
+    정규화가 해석적이다: 셀당 점 1개(밀도 1)라 한 점을 덮는 원판 수의 기대값이 πR², 진폭이
+    U[-0.5,0.5](분산 1/12)이고 독립이라 Var = πR²/12. 1/(R√π) 를 곱하면 정확히 1/12
+    (수치 검증 비 0.999~1.002). → **σ 가 보존되고 왜도 보정 v2 의 전제도 그대로 유효**.
+    ⚠️R<1 이면 3x3 밖 셀의 점은 거리가 1 을 넘어 못 덮는다 — 이웃 범위를 넓힐 필요 없음.
+    ⚠️해시는 **셀 격자에서 1회만** 구한다 — 좌표가 분리형이고 9개 이웃이 같은 격자를 공유하므로
+      픽셀마다 27번 해시하면 크게 손해다(_grain_cell 과 같은 이유의 최적화)."""
+    ix, iy = np.floor(gx), np.floor(gy)
+    X = np.arange(ix[0] - 1.0, ix[-1] + 2.0, dtype=np.float32)   # 3x3 이웃까지 덮게 한 칸 확장
+    Y = np.arange(iy[0] - 1.0, iy[-1] + 2.0, dtype=np.float32)
+    px = _grain_hash12(X[None, :], Y[:, None])                   # 셀 내 x 위치
+    py = _grain_hash12(X[None, :] + 17.3, Y[:, None] + 29.7)     # 셀 내 y 위치
+    am = _grain_hash12(X[None, :] + 53.1, Y[:, None] + 71.9) - np.float32(0.5)
+    cx = (ix - X[0]).astype(np.intp)
+    cy = (iy - Y[0]).astype(np.intp)
+    out = np.zeros((iy.size, ix.size), np.float32)
+    r2 = np.float32(_GRAIN_DISK_R * _GRAIN_DISK_R)
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            jx, jy = cx + dx, cy + dy
+            sel = np.ix_(jy, jx)
+            ddx = gx[None, :] - (X[jx][None, :] + px[sel])
+            ddy = gy[:, None] - (Y[jy][:, None] + py[sel])
+            out += am[sel] * ((ddx * ddx + ddy * ddy) < r2)
+    return out * np.float32(1.0 / (_GRAIN_DISK_R * math.sqrt(math.pi)))
+
+
+def _grain_field(y0, y1, h, w, grid_n, aspect, clump, color, skew_c, shape=0.0):
     """(y1-y0, w, 3) float32 그레인 필드(채널별, 평균 0). 셰이더 12단계와 동일 수식.
     실제 필름에 맞춰 셀이 픽셀보다 작아졌으므로 **2x2 서브픽셀 평균**(스캐너의 면적 적분에
     대응)으로 샘플한다 — 점 샘플링하면 접힌다(⚠️_GRAIN_SS 는 셰이더와 일치)."""
     out = None
     for sy in _GRAIN_SS:
         for sx in _GRAIN_SS:
-            o = _grain_field_1(y0, y1, h, w, grid_n, aspect, clump, color, skew_c, sx, sy)
+            o = _grain_field_1(y0, y1, h, w, grid_n, aspect, clump, color, skew_c,
+                               sx, sy, shape)
             out = o if out is None else out + o
     return (out / np.float32(len(_GRAIN_SS) ** 2)).astype(np.float32)
 
 
-def _grain_field_1(y0, y1, h, w, grid_n, aspect, clump, color, skew_c, sx, sy):
+def _grain_field_1(y0, y1, h, w, grid_n, aspect, clump, color, skew_c, sx, sy, shape=0.0):
     """서브픽셀 오프셋 (sx,sy) 픽셀 단위에서의 단일 샘플. uv=(i+0.5+sx)/N = qt_TexCoord0 + sx·texel."""
     u = (np.arange(w, dtype=np.float32) + np.float32(0.5 + sx)) / w
     v = (np.arange(y0, y1, dtype=np.float32) + np.float32(0.5 + sy)) / h
@@ -792,8 +837,10 @@ def _grain_field_1(y0, y1, h, w, grid_n, aspect, clump, color, skew_c, sx, sy):
             if i and amp < 1e-4:
                 break                            # clump=0 이면 단일 옥타브 — 나머지 계산 생략
             s = np.float32(0.5 ** i)             # f, f/2, f/4 (거친 쪽 — 미세 쪽은 에일리어싱)
-            o = (_grain_cell(gx * s + np.float32(ox),
-                             gy * s + np.float32(oy)) - np.float32(0.5)) * amp
+            # 원시체 선택 — 둘 다 평균 0 · 분산 1/12 이라 이후 체인이 완전히 동일하다.
+            o = ((_grain_disk(gx * s + np.float32(ox), gy * s + np.float32(oy)) if shape > 0.5
+                  else _grain_cell(gx * s + np.float32(ox),
+                                   gy * s + np.float32(oy)) - np.float32(0.5)) * amp)
             acc = o if acc is None else acc + o
             amp = amp * np.float32(clump)
         layers.append(acc * (oct_norm * np.float32(lamp)))
@@ -814,6 +861,14 @@ def _grain_field_1(y0, y1, h, w, grid_n, aspect, clump, color, skew_c, sx, sy):
     return (n + skew_c * (n * n - v2)).astype(np.float32)
 
 
+JPEG_QUALITY = 95
+"""jpg 저장 품질. ⚠️Qt 기본값은 **75** 인데 그레인처럼 화면 전체가 고주파인 이미지에서는
+8x8 DCT 블록 경계가 격자로 드러난다 — 측정(열 경계별 |ΔI| 비, 1.00=격자 없음):
+무손실 1.00 / q75 **1.20** / q85 1.03 / q92 0.98. q92 위로 여유를 둬 95.
+⚠️PNG 에는 주면 안 된다 — Qt 에서 PNG 의 quality 는 '압축 레벨'이라 의미가 반대고,
+95 를 주면 거의 무압축이 되어 파일이 몇 배로 커진다. 그래서 확장자로 게이팅한다."""
+
+
 def save_image(arr, path) -> bool:
     """(H,W,3) RGB 저장. dtype 으로 비트깊이 결정:
     - uint8  -> RGB888 (jpg/png/tif 8bit)
@@ -828,7 +883,8 @@ def save_image(arr, path) -> bool:
         img = QImage(rgbx.data, w, h, 8 * w, QImage.Format.Format_RGBX64).copy()
     else:
         img = QImage(arr.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
-    return bool(img.save(path))
+    jpg = path.lower().endswith((".jpg", ".jpeg"))
+    return bool(img.save(path, None, JPEG_QUALITY if jpg else -1))   # -1 = 포맷 기본값
 
 
 def compose_wallpaper(panels, canvas_w, canvas_h, gap, offsets):

@@ -55,7 +55,7 @@ Grain is modelled on what film emulsion actually does, not sprinkled on as noise
   characteristic curve, so grain peaks in the midtones and disappears from blown highlights and
   crushed blacks. Uniform-amplitude grain speckling a white sky is the main thing that reads as
   "digital"; the middle panel below is the previous behaviour, the right one is this model, both at
-  the same maximum Grain setting (σ 6.6 against 10.9/255 on that crop). This curve is
+  the same maximum Grain setting (σ 6.6 against 12.2/255 on that crop). This curve is
   **fitted to real film** — 11,512 flat patches from 151 frames across four rolls of Noritsu-scanned
   negative, the fitted constant agreeing to within 5.5% between rolls.
 - **Multi-octave** — real emulsion has a crystal size distribution and clumping, so its Wiener
@@ -77,8 +77,9 @@ averages it away.
 
 Four controls — Amount, Size, Roughness and **Colour** — where Lightroom's Effects panel exposes
 three and has no colour-grain axis. More to the point, the tone behaviour is automatic and fitted
-to measurement: at the same settings, amplitude runs ×0.00 in a blown highlight, ×0.99 in the
+to measurement: at the same settings, amplitude runs ×0.20 in a blown highlight, ×0.99 in the
 midtones and ×0.85 in shadow, while skewness runs −0.92 (dark specks) to +0.51 (bright specks).
+Even the blown highlight keeps a fifth of the midtone amplitude, because measured film does.
 
 <p align="center">
   <img src="docs/grain_controls.png" alt="The four grain control axes: Amount, Size, Roughness and Colour" width="100%">

@@ -29,6 +29,7 @@ layout(std140, binding = 0) uniform buf {
     float grainSize;    // 입자 크기 0..1 (0=미세, 1=굵음)
     float grainRough;   // 입자 거칠기 0..1 = 옥타브 감쇠비(0=단일 옥타브, ↑=뭉침/불규칙)
     float grainColor;   // 층 독립도 0..1 (0=흑백 단층 필름, 1=R/G/B 3층 완전 독립=컬러 필름)
+    float grainShape;   // 입자 모양 0=사각 셀(기본) / 1=원판. ⚠️pipeline grain_shape 와 일치
     float grainAspect;  // 프록시 가로/세로비 W/H (정사각 입자용)
     // ⚠️그레인 서브픽셀 평균용 **출력 텍셀**(1/렌더폭). texelW 는 샤프닝 공간스케일을 맞추려고
     // pipeFull(풀해상도)에서도 '프록시' 텍셀이라 여기 쓰면 안 된다 — 인스턴스별 1/width.
@@ -82,6 +83,7 @@ layout(std140, binding = 0) uniform buf {
     float grainK;       // 필름 그레인 강도
     float grainToneK;   // 그레인 노출 의존(0=균일, 1=미드톤 집중 — 특성곡선 기울기 모사)
     float grainToneGammaK;  // 위 벨의 비대칭 지수 γ (l^γ, γ<1 = 섀도 쪽으로 치우침)
+    float grainToneFloorK;  // 톤 독립 바닥값 — 벨이 끝에서 0 이 되지만 실측은 0 이 아니다
     float grainSkewK;       // 그레인 왜도(3차): skew(l)=K·(1−2l) — 섀도 밝은점 / 하이라이트 어두운점
     float sharpenK;     // 언샤프 마스크 강도
     float hslHueDegK;   // HSL hue 시프트 최대(도)
@@ -217,6 +219,34 @@ float hash12(vec2 p) {
 //    서브픽셀 평균에서 σ 까지 깎아(보간없음 대비 smoothstep 0.81배) 곱기와 진하기를 맞바꾸게
 //    만든다. 실제 염료 구름도 경계가 뚜렷한 덩어리다. 모서리 4개 해시+보간이 사라져 더 빠르다.
 float cellNoise(vec2 p) { return hash12(floor(p)); }
+// 원판 원시체 — 셀마다 해시로 **위치와 진폭**을 뽑아 반지름 GRAIN_DISK_R(셀 단위) 원판을 하나
+// 뿌리고 3x3 이웃을 합산한다. 반환 평균 0 · **분산 1/12** 로 cellNoise-0.5 와 동일하다.
+// 정규화가 해석적이다: 셀당 점 1개(밀도 1)라 한 점을 덮는 원판 수의 기대값 πR², 진폭 U[-0.5,0.5]
+// (분산 1/12)가 독립 → Var = πR²/12. 1/(R√π) 를 곱하면 정확히 1/12.
+//   → **σ 가 보존되고 아래 왜도 보정 v2 의 '분산 1/12' 전제도 그대로 유효**(경험 상수 없음).
+// ⚠️R<1 이면 3x3 밖 셀의 점은 거리가 1 을 넘어 못 덮는다 — 이웃 범위를 넓힐 필요 없음.
+// ⚠️pipeline._grain_disk 와 동일 수식(해시 오프셋 17.3/29.7, 53.1/71.9 포함).
+// ⚠️샘플당 해시가 1 → 27 개로 는다. 체크했을 때만 드는 비용이지만 프리뷰가 무거워질 수 있다.
+const float GRAIN_DISK_R = 0.55;   // ⚠️pipeline._GRAIN_DISK_R 과 일치(셀과 acf lag1 이 맞는 값)
+float diskNoise(vec2 p) {
+    vec2 ip = floor(p);
+    float acc = 0.0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            vec2 c = ip + vec2(float(dx), float(dy));
+            vec2 ctr = c + vec2(hash12(c), hash12(c + vec2(17.3, 29.7)));   // 셀 내 무작위 위치
+            vec2 d = p - ctr;
+            acc += (hash12(c + vec2(53.1, 71.9)) - 0.5)
+                 * (1.0 - step(GRAIN_DISK_R * GRAIN_DISK_R, dot(d, d)));    // d² < R² 이면 1
+        }
+    }
+    return acc * (1.0 / (GRAIN_DISK_R * 1.7724539));   // 1/(R√π) → 분산 1/12
+}
+// 원시체 선택. uniform 분기라 드로우 전체에서 조건이 같아 워프 발산이 없다.
+float grainPrim(vec2 g) {
+    if (ubuf.grainShape > 0.5) return diskNoise(g);
+    return cellNoise(g) - 0.5;
+}
 // 그레인 옥타브 오프셋 — 없으면 세 격자가 원점에서 같은 정수 셀을 공유해 hash12 가 **같은 값**을
 // 내고 옥타브가 독립이 아니게 된다(RMS 정규화 전제가 깨짐). ⚠️ pipeline._GRAIN_OFFSETS 와 일치.
 const vec2 GRAIN_OFF1 = vec2(37.1, 17.3);
@@ -239,10 +269,16 @@ const vec2 GRAIN_LOFF2 = vec2(73.5, 29.1);
 // 한 발색층의 멀티옥타브 필드(단위분산). sizeMul>1 = 셀 좌표 축소 = 입자가 굵어짐.
 float grainLayer(vec2 g0, float r, float sizeMul, vec2 off) {
     vec2 g = g0 / sizeMul + off;
-    return ((cellNoise(g)                     - 0.5)
-          + (cellNoise(g * 0.5  + GRAIN_OFF1) - 0.5) * r
-          + (cellNoise(g * 0.25 + GRAIN_OFF2) - 0.5) * r * r)
-         * inversesqrt(1.0 + r * r + r * r * r * r);   // 옥타브 RMS 보존
+    float acc = grainPrim(g);
+    // 기여가 없는 옥타브는 건너뛴다 — numpy(_grain_field_1 의 amp<1e-4 break)와 같은 임계라
+    // 결과가 정확히 같고, r 은 uniform 이라 워프 발산도 없다. Roughness 0 일 때 원시체 호출이
+    // 3→1 로 줄어 특히 원판(diskNoise, 해시 27배)에서 프리뷰가 크게 가벼워진다.
+    if (r >= 1e-4) {
+        acc += grainPrim(g * 0.5 + GRAIN_OFF1) * r;
+        if (r * r >= 1e-4)
+            acc += grainPrim(g * 0.25 + GRAIN_OFF2) * (r * r);
+    }
+    return acc * inversesqrt(1.0 + r * r + r * r * r * r);   // 옥타브 RMS 보존
 }
 
 // 한 서브픽셀 샘플의 3층 그레인(채널별, 평균 0). ⚠️ pipeline._grain_field_1 과 동일 수식.
@@ -573,7 +609,9 @@ void main() {
         // 실제 필름에 맞춘 셀 크기는 프록시 픽셀보다 작다(측정: 실측 필름 ≈ gridN 4000).
         // 점 샘플링하면 접히므로 **2x2 서브픽셀 평균** — 스캐너가 픽셀 면적을 적분하는 것에 대응.
         // ⚠️ GRAIN_SS / gridN 범위는 pipeline._GRAIN_SS 및 grain_grid_n 과 반드시 일치.
-        float gridN = mix(4500.0, 1300.0, ubuf.grainSize);
+        // 셀 크기는 긴 변 기준(min(1,aspect) 보정) — 세로 사진에서 셀이 잘아져 그레인이
+        // 약해지고(σ −17%) 결정이 픽셀 아래로 내려가는 문제의 수정. ⚠️pipeline 과 동일.
+        float gridN = mix(4500.0, 1300.0, ubuf.grainSize) * min(1.0, ubuf.grainAspect);
         // 왜도 계수 — 실측: 섀도는 밝은 점(+), 하이라이트는 어두운 점(−). skew≈6cσ (가우시안 근사),
         // σ=1/√12 (샘플 단위 필드의 해석적 표준편차). ⚠️pipeline 과 동일 식.
         float l0 = clamp(dot(rgb, LUMA), 0.0, 1.0);
@@ -594,7 +632,7 @@ void main() {
         // = 실제 필름에서 그레인이 하이라이트보다 섀도에 더 보이는 것과 일치.
         // ⚠️K>1(실측 1.29)이면 끝단에서 음수가 되므로 max(0,·) 필수 — 음수면 노이즈가 반전된다.
         float lg = pow(l0, ubuf.grainToneGammaK);
-        float w = max(0.0, mix(1.0, sqrt(4.0 * lg * (1.0 - lg)), ubuf.grainToneK));
+        float w = max(ubuf.grainToneFloorK, mix(1.0, sqrt(4.0 * lg * (1.0 - lg)), ubuf.grainToneK));
         rgb += n * ubuf.grainAmt * ubuf.grainK * w;
     }
 

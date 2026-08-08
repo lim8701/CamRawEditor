@@ -188,6 +188,9 @@ sky=2·ImageNet 동일이라 `sky_seg.py`의 `_REPO`/`MODEL_PATH` 한 줄 교체
 - **Adjustments**: 9 슬라이더(-1..1, 더블클릭=리셋).
 - 진행 상태: 이미지 위 스피너 오버레이(`controller.skyBusy` → "Detecting sky…").
 - UX: 선택 완료(`skySelected` 시그널)→마스크 오버레이 자동 표시 / 슬라이더 `onMoved`→오버레이 off.
+- 오버레이는 **마스킹 패널이 활성일 때만** 표시(`showSkyMask && activePanel === 2` 게이트).
+  체크 상태는 보존되므로 다른 패널에 다녀와도 다시 보인다 — 끄는 게 아니라 숨기는 것.
+  (이전엔 체크만 보고 항상 표시돼 Edit/Crop 패널에서도 빨간 마스크가 남는 버그가 있었다.)
 
 ---
 

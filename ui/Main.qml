@@ -761,6 +761,7 @@ ApplicationWindow {
             "cgBalance": cgBalanceSlider.value,
             "vignette": vignetteSlider.value, "grainAmt": grainSlider.value, "grainSize": grainSizeSlider.value,
             "grainRough": grainRoughSlider.value, "grainColor": grainColorSlider.value,
+            "grainShape": grainShapeCheck.checked,
             "sharpenAmt": sharpAmtSlider.value, "sharpenRadius": sharpRadiusSlider.value,
             "sharpenDetail": sharpDetailSlider.value, "sharpenMask": sharpMaskSlider.value,
             "lumaNR": lumaNrSlider.value, "colorNR": colorNrSlider.value, "aiNr": aiNrCheck.checked,
@@ -813,6 +814,7 @@ ApplicationWindow {
         grainSlider.value = _ev(p, "grainAmt", 0.0); grainSizeSlider.value = _ev(p, "grainSize", 0.5)
         grainRoughSlider.value = _ev(p, "grainRough", 0.1)
         grainColorSlider.value = _ev(p, "grainColor", 0.3)
+        grainShapeCheck.checked = _ev(p, "grainShape", false)
         controller.setStampGrainSrc(grainSlider.value)   // 스탬프 그레인 연동(프리뷰)
         sharpAmtSlider.value = _ev(p, "sharpenAmt", 0.0); sharpRadiusSlider.value = _ev(p, "sharpenRadius", 1.0)
         sharpDetailSlider.value = _ev(p, "sharpenDetail", 0.25); sharpMaskSlider.value = _ev(p, "sharpenMask", 0.0)
@@ -898,6 +900,7 @@ ApplicationWindow {
         aiNrCheck.checked = false; controller.setAiNr(false)
         vignetteSlider.value = 0.0; grainSlider.value = 0.0; grainSizeSlider.value = 0.5
         grainRoughSlider.value = 0.1; grainColorSlider.value = 0.3
+        grainShapeCheck.checked = false
         controller.setStampGrainSrc(0.0)
         tempSlider.value = controller.asShotKelvin; tintSlider.value = controller.asShotTint
         simCombo.currentIndex = 0; simStrengthSlider.value = 1.0
@@ -1311,7 +1314,7 @@ ApplicationWindow {
         cgShHueSlider.value, cgShSatSlider.value, cgMidHueSlider.value, cgMidSatSlider.value,
         cgHiHueSlider.value, cgHiSatSlider.value, cgBalanceSlider.value,
         vignetteSlider.value, grainSlider.value, grainSizeSlider.value,
-        grainRoughSlider.value, grainColorSlider.value,
+        grainRoughSlider.value, grainColorSlider.value, grainShapeCheck.checked,
         sharpAmtSlider.value, sharpRadiusSlider.value, sharpDetailSlider.value, sharpMaskSlider.value,
         lumaNrSlider.value, colorNrSlider.value, aiNrCheck.checked,
         lensCheck.checked, win.dateStamp, stampField.text,
@@ -1352,6 +1355,7 @@ ApplicationWindow {
             "lumaNR": lumaNrSlider.value, "colorNR": colorNrSlider.value, "aiNr": aiNrCheck.checked,
             "vignette": vignetteSlider.value, "grainAmt": grainSlider.value, "grainSize": grainSizeSlider.value,
             "grainRough": grainRoughSlider.value, "grainColor": grainColorSlider.value,
+            "grainShape": grainShapeCheck.checked,
             "lutEnabled": simCombo.currentIndex !== 0, "simKey": win.simKeys[simCombo.currentIndex],
             "lutStrength": simStrengthSlider.value, "curves": curveEditor.allLuts(),
             "dateStamp": win.dateStamp, "stampText": stampField.text, "stampRot": controller.stampRot,
@@ -3557,6 +3561,10 @@ ApplicationWindow {
                         property real grainSize: grainSizeSlider.value
                         property real grainRough: grainRoughSlider.value
                         property real grainColor: grainColorSlider.value
+                        // 드래그 중엔 사각 셀로 폴백 — 원판은 픽셀당 해시 27배라 어떤
+                        // 슬라이더를 움직여도 매 프레임 재계산돼 끊긴다. WB 드래그 근사와
+                        // 같은 패턴(드래그=빠른 근사, 릴리즈=정확). 손 떼면 원판으로 복귀.
+                        property real grainShape: (grainShapeCheck.checked && !win.editDragActive) ? 1.0 : 0.0
                         property real grainAspect: width / Math.max(1, height)
                         // 그레인 서브픽셀 평균용 출력 텍셀 — **이 인스턴스의 실제 렌더 크기** 기준.
                         // (texelW 는 샤프닝 공간스케일용이라 pipeFull 에서도 프록시 텍셀 → 쓰면 안 됨)
@@ -3611,6 +3619,7 @@ ApplicationWindow {
                         property real grainK: controller.adjustCoeffs["grainK"]
                         property real grainToneK: controller.adjustCoeffs["grainToneK"]
                         property real grainToneGammaK: controller.adjustCoeffs["grainToneGammaK"]
+                        property real grainToneFloorK: controller.adjustCoeffs["grainToneFloorK"]
                         property real grainSkewK: controller.adjustCoeffs["grainSkewK"]
                         property real sharpenK: controller.adjustCoeffs["sharpenK"]
                         property real hslHueDegK: controller.adjustCoeffs["hslHueDegK"]
@@ -3892,6 +3901,10 @@ ApplicationWindow {
                         property real grainSize: grainSizeSlider.value
                         property real grainRough: grainRoughSlider.value
                         property real grainColor: grainColorSlider.value
+                        // 드래그 중엔 사각 셀로 폴백 — 원판은 픽셀당 해시 27배라 어떤
+                        // 슬라이더를 움직여도 매 프레임 재계산돼 끊긴다. WB 드래그 근사와
+                        // 같은 패턴(드래그=빠른 근사, 릴리즈=정확). 손 떼면 원판으로 복귀.
+                        property real grainShape: (grainShapeCheck.checked && !win.editDragActive) ? 1.0 : 0.0
                         property real grainAspect: viewport.procW / Math.max(1, viewport.procH)
                         // 그레인 서브픽셀 평균용 출력 텍셀 — **이 인스턴스의 실제 렌더 크기** 기준.
                         // (texelW 는 샤프닝 공간스케일용이라 pipeFull 에서도 프록시 텍셀 → 쓰면 안 됨)
@@ -3932,7 +3945,10 @@ ApplicationWindow {
                         property vector4d skyA2: win.skyA2; property vector4d skyB2: win.skyB2; property vector4d skyC2: win.skyC2
                         property vector4d skyA3: win.skyA3; property vector4d skyB3: win.skyB3; property vector4d skyC3: win.skyC3
                         property vector4d skyA4: win.skyA4; property vector4d skyB4: win.skyB4; property vector4d skyC4: win.skyC4
-                        property real skyShowLayer: win.showSkyMask ? win.activeLayer : -1.0
+                        // 빨간 오버레이는 **마스킹 패널이 활성일 때만** — 체크(showSkyMask)는
+                        // 보존되므로 패널로 돌아오면 다시 보인다(끄는 게 아니라 숨기는 것).
+                        property real skyShowLayer: (win.showSkyMask && win.activePanel === 2)
+                                                    ? win.activeLayer : -1.0
                         // 현상 계수(coeffs.py 단일 진실원) uniform 주입 — pipeline.py 와 값 공유.
                         property real dehazeKLocal: controller.adjustCoeffs["dehazeKLocal"]
                         property real dehazeKContrast: controller.adjustCoeffs["dehazeKContrast"]
@@ -3948,6 +3964,7 @@ ApplicationWindow {
                         property real grainK: controller.adjustCoeffs["grainK"]
                         property real grainToneK: controller.adjustCoeffs["grainToneK"]
                         property real grainToneGammaK: controller.adjustCoeffs["grainToneGammaK"]
+                        property real grainToneFloorK: controller.adjustCoeffs["grainToneFloorK"]
                         property real grainSkewK: controller.adjustCoeffs["grainSkewK"]
                         property real sharpenK: controller.adjustCoeffs["sharpenK"]
                         property real hslHueDegK: controller.adjustCoeffs["hslHueDegK"]
@@ -6040,6 +6057,27 @@ ApplicationWindow {
                     onPressedChanged: {
                         if (pressed) _pendingReset = win.isDblPress(grainColorSlider)
                         else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                    }
+                }
+
+                // 입자 모양 — 사각 셀(기본) vs 원판. 세기(σ)·굵기(acf lag1)는 그대로고 분포만
+                // 바뀐다: 첨도가 실측 필름(3.4~4.1) 쪽으로 간다(측정 3.03→3.28 / 2.80→3.34).
+                // ⚠️export 가 크게 느려진다(그레인 단계 22배 — 2560 에서 22s→112s). 프리뷰도
+                //    샘플당 해시가 27배라 무거워질 수 있다. 그래서 기본 꺼짐 + 옵트인.
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    CheckBox {
+                        id: grainShapeCheck
+                        checked: false
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: "Round grains — much slower export
+(preview shows square grain while dragging)"
+                        color: "white"; font.pixelSize: 12
+                        verticalAlignment: Text.AlignVCenter
+                        wrapMode: Text.WordWrap
                     }
                 }
 
