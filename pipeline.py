@@ -756,6 +756,18 @@ def _grain_hash12(x, y):
     return r - np.floor(r)
 
 
+def _grain_grid(gx, gy, pad):
+    """분리형 격자 인덱싱 공용부 — 픽셀 좌표(1-D gx/gy)가 걸치는 셀 격자를 pad 셀 여유를
+    두고 만들고, 픽셀→격자 정수 인덱스를 돌려준다. _grain_cell(pad=0)과 _grain_disk(pad=1,
+    3x3 이웃)가 공유 — 원점 오프셋/arange 경계/intp 캐스트가 두 벌로 갈라지지 않게."""
+    ix, iy = np.floor(gx), np.floor(gy)
+    X = np.arange(ix[0] - pad, ix[-1] + pad + 1.0, dtype=np.float32)
+    Y = np.arange(iy[0] - pad, iy[-1] + pad + 1.0, dtype=np.float32)
+    cx = (ix - X[0]).astype(np.intp)
+    cy = (iy - Y[0]).astype(np.intp)
+    return X, Y, cx, cy
+
+
 def _grain_cell(gx, gy):
     """GLSL cellNoise — 셀마다 난수 하나, **보간 없음**. 반환 (rows,w).
     gx=(w,) 열 좌표, gy=(rows,) 행 좌표 — 좌표가 분리형이라 해시를 격자(ny×nx)에서 1회만
@@ -763,11 +775,7 @@ def _grain_cell(gx, gy):
     ⚠️보간(smoothstep/선형)을 넣으면 실측 필름 대비 결이 뭉개진다 — acf lag1(gridN 2900):
     보간없음 0.391 / smoothstep 0.504 / 선형 0.553, 실측 필름 0.234. 서브픽셀 평균에서 σ 도
     깎여 곱기와 진하기를 맞바꾸게 된다. 셰이더 cellNoise 주석 참조."""
-    ix, iy = np.floor(gx), np.floor(gy)
-    X = np.arange(ix[0], ix[-1] + 1.0, dtype=np.float32)      # 격자 x 좌표 (nx,)
-    Y = np.arange(iy[0], iy[-1] + 1.0, dtype=np.float32)      # 격자 y 좌표 (ny,)
-    cx = (ix - ix[0]).astype(np.intp)                         # 열 -> 격자 인덱스
-    cy = (iy - iy[0]).astype(np.intp)
+    X, Y, cx, cy = _grain_grid(gx, gy, 0)
     return _grain_hash12(X[None, :], Y[:, None])[np.ix_(cy, cx)]
 
 
@@ -787,15 +795,11 @@ def _grain_disk(gx, gy):
     ⚠️R<1 이면 3x3 밖 셀의 점은 거리가 1 을 넘어 못 덮는다 — 이웃 범위를 넓힐 필요 없음.
     ⚠️해시는 **셀 격자에서 1회만** 구한다 — 좌표가 분리형이고 9개 이웃이 같은 격자를 공유하므로
       픽셀마다 27번 해시하면 크게 손해다(_grain_cell 과 같은 이유의 최적화)."""
-    ix, iy = np.floor(gx), np.floor(gy)
-    X = np.arange(ix[0] - 1.0, ix[-1] + 2.0, dtype=np.float32)   # 3x3 이웃까지 덮게 한 칸 확장
-    Y = np.arange(iy[0] - 1.0, iy[-1] + 2.0, dtype=np.float32)
+    X, Y, cx, cy = _grain_grid(gx, gy, 1)                        # 3x3 이웃까지 덮게 한 칸 확장
     px = _grain_hash12(X[None, :], Y[:, None])                   # 셀 내 x 위치
     py = _grain_hash12(X[None, :] + 17.3, Y[:, None] + 29.7)     # 셀 내 y 위치
     am = _grain_hash12(X[None, :] + 53.1, Y[:, None] + 71.9) - np.float32(0.5)
-    cx = (ix - X[0]).astype(np.intp)
-    cy = (iy - Y[0]).astype(np.intp)
-    out = np.zeros((iy.size, ix.size), np.float32)
+    out = np.zeros((gy.size, gx.size), np.float32)
     r2 = np.float32(_GRAIN_DISK_R * _GRAIN_DISK_R)
     for dy in (-1, 0, 1):
         for dx in (-1, 0, 1):
@@ -864,7 +868,8 @@ def _grain_field_1(y0, y1, h, w, grid_n, aspect, clump, color, skew_c, sx, sy, s
 JPEG_QUALITY = 95
 """jpg 저장 품질. ⚠️Qt 기본값은 **75** 인데 그레인처럼 화면 전체가 고주파인 이미지에서는
 8x8 DCT 블록 경계가 격자로 드러난다 — 측정(열 경계별 |ΔI| 비, 1.00=격자 없음):
-무손실 1.00 / q75 **1.20** / q85 1.03 / q92 0.98. q92 위로 여유를 둬 95.
+**그레인 최대 설정 export** 에서 무손실 1.00 / q75 1.34 / q95 1.02(CLAUDE.md Export 절과 동일 기준),
+완만한 그레인 사진에서는 q75 1.20 / q85 1.03 / q92 0.98. 최악 케이스 기준 q92 위로 여유를 둬 95.
 ⚠️PNG 에는 주면 안 된다 — Qt 에서 PNG 의 quality 는 '압축 레벨'이라 의미가 반대고,
 95 를 주면 거의 무압축이 되어 파일이 몇 배로 커진다. 그래서 확장자로 게이팅한다."""
 

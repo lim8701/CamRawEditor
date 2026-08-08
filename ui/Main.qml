@@ -1264,9 +1264,10 @@ ApplicationWindow {
     // 드래그 진행 중 여부 — 편집에 관여하는 모든 드래그 소스를 **명시적으로 열거**(결정론적).
     // 과거 전역 PointHandler(패시브 감시)만으로는 일부 컨트롤의 press 를 이벤트 전달 경로에 따라
     // 놓칠 수 있었음 → 컨트롤들의 pressed 를 직접 참조. PointHandler 는 보조 안전망으로 유지.
-    readonly property bool editDragActive:
-        globalPress.active
-        || expSlider.pressed || conSlider.pressed || hiSlider.pressed || shSlider.pressed
+    // 값이 변하는 편집 드래그만(globalPress 제외) — 원판 그레인 폴백 게이트용.
+    // globalPress 는 창 어디든 프레스면 활성이라, 여기에 걸면 모든 클릭에서 결이 깜빡인다.
+    readonly property bool editSliderDragActive:
+        expSlider.pressed || conSlider.pressed || hiSlider.pressed || shSlider.pressed
         || whSlider.pressed || blSlider.pressed || tempSlider.pressed || tintSlider.pressed
         || simStrengthSlider.pressed || texSlider.pressed || claritySlider.pressed
         || dehazeSlider.pressed || vibSlider.pressed || satSlider.pressed
@@ -1286,6 +1287,7 @@ ApplicationWindow {
         || depthNearSlider.pressed || depthFarSlider.pressed || depthFeatherSlider.pressed
         || stampSizeSlider.pressed || stampMarginSlider.pressed
         || curveEditor.dragging || cropOverlay.dragging
+    readonly property bool editDragActive: globalPress.active || editSliderDragActive
     // 릴리즈 순간(어떤 소스든 드래그 종료) 보류 중 커밋이 있으면 즉시 실행 — 릴리즈 = undo 스텝.
     // + 드래그 상태를 컨트롤러에 전달 — AI 디노이즈 타일 루프가 조작 중 일시정지(버벅임 제거).
     onEditDragActiveChanged: {
@@ -3561,10 +3563,10 @@ ApplicationWindow {
                         property real grainSize: grainSizeSlider.value
                         property real grainRough: grainRoughSlider.value
                         property real grainColor: grainColorSlider.value
-                        // 드래그 중엔 사각 셀로 폴백 — 원판은 픽셀당 해시 27배라 어떤
-                        // 슬라이더를 움직여도 매 프레임 재계산돼 끊긴다. WB 드래그 근사와
-                        // 같은 패턴(드래그=빠른 근사, 릴리즈=정확). 손 떼면 원판으로 복귀.
-                        property real grainShape: (grainShapeCheck.checked && !win.editDragActive) ? 1.0 : 0.0
+                        // ⚠️export 는 폴백 없이 항상 체크값 — 이 인스턴스의 grab 이 저장
+                        // 파일이 된다. 드래그 폴백을 여기 걸면 grab 순간 마우스가 눌려 있을 때
+                        // 사각 그레인이 조용히 구워진다(프리뷰 전용 근사가 결과물에 새는 버그).
+                        property real grainShape: grainShapeCheck.checked ? 1.0 : 0.0
                         property real grainAspect: width / Math.max(1, height)
                         // 그레인 서브픽셀 평균용 출력 텍셀 — **이 인스턴스의 실제 렌더 크기** 기준.
                         // (texelW 는 샤프닝 공간스케일용이라 pipeFull 에서도 프록시 텍셀 → 쓰면 안 됨)
@@ -3901,10 +3903,11 @@ ApplicationWindow {
                         property real grainSize: grainSizeSlider.value
                         property real grainRough: grainRoughSlider.value
                         property real grainColor: grainColorSlider.value
-                        // 드래그 중엔 사각 셀로 폴백 — 원판은 픽셀당 해시 27배라 어떤
-                        // 슬라이더를 움직여도 매 프레임 재계산돼 끊긴다. WB 드래그 근사와
-                        // 같은 패턴(드래그=빠른 근사, 릴리즈=정확). 손 떼면 원판으로 복귀.
-                        property real grainShape: (grainShapeCheck.checked && !win.editDragActive) ? 1.0 : 0.0
+                        // 드래그 중엔 사각 셀로 폴백 — 원판은 계산이 무거워 어떤 슬라이더를
+                        // 움직여도 매 프레임 재계산돼 끊긴다. WB 드래그 근사와 같은 패턴
+                        // (드래그=빠른 근사, 릴리즈=정확). ⚠️게이트는 editSliderDragActive —
+                        // editDragActive(globalPress 포함)를 쓰면 모든 클릭에서 결이 깜빡인다.
+                        property real grainShape: (grainShapeCheck.checked && !win.editSliderDragActive) ? 1.0 : 0.0
                         property real grainAspect: viewport.procW / Math.max(1, viewport.procH)
                         // 그레인 서브픽셀 평균용 출력 텍셀 — **이 인스턴스의 실제 렌더 크기** 기준.
                         // (texelW 는 샤프닝 공간스케일용이라 pipeFull 에서도 프록시 텍셀 → 쓰면 안 됨)

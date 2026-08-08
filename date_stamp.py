@@ -74,7 +74,9 @@ C_HALO = np.array([0.94, 0.24, 0.06], np.float32)   # 적주황 외곽 번짐
 # Image 오버레이 동일 합성). 스프라이트 RGBA 에 핫코어→앰버→헤일로 글로우가 이미 베이크돼 있어
 # 단순 source-over 로도 빛나는 데이트백 룩이 난다.
 STAMP_STRENGTH = 0.92   # 프리뷰 stampOverlay.opacity 와 일치
-STAMP_GRAIN_K = 0.24    # 스탬프 그레인 = 전체 grainAmt × 이 계수(같은 에멀전 → 사진 필름 그레인에 연동).
+STAMP_GRAIN_K = 0.27    # 스탬프 그레인 = 전체 grainAmt × 이 계수(같은 에멀전 → 사진 필름 그레인에 연동).
+                        # ⚠️coeffs.GRAIN 에 비례해 튜닝된 값 — GRAIN 0.21 기준 0.24 였고, GRAIN 이
+                        #   0.24 로 오르며 같은 비율(×1.143)로 0.27 재환산. GRAIN 변경 시 여기도 갱신.
                         # 곱셈 변조 진폭(×0.5)이 사진 그레인(add ∝ grainAmt)과 대략 맞도록 튜닝. grainAmt=0 → 매끈.
 SCREEN_MIX = 0.7        # 합성 블렌드: 1.0=순수 screen(밝은 배경서 많이 사라짐), 0.0=source-over(스티커).
                         # 중간값=밝은 배경 과다 소멸 완화. ⚠️ui/Main.qml stampOverlay.screenMix 와 동기 유지.
