@@ -11,6 +11,8 @@
 """
 
 import math
+import os
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import rawpy
@@ -678,7 +680,8 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     grain_grid_n *= min(1.0, w / h)          # 긴 변 기준 셀 크기(위 주석)
     if grain_grid_n > 0.0:
         gk = grain_amt * coeffs.GRAIN
-        for y in range(0, h, strip):                       # 스트립 = 26MP 풀 float 사본 회피
+
+        def _grain_strip(y):
             y1 = min(y + strip, h)
             f = out[y:y1].astype(np.float32) / maxv
             # 왜도 계수 — 섀도는 밝은 점(+), 하이라이트는 어두운 점(−). skew≈6cσ, σ=1/√12
@@ -696,6 +699,20 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
                             * (np.sqrt(4.0 * lg * (1.0 - lg)) - 1.0))
             f += g * (gk * wt[..., None])
             out[y:y1] = np.rint(np.clip(f, 0.0, 1.0) * maxv).astype(dt)
+
+        # 스트립 병렬 — 필드가 좌표 결정론이라 스트립 간 완전 독립이고 쓰기 행도 서로소라
+        # 결과가 직렬과 **비트 동일**. numpy 가 대형 배열 연산에서 GIL 을 풀어 스레드로 실효
+        # 병렬이 된다(실측 26MP: 사각 셀 20.6→5.8s, 원판 258→64s — 6워커 4.0배).
+        # 6워커 이상은 수확 체감 + 스트립당 ~100MB 작업 메모리 → min(6, 코어-2) 상한.
+        workers = max(1, min(6, (os.cpu_count() or 4) - 2))
+        ys = list(range(0, h, strip))                      # 스트립 = 26MP 풀 float 사본 회피
+        if workers <= 1:
+            for y in ys:
+                _grain_strip(y)
+        else:
+            with ThreadPoolExecutor(workers) as ex:
+                for fut in [ex.submit(_grain_strip, y) for y in ys]:
+                    fut.result()                           # 예외 전파(조용한 누락 방지)
 
     _prog(0.97)   # 그레인 완료 — 남은 건 지오메트리/스탬프/저장(빠름)
     # === 지오메트리(회전/크롭) — 현상 끝난 이미지에 마지막 적용(프리뷰 뷰 변환과 동일) ===
