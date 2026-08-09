@@ -167,6 +167,18 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   뒤집는다(실측: 원판 비교에서 3.38 vs 3.32 '차이 없음' → 무손실 재측정 3.03 vs 3.28 '차이 있음').
 - **백그라운드 threading.Thread**(데몬)로 실행 → UI 안 멈춤. 26MP 전효과 ~40–50초(순수 CPU numpy,
   가우시안/LUT가 무거움). 메모리 위해 LUT 단계는 가로 스트립 처리, 공간단계는 전체 배열.
+- **GPU export(pipeFull grab)**: ①`saveGrab` 은 QImage→numpy 복사와 프로바이더 해제만 메인
+  스레드에서 하고, 지오메트리/스탬프/인코딩은 `_finish_gpu_export` 워커로 — 전에는 전부 GUI
+  스레드라 grab 후 저장까지 앱이 멈췄다(v1.8.0 사용자 보고). ②해상도 프리셋은 **pipeFull 이
+  처음부터 그 크기로 렌더**(`fullScale`, `win.gpuExportEdge` 요청 시점 스냅샷 + `srcFull`
+  mipmap) — 예전 '풀해상도 렌더 후 CPU 축소'는 그레인이 평균돼 CPU 경로보다 약했고
+  (σ 12.7→10.5, JPG −10%) 26MP 축소가 멈춤을 키웠다. 그레인이 출력 해상도에서 계산되므로
+  긴 변 보정에 의해 CPU 프리셋과 셀 크기·σ 정합. ③⚠️**HiDPI**: Windows 배율 >100% 면
+  `grabToImage` 가 요청 크기 ×DPR 이미지를 돌려준다(실측 DSCF8482: 4080×6111 요청 →
+  5100×7639 = ×1.25 — 'GPU export 가 CPU 보다 크다' 보고의 원인, Original 포함 전 해상도).
+  → `saveGrab` 이 소스 원본 크기에서 기대 치수를 계산해 워커에서 **지오메트리 전에**
+  정규화(배율 100% 면 no-op, 동일 객체). ⚠️CPU 점유율 질문(커뮤니티): CPU export 는
+  numpy 단일 코어 위주라 12스레드 CPU 에서 8~10% 로 보이는 게 정상 — iGPU 유무와 무관.
 - 16bit TIFF 미지원(QImage 8bit). 필요 시 tifffile/imageio 추가.
 
 ## 향후 후보

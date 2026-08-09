@@ -1432,6 +1432,9 @@ ApplicationWindow {
 
     // Export 해상도 프리셋(긴 변 px, 0=원본). resCombo 모델 순서와 일치.
     readonly property var exportEdges: [0, 4096, 3840, 2560, 2048, 1920, 1280]
+    // GPU export 의 해상도 프리셋(요청 시점 스냅샷). pipeFull 이 이 크기로 직접 렌더한다 —
+    // 풀해상도로 렌더 후 CPU 축소하면 그레인이 씻겨(σ 12.7→10.5) CPU export 와 갈라졌었다.
+    property int gpuExportEdge: 0
 
     // 콤보 인덱스 -> luts/<key>.cube 파일명. 0(identity)=필름시뮬 미적용.
     // controller.filmSims(=luts/*.cube 존재하는 것만)에서 파생 → 흑백 등 .cube 넣으면 자동 노출.
@@ -2541,6 +2544,7 @@ ApplicationWindow {
             var p = win.exportParams()
             // GPU grab 은 8bit 라 16bit 선택 시 무조건 CPU 경로 사용.
             if (renderModeCombo.currentIndex === 1 && !bitDepth16Check.checked) {
+                win.gpuExportEdge = p["outEdge"]   // 요청 시점 스냅샷(디코드 중 콤보 변경과 분리)
                 controller.exportImageGpu(selectedFile, p)
                 // 실제로 진행됐을 때만 로더 활성 — 슬롯 가드에 걸려 시작 안 됐는데 active=true 로
                 // 두면 grab 을 구동할 디코드가 없어 pipeFull 이 떠 있게 됨(버튼은 위에서 재진입 차단).
@@ -3488,7 +3492,9 @@ ApplicationWindow {
                         }, Qt.size(pipeFull.width, pipeFull.height))
                     }
                     Image {
-                        id: srcFull; visible: false; cache: false; smooth: true
+                        // mipmap: 프리셋 렌더에서 셰이더가 풀해상도 소스를 축소 샘플링하므로
+                        // 트라이리니어 필수(없으면 이미지 내용이 에일리어싱).
+                        id: srcFull; visible: false; cache: false; smooth: true; mipmap: true
                         source: controller.fullUrl
                         onStatusChanged: {
                             if (status === Image.Ready && grabPending) {
@@ -3519,8 +3525,18 @@ ApplicationWindow {
                     }
                     ShaderEffect {
                         id: pipeFull
-                        width: srcFull.implicitWidth > 0 ? srcFull.implicitWidth : 1
-                        height: srcFull.implicitHeight > 0 ? srcFull.implicitHeight : 1
+                        // 해상도 프리셋이 있으면 **처음부터 그 크기로 렌더** — 그레인이 출력
+                        // 해상도에서 계산돼 CPU 프리셋 경로와 셀 크기·σ 가 일치한다(긴 변 보정).
+                        // 풀해상도 렌더 후 CPU 축소 방식은 그레인이 평균돼 약해졌고(σ −18%),
+                        // 26MP 축소·인코딩이 메인 스레드를 잡아 멈춤의 주범이기도 했다.
+                        readonly property real fullScale: {
+                            var w0 = srcFull.implicitWidth, h0 = srcFull.implicitHeight
+                            if (w0 <= 0 || h0 <= 0) return 1.0
+                            var e = win.gpuExportEdge, l = Math.max(w0, h0)
+                            return (e > 0 && e < l) ? e / l : 1.0
+                        }
+                        width: Math.max(1, Math.round(srcFull.implicitWidth * fullScale))
+                        height: Math.max(1, Math.round(srcFull.implicitHeight * fullScale))
                         visible: false
                         // ⚠️아래 uniform 바인딩은 pipe 와 동일하게 유지해야 함(프리뷰=Export).
                         property variant src: srcFull

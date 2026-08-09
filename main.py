@@ -2046,25 +2046,72 @@ class Controller(QObject):
 
     @Slot("QImage")
     def saveGrab(self, qimg) -> None:  # noqa: N802 (QML 슬롯)
-        """QML 이 grab 한 풀해상도 GPU 결과(QImage) → 지오메트리(크롭/회전) 적용 → 저장."""
+        """QML 이 grab 한 GPU 결과(QImage) 저장. **QImage 접근(→numpy 복사)과 프로바이더
+        해제만 메인 스레드에서** 하고, 나머지(지오메트리/스탬프/축소/인코딩)는 워커로 넘긴다.
+        전에는 전부 이 슬롯(GUI 스레드)에서 해서 grab 후 저장까지 UI 가 멈췄다(사용자 보고:
+        '점유율 상승 → 잠시 멈춤 → 저장'). CPU export(_do_export)와 같은 스레딩 구조."""
+        try:
+            arr = self._qimage_to_rgb(qimg)          # QImage 는 여기까지만(메인 스레드)
+            # 의도한 렌더 치수 — 소스 원본 크기에 QML pipeFull.fullScale 과 같은 식을 적용.
+            # ⚠️HiDPI(디스플레이 배율 125% 등)에서 grabToImage 가 요청 크기에 DPR 을 곱한
+            #   이미지를 돌려준다(실측: 4080×6111 요청 → 5100×7639 = ×1.25). 워커에서 이
+            #   기대 치수로 정규화한다 — Original 포함 모든 해상도에서 CPU export 와 치수 일치.
+            src = self._full_provider._img if self._full_provider is not None else None
+            if src is not None and not src.isNull():
+                w0, h0 = src.width(), src.height()
+            else:                                    # 폴백: grab 치수 그대로(정규화 생략)
+                w0, h0 = qimg.width(), qimg.height()
+            edge = int(self._gpu_params.get("outEdge", 0) or 0)
+            long_e = max(w0, h0)
+            f = (edge / long_e) if (0 < edge < long_e) else 1.0
+            expected = (int(round(h0 * f)), int(round(w0 * f)))      # (H, W)
+        except Exception as exc:
+            self._exporting = False
+            self._apply_keep_awake(False)
+            if self._full_provider is not None:
+                self._full_provider.clear()
+            self._set_export_status(f"Failed: {exc}")
+            return
+        if self._full_provider is not None:
+            self._full_provider.clear()              # 풀해상도 소스 메모리 해제(QML 로더도 곧 해제)
+        threading.Thread(target=self._finish_gpu_export,
+                         args=(arr, dict(self._gpu_params), self._gpu_path, expected),
+                         daemon=True).start()
+
+    def _finish_gpu_export(self, arr, params: dict, path: str, expected=None) -> None:
+        """GPU export 후처리(워커 스레드) — DPR 정규화 → 지오메트리 → 스탬프 → 저장."""
         try:
             import pipeline
             import numpy as np
-            arr = self._qimage_to_rgb(qimg)
-            arr = pipeline._apply_geometry(arr, self._gpu_params)   # 프리뷰/CPU export 와 동일
+            # HiDPI 정규화 — grab 이 기대 치수(×DPR 전)와 다르면 먼저 되돌린다. 지오메트리(크롭)
+            # 전에 해야 이후 단계의 치수 기준이 CPU export 와 같아진다. 배율 100% 면 no-op.
+            if expected is not None and tuple(arr.shape[:2]) != tuple(expected):
+                from scipy.ndimage import zoom as _zoom, gaussian_filter as _gf
+                fh = expected[0] / arr.shape[0]
+                fw = expected[1] / arr.shape[1]
+                x = arr.astype(np.float32)
+                s = 0.5 * (1.0 / min(fh, fw) - 1.0)
+                if s > 0.4:
+                    x = _gf(x, (s, s, 0.0))
+                x = _zoom(x, (fh, fw, 1.0), order=1)
+                x = x[:expected[0], :expected[1]]             # zoom 반올림 여유분 절단
+                arr = np.clip(x + 0.5, 0, 255).astype(np.uint8)
+            arr = pipeline._apply_geometry(arr, params)   # 프리뷰/CPU export 와 동일
             # 날짜 스탬프 — 크롭/회전 후 '최종 프레임'에 찍는다(CPU export·프리뷰와 동일 위치/합성).
-            #   pipeFull 셰이더는 스탬프를 굽지 않음(stampOn=0). 해상도 축소 전에 찍어 상대크기 유지.
+            #   pipeFull 셰이더는 스탬프를 굽지 않음(stampOn=0).
             import date_stamp
-            _st = str(self._gpu_params.get("stampText", "") or "")
-            if bool(self._gpu_params.get("dateStamp", False)) and _st:
+            _st = str(params.get("stampText", "") or "")
+            if bool(params.get("dateStamp", False)) and _st:
                 date_stamp.stamp_export(
-                    arr, _st, rot=int(self._gpu_params.get("stampRot", 0)),
-                    style=str(self._gpu_params.get("stampStyle", "7c_bold")),
-                    size_frac=float(self._gpu_params.get("stampSize", 0.032)),
-                    margin_frac=float(self._gpu_params.get("stampMargin", 0.05)),
-                    grain_amt=float(self._gpu_params.get("grainAmt", 0.0)))
-            # 해상도 프리셋(긴 변) 적용 — GPU grab 은 항상 풀해상도라 여기서 축소.
-            out_edge = int(self._gpu_params.get("outEdge", 0) or 0)
+                    arr, _st, rot=int(params.get("stampRot", 0)),
+                    style=str(params.get("stampStyle", "7c_bold")),
+                    size_frac=float(params.get("stampSize", 0.032)),
+                    margin_frac=float(params.get("stampMargin", 0.05)),
+                    grain_amt=float(params.get("grainAmt", 0.0)))
+            # 해상도 프리셋 — pipeFull 이 이제 프리셋 크기로 직접 렌더하므로(그레인이 출력
+            # 해상도에서 계산돼 CPU 경로와 정합) 보통 여긴 no-op. 혹시 grab 이 더 크게 온
+            # 경우의 안전망으로만 남긴다.
+            out_edge = int(params.get("outEdge", 0) or 0)
             if out_edge > 0 and max(arr.shape[:2]) > out_edge:
                 from scipy.ndimage import zoom, gaussian_filter
                 f = out_edge / float(max(arr.shape[:2]))
@@ -2073,17 +2120,16 @@ class Controller(QObject):
                 if s > 0.4:
                     x = gaussian_filter(x, (s, s, 0.0))
                 arr = np.clip(zoom(x, (f, f, 1.0), order=1) + 0.5, 0, 255).astype(np.uint8)
-            ok = pipeline.save_image(arr, self._gpu_path)
-            msg = f"Saved: {self._gpu_path}" if ok else f"Save failed: {self._gpu_path}"
+            ok = pipeline.save_image(arr, path)
+            msg = f"Saved: {path}" if ok else f"Save failed: {path}"
         except Exception as exc:
             msg = f"Failed: {exc}"
         finally:
+            print(f"[export-gpu] {msg}")
+            # CPU export 와 동일 순서: 상태 확정 → _exporting 해제(반대면 배치 폴러 오카운트).
+            self._set_export_status(msg)             # 워커 → 시그널은 메인으로 큐잉됨
             self._exporting = False
-            self._apply_keep_awake(False)   # QML grab 슬롯 = 메인 스레드 → 직접 호출
-            if self._full_provider is not None:
-                self._full_provider.clear()    # 풀해상도 메모리 해제
-        print(f"[export-gpu] {msg}")
-        self._set_export_status(msg)
+            self._keepAwakeSig.emit(False)           # 스레드 귀속 API → 메인으로 큐잉
 
     @Slot(str)
     def refreshDisplayCm(self, device_name: str = "") -> None:  # noqa: N802 (QML 슬롯)
