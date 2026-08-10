@@ -1870,6 +1870,11 @@ ApplicationWindow {
             border.color: "#3d3d40"; border.width: 1
         }
 
+        // 진행 중인 작업 — 내보내기 외에 배치/배경화면도 포함(파일 내 다른 busy 표시와
+        // 같은 조건). export 만 보면 배치 1·2단계(로드/마스크 재생성)에서 '그냥 종료'
+        // 문구가 떠서 수백 장 배치가 경고 없이 중단된다.
+        readonly property bool busy: controller.exporting || win.batchActive || win.wallActive
+
         function doQuit() {
             // 보류 중(editSaveTimer.running=미저장 변경 있음)일 때만 저장 — 편집이 전혀 없거나
             // reset 으로 삭제된 사진에 종료 시 기본값 사이드카가 생기지 않게 한다(주황 배지 오발 방지).
@@ -1897,12 +1902,18 @@ ApplicationWindow {
                 spacing: 12
 
                 Label {
-                    text: "Quit FILM RAWSTERY?"
-                    color: "#f2f2f2"; font.pixelSize: 18; font.bold: true
+                    // 진행 중이면 경고 문구로 — 지금 쓰이는 파일은 만들어지지 않는다
+                    // (기존 파일은 pipeline.save_image 의 원자적 교체가 보호한다).
+                    text: quitDialog.busy ? "Export in progress" : "Quit FILM RAWSTERY?"
+                    color: quitDialog.busy ? "#E0A226" : "#f2f2f2"
+                    font.pixelSize: 18; font.bold: true
                     Layout.alignment: Qt.AlignHCenter
                 }
                 Label {
-                    text: "Your current edits are saved before exit."
+                    text: quitDialog.busy
+                          ? "Quitting now cancels it — the file being written will not be saved.\n"
+                            + "Your current edits are saved before exit."
+                          : "Your current edits are saved before exit."
                     color: "#9a9a9a"; font.pixelSize: 13
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignHCenter
@@ -1930,7 +1941,11 @@ ApplicationWindow {
                         Layout.fillWidth: true; Layout.preferredWidth: 0
                         Layout.preferredHeight: 40; radius: 8
                         color: okMA.containsMouse ? "#f0b945" : "#E0A226"
-                        Label { anchors.centerIn: parent; text: "Quit"; color: "#1a1a1a"; font.pixelSize: 13; font.bold: true }
+                        Label {
+                            anchors.centerIn: parent
+                            text: quitDialog.busy ? "Quit anyway" : "Quit"
+                            color: "#1a1a1a"; font.pixelSize: 13; font.bold: true
+                        }
                         MouseArea {
                             id: okMA; anchors.fill: parent; hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor

@@ -2065,6 +2065,13 @@ class Controller(QObject):
             long_e = max(w0, h0)
             f = (edge / long_e) if (0 < edge < long_e) else 1.0
             expected = (int(round(h0 * f)), int(round(w0 * f)))      # (H, W)
+            if self._full_provider is not None:
+                self._full_provider.clear()          # 풀해상도 소스 메모리 해제(QML 로더도 곧 해제)
+            # ⚠️스레드 생성까지 try 안에 둔다 — 밖에 두면 start() 실패(RuntimeError: can't start
+            #   new thread) 시 _exporting 이 True 로 남아 이후 모든 export 가 조용히 무시된다.
+            threading.Thread(target=self._finish_gpu_export,
+                             args=(arr, dict(self._gpu_params), self._gpu_path, expected),
+                             daemon=True).start()
         except Exception as exc:
             self._exporting = False
             self._apply_keep_awake(False)
@@ -2072,11 +2079,6 @@ class Controller(QObject):
                 self._full_provider.clear()
             self._set_export_status(f"Failed: {exc}")
             return
-        if self._full_provider is not None:
-            self._full_provider.clear()              # 풀해상도 소스 메모리 해제(QML 로더도 곧 해제)
-        threading.Thread(target=self._finish_gpu_export,
-                         args=(arr, dict(self._gpu_params), self._gpu_path, expected),
-                         daemon=True).start()
 
     def _finish_gpu_export(self, arr, params: dict, path: str, expected=None) -> None:
         """GPU export 후처리(워커 스레드) — DPR 정규화 → 지오메트리 → 스탬프 → 저장."""

@@ -12,10 +12,11 @@
 
 import math
 import os
-from concurrent.futures import ThreadPoolExecutor
+import threading
 
 import numpy as np
 import rawpy
+from PySide6.QtCore import QBuffer, QIODevice
 from PySide6.QtGui import QImage
 from scipy.ndimage import affine_transform, gaussian_filter, map_coordinates, zoom
 
@@ -703,16 +704,40 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         # 스트립 병렬 — 필드가 좌표 결정론이라 스트립 간 완전 독립이고 쓰기 행도 서로소라
         # 결과가 직렬과 **비트 동일**. numpy 가 대형 배열 연산에서 GIL 을 풀어 스레드로 실효
         # 병렬이 된다(실측 26MP: 사각 셀 20.6→5.8s, 원판 258→64s — 6워커 4.0배).
-        # 6워커 이상은 수확 체감 + 스트립당 ~100MB 작업 메모리 → min(6, 코어-2) 상한.
+        # 6워커 이상은 수확 체감 → min(6, 코어-2) 상한.
+        # ⚠️ThreadPoolExecutor 를 쓰면 안 된다 — 워커가 **non-daemon** 이고 atexit 훅이 큐를
+        #   전부 비운 뒤 join 하므로, 그레인 도중 앱을 닫으면 남은 스트립이 끝날 때까지(26MP
+        #   원판 ~64s) 창 없는 프로세스가 살아남는다. daemon 스레드를 직접 띄워 즉시 종료 가능하게.
         workers = max(1, min(6, (os.cpu_count() or 4) - 2))
         ys = list(range(0, h, strip))                      # 스트립 = 26MP 풀 float 사본 회피
         if workers <= 1:
             for y in ys:
                 _grain_strip(y)
         else:
-            with ThreadPoolExecutor(workers) as ex:
-                for fut in [ex.submit(_grain_strip, y) for y in ys]:
-                    fut.result()                           # 예외 전파(조용한 누락 방지)
+            errors = []
+
+            def _worker(k):                                # 라운드로빈 분할(스트립 비용 균일)
+                try:
+                    for y in ys[k::workers]:
+                        _grain_strip(y)
+                except BaseException as exc:               # noqa: BLE001 (스레드 예외 전파용)
+                    errors.append(exc)
+
+            ts = [threading.Thread(target=_worker, args=(k,), daemon=True)
+                  for k in range(workers)]
+            started = []
+            try:
+                for t in ts:
+                    t.start()
+                    started.append(t)
+            finally:
+                # ⚠️중간 start() 가 실패해도 **이미 뜬 워커는 반드시 회수**한다 — 안 하면
+                #   render_full 이 예외로 빠져나간 뒤에도 고아 워커가 버려진 out 을 계속 쓴다
+                #   (ThreadPoolExecutor 의 with-블록이 해주던 shutdown(wait=True) 대체).
+                for t in started:
+                    t.join()
+            if errors:
+                raise errors[0]                            # 조용한 누락 방지
 
     _prog(0.97)   # 그레인 완료 — 남은 건 지오메트리/스탬프/저장(빠름)
     # === 지오메트리(회전/크롭) — 현상 끝난 이미지에 마지막 적용(프리뷰 뷰 변환과 동일) ===
@@ -891,6 +916,10 @@ JPEG_QUALITY = 95
 95 를 주면 거의 무압축이 되어 파일이 몇 배로 커진다. 그래서 확장자로 게이팅한다."""
 
 
+JPEG_EXTS = ("jpg", "jpeg", "jfif")   # ⚠️Qt 가 JPEG 핸들러로 매핑하는 확장자 전부
+                                     #   (jfif 누락 시 그 경로만 Qt 기본 품질 75 로 저장된다)
+
+
 def save_image(arr, path) -> bool:
     """(H,W,3) RGB 저장. dtype 으로 비트깊이 결정:
     - uint8  -> RGB888 (jpg/png/tif 8bit)
@@ -905,8 +934,39 @@ def save_image(arr, path) -> bool:
         img = QImage(rgbx.data, w, h, 8 * w, QImage.Format.Format_RGBX64).copy()
     else:
         img = QImage(arr.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
-    jpg = path.lower().endswith((".jpg", ".jpeg"))
-    return bool(img.save(path, None, JPEG_QUALITY if jpg else -1))   # -1 = 포맷 기본값
+    ext = os.path.splitext(path)[1].lstrip(".").lower()
+    # ⚠️포맷을 **명시**해서 넘긴다 — 임시 이름이 `<path>.part` 라 Qt 가 확장자로 추론하면
+    #   모르는 형식이라 무조건 실패한다(확장자가 없는 게 아니라 Qt 가 `.part` 를 모르는 것).
+    #   확장자가 아예 없으면 fmt=None 으로 넘겨 **예전처럼 실패**시킨다 — 임의 형식으로
+    #   저장해버리면 '저장됨' 이라 알리고도 열리지 않는 파일이 남는다.
+    fmt = ext.upper() or None
+    quality = JPEG_QUALITY if ext in JPEG_EXTS else -1     # -1 = 포맷 기본값
+    # ⚠️인코딩은 **메모리에서** 끝내고 파일은 한 번에 쓴다 — 대상 파일에 바로 인코딩하면
+    #   26MP 에서 1.4~7.4s 동안 파일이 열려 있고, 그 사이 앱이 종료되면(export 중 창 닫기)
+    #   같은 이름의 기존 파일이 잘린 채 남는다. 실측 쓰기 구간은 0.08~0.19s 로 19~40배 짧다.
+    buf = QBuffer()
+    buf.open(QIODevice.OpenModeFlag.WriteOnly)
+    if not img.save(buf, fmt, quality):
+        return False                                       # 인코딩 실패 — 디스크는 손대지 않음
+    data = buf.data()
+    buf.close()
+    # 임시 파일 → os.replace 로 원자적 교체(같은 디렉터리라 항상 동일 볼륨).
+    # ⚠️대상 파일을 다른 프로그램이 열고 있으면 Windows 에서 replace 가 막힌다
+    #   (실측 PermissionError WinError 5 — 뷰어로 결과를 열어둔 채 재export 하는 흔한 흐름).
+    #   제자리 쓰기는 그 상황에서도 되므로 폴백한다(= v1.8.1 동작).
+    tmp = path + ".part"
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        with open(path, "wb") as f:                        # ⚠️여기서 실패하면 예외를 그대로
+            f.write(data)                                  #   올린다 — 호출처가 'Failed: <원인>' 표시
+    return True
 
 
 def compose_wallpaper(panels, canvas_w, canvas_h, gap, offsets):
