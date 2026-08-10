@@ -6410,6 +6410,11 @@ ApplicationWindow {
                     property real defaultValue: 0.032
                     property real _lastPressMs: 0     // isDblPress 가 읽고 씀(없으면 더블클릭 리셋 무동작)
                     property bool _pendingReset: false
+                    // ⚠️여기에 디바운스를 넣지 말 것 — 한 번 넣었다가 철회했다. 스프라이트 재렌더는
+                    // 21.3ms(기본 3.2%, 실측)라 그대로 두면 약 47fps 로 **실시간으로 따라온다**.
+                    // 150ms Timer 를 끼우면 초당 6~7회로 떨어져 오히려 뚝뚝 끊긴다(사용자 확인).
+                    // Grain 슬라이더가 디바운스인 것은 거기가 장면 그레인(GPU 라이브)과 스탬프
+                    // 스프라이트(CPU)를 동시에 물고 있어서지, 스프라이트 비용 자체 때문이 아니다.
                     // 드래그(user)만 controller 로 push — 프로그램 대입(로드/리셋)은 onMoved 안 불림.
                     onMoved: controller.setStampSize(value)
                     onPressedChanged: {

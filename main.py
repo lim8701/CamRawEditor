@@ -2591,7 +2591,10 @@ class Controller(QObject):
     @Slot(str)
     def setStampText(self, text: str) -> None:  # noqa: N802 (QML 슬롯)
         """사용자가 입력한 날짜 스탬프 텍스트 반영(재디코딩 없이 레이어만 재렌더)."""
-        self._stamp_text = text or ""
+        text = text or ""
+        if text == self._stamp_text:      # 형제 슬롯들과 같은 동일값 가드 — 아래 주석 참조
+            return
+        self._stamp_text = text
         self._update_stamp_layer()
 
     @Slot(str)
@@ -2641,7 +2644,9 @@ class Controller(QObject):
 
     def _update_stamp_layer(self) -> None:
         """현재 _stamp_text 로 타이트 스프라이트 + 크기 비율을 갱신. 프록시 크기와 무관(비율 기반).
-        QML 이 cropClip(=최종 프레임) 위에 source-over 오버레이로 표시 → 위치/크기 최종 사이즈 기준."""
+        QML 이 cropClip(=최종 프레임) 위에 source-over 오버레이로 표시 → 위치/크기 최종 사이즈 기준.
+        ⚠️GUI 스레드에서 date_stamp.sprite_layer 를 동기 실행한다(실측 2.5/21.3/60.3ms —
+        size_frac 0.012/0.032/0.050). 호출자 쪽에서 동일값 가드로 걸러줄 것."""
         if self._stamp_provider is None:
             return
         if self._stamp_text:

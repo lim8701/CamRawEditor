@@ -152,6 +152,16 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
 - 우측 패널은 **ScrollView**. **커브 에디터 높이는 반드시 고정값**(`Layout.preferredHeight: 240`).
   너비기반(정사각형)으로 두면 스크롤바↔availableWidth 레이아웃 루프로 창 전체가 느려짐(과거 버그).
 - 커브 에디터 MouseArea는 `preventStealing: true`(ScrollView가 드래그 가로채는 것 방지).
+- **디바운스는 "프레임 예산 초과"가 아니라 "체감"으로 판단할 것.** `date_stamp.sprite_layer`
+  실측 **2.5 / 21.3 / 60.3ms**(size_frac 0.012 / 0.032 / 0.050) — 기본값이 60Hz 예산 16.7ms 를
+  넘지만 **약 47fps 라 실시간으로 따라온다.** ⚠️**Stamp size 슬라이더에 150ms 디바운스를 넣었다가
+  철회했다 — 재시도 금지**: 초당 6~7회로 떨어져 오히려 뚝뚝 끊긴다(사용자 확인). 예산 초과 수치만
+  보고 디바운스를 넣지 말 것. Grain 슬라이더가 디바운스인 것은 장면 그레인(GPU 라이브)과 스탬프
+  스프라이트(CPU)를 동시에 물고 있어서고, 텍스트 입력(200ms)은 타건마다 전체 재렌더라서다.
+- **스탬프 슬롯 4형제(`setStampText`/`Font`/`Size`/`GrainSrc`)는 전부 동일값 조기반환 가드를
+  가진다** — `_update_stamp_layer` 가 GUI 스레드에서 스프라이트를 동기 재렌더하기 때문.
+  사진 1장을 여는 동안 `_on_render_ready` 1회 + QML `applyEdits` 의 4회 push 가 같은 함수를
+  부르는데, 가드 덕에 값이 같으면 접힌다. 새 스탬프 파라미터를 추가하면 가드도 같이 넣을 것.
 - 셰이더 텍스처는 image provider 경로(Image→sampler)가 검증됨. Canvas→ShaderEffectSource 직접
   바인딩은 과거 검정화면 유발(커브 LUT를 provider 방식으로 전환해 해결).
 
