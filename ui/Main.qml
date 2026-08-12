@@ -1098,6 +1098,51 @@ ApplicationWindow {
     property var wallOffsets: [0.0, 0.0, 0.0]     // 가로 크롭 오프셋(-1 왼쪽끝..+1 오른쪽끝)
     property int wallGap: 18                      // 패널 사이 검정 갭(px, 캔버스 기준)
     property int wallResIndex: 0
+    // 레이아웃: 0=트립틱(3분할), 1=잡지 스프레드(히어로 풀블리드 + 타이포 칼럼)
+    property int wallLayout: 0
+    readonly property var wallLayoutKeys: ["triptych", "magazine"]
+    property int wallTypeface: 0                  // 0=Serif, 1=Sans
+    property int wallHeroSide: 1                  // 0=Left, 1=Right
+    // 잡지 레이아웃 텍스트(사용자 입력) — controller 가 QSettings 에 영구 저장
+    property string wallKicker: ""
+    property string wallHeadline: ""
+    property string wallDeck: ""
+    property string wallPlace: ""
+    property string wallDate: ""                  // 비우면 히어로 EXIF 촬영월로 자동
+    property var wallTitles: ["", "", ""]
+    function wallSetTitle(i, v) {
+        var a = win.wallTitles.slice(); a[i] = v; win.wallTitles = a
+        controller.setWallpaperText("title" + i, v)
+    }
+    // 마지막 작업 상태 복원(패널이 켜진 경우에만 — .env 플래그 off 면 불필요):
+    // 텍스트 + 슬롯 사진/오프셋 + 레이아웃 옵션. 사라진 파일은 빈 슬롯으로 복원된다
+    // (controller.wallpaperSlotPath 가 존재 확인).
+    Component.onCompleted: {
+        if (!controller.wallpaperEnabled) return
+        win.wallKicker = controller.wallpaperText("kicker") || "Photo Essay"
+        win.wallHeadline = controller.wallpaperText("headline")
+        win.wallDeck = controller.wallpaperText("deck")
+        win.wallPlace = controller.wallpaperText("place")
+        win.wallDate = controller.wallpaperText("date")
+        win.wallTitles = [controller.wallpaperText("title0"),
+                          controller.wallpaperText("title1"),
+                          controller.wallpaperText("title2")]
+        win.wallSlots = [controller.wallpaperSlotPath("slot0"),
+                         controller.wallpaperSlotPath("slot1"),
+                         controller.wallpaperSlotPath("slot2")]
+        function num(key, dflt, lo, hi) {
+            var v = parseFloat(controller.wallpaperText(key))
+            return isNaN(v) ? dflt : Math.max(lo, Math.min(hi, v))
+        }
+        win.wallOffsets = [num("off0", 0, -1, 1), num("off1", 0, -1, 1),
+                           num("off2", 0, -1, 1)]
+        win.wallLayout = num("layout", 0, 0, 1)
+        win.wallTypeface = num("typeface", 0, 0, 1)
+        win.wallHeroSide = num("heroSide", 1, 0, 1)
+        win.wallResIndex = num("resIndex", 0, 0, 2)
+        win.wallGap = num("gap", 18, 0, 60)
+        win.wallRefreshPresets()
+    }
     readonly property var wallResW: [3840, 2560, 1920]
     readonly property var wallResH: [2160, 1440, 1080]
     readonly property int wallFilled: {
@@ -1115,18 +1160,63 @@ ApplicationWindow {
     property string wallDestUrl: ""
     property string wallResult: ""                // 패널 내 결과 문구
 
+    // 설정 영구 저장(controller → 사용자 데이터 폴더의 wallpaper.json). 값은 문자열로 넘긴다.
+    function wallSave(key, v) { controller.setWallpaperText(key, String(v)) }
+    property var wallPresets: []                  // 프리셋 이름 목록(콤보 모델)
+    function wallRefreshPresets() { win.wallPresets = controller.wallpaperPresetNames() }
+    // 현재 패널 상태 → 프리셋 저장용 맵(사진 슬롯 포함)
+    function wallCurrentState() {
+        return {
+            "layout": win.wallLayout, "typeface": win.wallTypeface,
+            "heroSide": win.wallHeroSide, "resIndex": win.wallResIndex, "gap": win.wallGap,
+            "off0": win.wallOffsets[0], "off1": win.wallOffsets[1], "off2": win.wallOffsets[2],
+            "slot0": win.wallSlots[0], "slot1": win.wallSlots[1], "slot2": win.wallSlots[2],
+            "kicker": win.wallKicker, "headline": win.wallHeadline, "deck": win.wallDeck,
+            "place": win.wallPlace, "date": win.wallDate,
+            "title0": win.wallTitles[0], "title1": win.wallTitles[1], "title2": win.wallTitles[2]
+        }
+    }
+    // 맵 → 패널 상태 반영 + 같은 값을 '마지막 상태'로도 저장(재시작 시 그대로 복원)
+    function wallApplyState(m) {
+        function num(k, dflt, lo, hi) {
+            var v = parseFloat(m[k])
+            return isNaN(v) ? dflt : Math.max(lo, Math.min(hi, v))
+        }
+        function str(k) { return m[k] === undefined ? "" : String(m[k]) }
+        win.wallLayout = num("layout", win.wallLayout, 0, 1)
+        win.wallTypeface = num("typeface", win.wallTypeface, 0, 1)
+        win.wallHeroSide = num("heroSide", win.wallHeroSide, 0, 1)
+        win.wallResIndex = num("resIndex", win.wallResIndex, 0, 2)
+        win.wallGap = num("gap", win.wallGap, 0, 60)
+        win.wallOffsets = [num("off0", 0, -1, 1), num("off1", 0, -1, 1), num("off2", 0, -1, 1)]
+        win.wallSlots = [str("slot0"), str("slot1"), str("slot2")]
+        win.wallKicker = str("kicker"); win.wallHeadline = str("headline")
+        win.wallDeck = str("deck"); win.wallPlace = str("place"); win.wallDate = str("date")
+        win.wallTitles = [str("title0"), str("title1"), str("title2")]
+        var cur = win.wallCurrentState()
+        for (var k in cur) win.wallSave(k, cur[k])
+    }
     function wallAssign(slot) {
         var it = win.explorerFiles[fileListView.currentIndex]
         if (!it || it.isDir) return
         var a = win.wallSlots.slice(); a[slot] = it.path; win.wallSlots = a
+        win.wallSave("slot" + slot, it.path)
+        // 사진 제목은 그 사진의 저장된 캡션(Florence-2)으로 자동 채움 — 캡션이 없으면
+        // 비운다(이전 사진의 제목이 남아 엉뚱한 캡션이 인쇄되는 것 방지). 이후 수정 자유.
+        win.wallSetTitle(slot, controller.captionTitle(it.path))
     }
     function wallClearSlot(slot) {
         var a = win.wallSlots.slice(); a[slot] = ""; win.wallSlots = a
         var o = win.wallOffsets.slice(); o[slot] = 0.0; win.wallOffsets = o
+        win.wallSave("slot" + slot, "")
+        win.wallSave("off" + slot, 0)
+        win.wallSetTitle(slot, "")
     }
+    // 드래그 중(onMoved)엔 값만 갱신하고, 저장은 릴리스 때 1회(wallSaveOffset).
     function wallSetOffset(slot, v) {
         var o = win.wallOffsets.slice(); o[slot] = v; win.wallOffsets = o
     }
+    function wallSaveOffset(slot) { win.wallSave("off" + slot, win.wallOffsets[slot]) }
     // 패널 렌더 파라미터: 현재(슬롯 사진 복원 후) 편집값 + 긴변/비트깊이 오버라이드.
     // outEdge 는 속도 최적화일 뿐 — 합성이 항상 cover-fit 재스케일하므로 정확도와 무관.
     // 크롭된 사진은 크롭 후 세로가 캔버스 높이 이상 되도록 긴 변을 키워 업스케일 열화 방지.
@@ -1157,7 +1247,14 @@ ApplicationWindow {
             controller.wallpaperCompose(win.wallDestUrl, {
                 "canvasW": win.wallResW[win.wallResIndex],
                 "canvasH": win.wallResH[win.wallResIndex],
-                "gap": win.wallGap, "offsets": win.wallOffsets })
+                "layout": win.wallLayoutKeys[win.wallLayout],
+                "gap": win.wallGap, "offsets": win.wallOffsets,
+                // 잡지 레이아웃용(트립틱이면 Python 이 무시)
+                "typeface": win.wallTypeface === 0 ? "serif" : "sans",
+                "heroSide": win.wallHeroSide === 0 ? "left" : "right",
+                "kicker": win.wallKicker, "headline": win.wallHeadline,
+                "deck": win.wallDeck, "place": win.wallPlace, "date": win.wallDate,
+                "titles": win.wallTitles, "paths": win.wallSlots })
             return
         }
         win.wallPhase = 1; win.wallPhaseT0 = Date.now()
@@ -7194,30 +7291,161 @@ ApplicationWindow {
                             }
                             Label {
                                 Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                text: "Select a photo in the explorer (single click), then click a slot below. Each photo is developed with its own edits, then composed side by side."
+                                text: win.wallLayout === 0
+                                      ? "Select a photo in the explorer (single click), then click a slot below. Each photo is developed with its own edits, then composed side by side."
+                                      : "Magazine spread: the center slot becomes the full-bleed hero; left and right slots appear as small plates in the text column."
                                 color: "#888"; font.pixelSize: 11
                             }
 
-                            // ---- 목업 프리뷰: 합성 수학(compose_wallpaper) 미러 ----
+                            ComboBox {
+                                id: wallLayoutCombo
+                                Layout.fillWidth: true
+                                model: ["Triptych (3-up)", "Magazine spread"]
+                                currentIndex: win.wallLayout
+                                onActivated: { win.wallLayout = currentIndex; win.wallSave("layout", currentIndex) }
+                                // ⚠️사용자 조작 시 currentIndex 바인딩이 끊기므로 프리셋 적용을
+                                // 반영하려면 명시적 동기화가 필요(아래 입력 위젯들도 동일).
+                                Connections {
+                                    target: win
+                                    function onWallLayoutChanged() { wallLayoutCombo.currentIndex = win.wallLayout }
+                                }
+                                Connections {
+                                    target: wallLayoutCombo.popup
+                                    function onClosed() { viewport.forceActiveFocus() }
+                                }
+                            }
+
+                            // ---- 프리셋: 이름 붙인 설정 묶음(사진 슬롯·텍스트·옵션 전체) ----
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                ComboBox {
+                                    id: wallPresetCombo
+                                    Layout.fillWidth: true
+                                    model: win.wallPresets
+                                    displayText: currentIndex < 0 || win.wallPresets.length === 0
+                                                 ? "Presets…" : currentText
+                                    onActivated: {
+                                        var m = controller.loadWallpaperPreset(currentText)
+                                        if (m && m.layout !== undefined) {
+                                            win.wallApplyState(m)
+                                            win.wallResult = "Preset loaded: " + currentText
+                                        }
+                                    }
+                                    Connections {
+                                        target: wallPresetCombo.popup
+                                        function onClosed() { viewport.forceActiveFocus() }
+                                    }
+                                }
+                                // flat Button 글리프는 어두워 안 보임 → 흰 글리프 Rectangle 패턴
+                                Rectangle {
+                                    readonly property bool canDelete: wallPresetCombo.currentIndex >= 0
+                                                                      && win.wallPresets.length > 0
+                                    width: 28; height: 28; radius: 14
+                                    color: (canDelete && wallPresetDelHover.hovered) ? "#3a3f4b" : "transparent"
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: "✕"
+                                        color: parent.canDelete ? "#e6e6e6" : "#5a5a5a"
+                                        font.pixelSize: 13
+                                    }
+                                    HoverHandler { id: wallPresetDelHover; enabled: parent.canDelete }
+                                    ToolTip.visible: wallPresetDelHover.hovered
+                                    ToolTip.delay: 500
+                                    ToolTip.text: "Delete this preset"
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        enabled: parent.canDelete
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            var n = wallPresetCombo.currentText
+                                            controller.deleteWallpaperPreset(n)
+                                            win.wallRefreshPresets()
+                                            win.wallResult = "Preset deleted: " + n
+                                        }
+                                    }
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                TextField {
+                                    id: wallPresetName
+                                    Layout.fillWidth: true
+                                    placeholderText: "New preset name"
+                                    font.pixelSize: 12
+                                    onAccepted: wallPresetSave.clicked()
+                                }
+                                Button {
+                                    id: wallPresetSave
+                                    text: "Save"
+                                    enabled: wallPresetName.text.trim() !== ""
+                                    onClicked: {
+                                        var n = wallPresetName.text.trim()
+                                        controller.saveWallpaperPreset(n, win.wallCurrentState())
+                                        win.wallRefreshPresets()
+                                        wallPresetName.text = ""
+                                        win.wallResult = "Preset saved: " + n
+                                    }
+                                }
+                            }
+
+                            // ---- 목업 프리뷰: 합성 수학(compose_wallpaper / compose_magazine) 미러 ----
                             // 썸네일을 cover-fit 스케일 + 가로 오프셋으로 clip — 실제 합성과 동일 기하.
                             // (PreserveAspectCrop 은 크롭 위치 지정 불가라 Stretch+수동 배치 필수)
                             Rectangle {
                                 id: wallPreview
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: width * 9 / 16
-                                color: "black"; radius: 4; clip: true
+                                color: win.wallLayout === 0 ? "black" : "#f6f5f1"
+                                radius: 4; clip: true
                                 readonly property real gapPx: win.wallGap * width / win.wallResW[win.wallResIndex]
                                 readonly property real cellW: (width - 2 * gapPx) / 3
+                                // 잡지: 히어로(가운데 슬롯) 61% 풀블리드 + 텍스트 칼럼의 작은 사진 2장
+                                readonly property real heroW: width * 0.61
+                                readonly property real heroX: win.wallHeroSide === 0 ? 0 : width - heroW
+                                readonly property real colX: win.wallHeroSide === 0 ? heroW : 0
+
                                 Repeater {
                                     model: 3
                                     Item {
+                                        id: wallCell
                                         required property int index
-                                        x: index * (wallPreview.cellW + wallPreview.gapPx)
-                                        width: wallPreview.cellW
-                                        height: wallPreview.height
+                                        readonly property bool mag: win.wallLayout === 1
+                                        readonly property bool hero: index === 1
+                                        // 트립틱: 3등분 셀 / 잡지: 히어로는 풀블리드, 0·2 는 칼럼 안 작은 판
+                                        readonly property real smallW: (wallPreview.width - wallPreview.heroW) * 0.34
+                                        x: !mag ? index * (wallPreview.cellW + wallPreview.gapPx)
+                                                : (hero ? wallPreview.heroX
+                                                        : wallPreview.colX + wallPreview.width * 0.028
+                                                          + (index === 0 ? 0 : smallW + wallPreview.width * 0.012))
+                                        y: !mag || hero ? 0 : wallPreview.height * 0.56
+                                        width: !mag ? wallPreview.cellW : (hero ? wallPreview.heroW : smallW)
+                                        height: !mag || hero ? wallPreview.height : wallPreview.height * 0.36
                                         clip: true
+
+                                        // 빈 슬롯: 어디에 어떤 크기로 들어갈지 보이도록 자리 표시
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            visible: win.wallSlots[wallCell.index] === ""
+                                            color: win.wallLayout === 0 ? "#141414" : "#e7e5df"
+                                            border.width: 1
+                                            border.color: win.wallLayout === 0 ? "#4a4a4a" : "#c9c7c1"
+                                            Text {
+                                                anchors.centerIn: parent
+                                                width: parent.width - 8
+                                                horizontalAlignment: Text.AlignHCenter
+                                                elide: Text.ElideRight
+                                                text: (win.wallLayout === 0 ? ["Left", "Center", "Right"]
+                                                                            : ["Plate 01", "Hero", "Plate 03"])[wallCell.index]
+                                                color: win.wallLayout === 0 ? "#7a7a7a" : "#9a978f"
+                                                font.pixelSize: 10
+                                            }
+                                        }
+
                                         Image {
                                             readonly property string p: win.wallSlots[parent.index]
+                                            visible: p !== ""
                                             // wallthumb = 사이드카 지오메트리(크롭/회전/원근) 적용 썸네일
                                             // → 오프셋 조절 기준이 실제 export 프레이밍과 일치.
                                             // ?r= 은 편집 저장 시 URL 을 바꿔 QML 이미지 캐시 무효화.
@@ -7226,21 +7454,53 @@ ApplicationWindow {
                                             sourceSize.width: 256
                                             asynchronous: true
                                             fillMode: Image.Stretch
+                                            // 잡지의 작은 판은 크롭 0%(fit), 그 외는 cover
+                                            readonly property bool fitMode: parent.mag && !parent.hero
                                             readonly property real s: (implicitWidth > 0 && implicitHeight > 0)
-                                                ? Math.max(parent.height / implicitHeight, parent.width / implicitWidth) : 1
+                                                ? (fitMode ? Math.min(parent.height / implicitHeight, parent.width / implicitWidth)
+                                                           : Math.max(parent.height / implicitHeight, parent.width / implicitWidth))
+                                                : 1
                                             width: implicitWidth * s
                                             height: implicitHeight * s
-                                            // 합성과 동일: x0 = (nw-pw)*(off+1)/2, 세로는 중앙
-                                            x: -Math.max(0, (width - parent.width) * (win.wallOffsets[parent.index] + 1) / 2)
-                                            y: -Math.max(0, (height - parent.height) / 2)
+                                            // 합성과 동일: 오프셋은 실제로 잘리는 축(여유가 큰 쪽)에 적용
+                                            readonly property real slackX: Math.max(0, width - parent.width)
+                                            readonly property real slackY: Math.max(0, height - parent.height)
+                                            readonly property real t: (win.wallOffsets[parent.index] + 1) / 2
+                                            x: fitMode ? 0 : -(slackX >= slackY ? slackX * t : slackX / 2)
+                                            y: fitMode ? 0 : -(slackX >= slackY ? slackY / 2 : slackY * t)
                                         }
+                                    }
+                                }
+                                // 잡지 텍스트 칼럼 자리 표시(제목·리드문 위치 감만 잡는 플레이스홀더)
+                                Column {
+                                    visible: win.wallLayout === 1
+                                    x: wallPreview.colX + wallPreview.width * 0.028
+                                    y: wallPreview.height * 0.09
+                                    width: (wallPreview.width - wallPreview.heroW) * 0.72
+                                    spacing: 6
+                                    Text {
+                                        text: win.wallKicker
+                                        color: "#9c3b2e"; font.pixelSize: 7; font.bold: true
+                                    }
+                                    Text {
+                                        width: parent.width; wrapMode: Text.WordWrap
+                                        text: win.wallHeadline !== "" ? win.wallHeadline : "Headline"
+                                        color: "#16161a"; font.pixelSize: 16; font.bold: true
+                                        font.family: win.wallTypeface === 0 ? "Constantia" : "Franklin Gothic Medium Cond"
+                                    }
+                                    Text {
+                                        width: parent.width; wrapMode: Text.WordWrap
+                                        maximumLineCount: 3; elide: Text.ElideRight
+                                        text: win.wallDeck
+                                        color: "#76767c"; font.pixelSize: 8
                                     }
                                 }
                             }
 
-                            // ---- 슬롯 카드 x3 (좌/중/우) ----
+                            // ---- 슬롯 카드 x3 (트립틱=좌/중/우, 잡지=Plate 01/히어로/Plate 03) ----
                             Repeater {
-                                model: ["Left", "Center", "Right"]
+                                model: win.wallLayout === 0 ? ["Left", "Center", "Right"]
+                                                            : ["Plate 01", "Hero", "Plate 03"]
                                 Rectangle {
                                     required property string modelData
                                     required property int index
@@ -7333,11 +7593,34 @@ ApplicationWindow {
                                             }
                                         }
 
+                                        // 잡지 레이아웃의 사진 제목(인덱스 줄에 인쇄됨) — 사용자 입력
+                                        // 또는 캡션 자동 채우기/프리셋 로드로 갱신
+                                        TextField {
+                                            id: wallTitleField
+                                            Layout.fillWidth: true
+                                            visible: win.wallLayout === 1 && wallCard.slotPath !== ""
+                                            placeholderText: "Plate title (printed in the index)"
+                                            text: win.wallTitles[wallCard.index]
+                                            font.pixelSize: 12
+                                            onTextEdited: win.wallSetTitle(wallCard.index, text)
+                                            Connections {
+                                                target: win
+                                                function onWallTitlesChanged() {
+                                                    var v = win.wallTitles[wallCard.index]
+                                                    if (wallTitleField.text !== v) wallTitleField.text = v
+                                                }
+                                            }
+                                        }
+
                                         RowLayout {
                                             Layout.fillWidth: true
+                                            // 오프셋은 cover 크롭에만 의미 있음 — 잡지의 작은 판은 크롭 0%
                                             visible: wallCard.slotPath !== ""
+                                                     && (win.wallLayout === 0 || wallCard.index === 1)
                                             Label {
-                                                text: "Offset"
+                                                // 잡지 히어로는 세로 사진이면 위아래가 잘린다 → 축을 알려줌
+                                                text: (win.wallLayout === 1 && wallCard.index === 1)
+                                                      ? "Crop" : "Offset"
                                                 color: "#aaa"; font.pixelSize: 11
                                             }
                                             Slider {
@@ -7346,15 +7629,26 @@ ApplicationWindow {
                                                 from: -1.0; to: 1.0
                                                 value: win.wallOffsets[wallCard.index]
                                                 onMoved: win.wallSetOffset(wallCard.index, value)
+                                                Connections {
+                                                    target: win
+                                                    function onWallOffsetsChanged() {
+                                                        var v = win.wallOffsets[wallCard.index]
+                                                        if (wallOffSlider.value !== v) wallOffSlider.value = v
+                                                    }
+                                                }
                                                 property real defaultValue: 0.0
                                                 property real _lastPressMs: 0
                                                 property bool _pendingReset: false
                                                 onPressedChanged: {
-                                                    if (pressed) _pendingReset = win.isDblPress(wallOffSlider)
-                                                    else if (_pendingReset) {
+                                                    if (pressed) {
+                                                        _pendingReset = win.isDblPress(wallOffSlider)
+                                                        return
+                                                    }
+                                                    if (_pendingReset) {
                                                         _pendingReset = false
                                                         win.wallSetOffset(wallCard.index, defaultValue)
                                                     }
+                                                    win.wallSaveOffset(wallCard.index)
                                                 }
                                             }
                                         }
@@ -7364,22 +7658,162 @@ ApplicationWindow {
 
                             Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
 
-                            Label {
-                                text: "Gap:  " + win.wallGap + " px"
-                                color: "white"
-                            }
-                            Slider {
-                                id: wallGapSlider
+                            // ---- 잡지 레이아웃 전용: 텍스트(사용자 입력) + 서체/히어로 위치 ----
+                            ColumnLayout {
                                 Layout.fillWidth: true
-                                from: 0; to: 60; stepSize: 1
-                                value: win.wallGap
-                                onMoved: win.wallGap = Math.round(value)
-                                property real defaultValue: 18
-                                property real _lastPressMs: 0
-                                property bool _pendingReset: false
-                                onPressedChanged: {
-                                    if (pressed) _pendingReset = win.isDblPress(wallGapSlider)
-                                    else if (_pendingReset) { _pendingReset = false; win.wallGap = defaultValue }
+                                visible: win.wallLayout === 1
+                                spacing: 8
+                                Label {
+                                    text: "Text"
+                                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                                    font.capitalization: Font.AllUppercase
+                                }
+                                TextField {
+                                    id: wallKickerField
+                                    Layout.fillWidth: true
+                                    placeholderText: "Kicker (e.g. Photo Essay)"
+                                    text: win.wallKicker; font.pixelSize: 12
+                                    onTextEdited: { win.wallKicker = text; controller.setWallpaperText("kicker", text) }
+                                    Connections {
+                                        target: win
+                                        function onWallKickerChanged() {
+                                            if (wallKickerField.text !== win.wallKicker) wallKickerField.text = win.wallKicker
+                                        }
+                                    }
+                                }
+                                TextField {
+                                    id: wallHeadlineField
+                                    Layout.fillWidth: true
+                                    placeholderText: "Headline"
+                                    text: win.wallHeadline; font.pixelSize: 12
+                                    onTextEdited: { win.wallHeadline = text; controller.setWallpaperText("headline", text) }
+                                    Connections {
+                                        target: win
+                                        function onWallHeadlineChanged() {
+                                            if (wallHeadlineField.text !== win.wallHeadline) wallHeadlineField.text = win.wallHeadline
+                                        }
+                                    }
+                                }
+                                ScrollView {
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 84
+                                    TextArea {
+                                        id: wallDeckField
+                                        placeholderText: "Deck (lead paragraph)"
+                                        text: win.wallDeck; font.pixelSize: 12
+                                        wrapMode: TextArea.Wrap
+                                        onTextChanged: {
+                                            if (text === win.wallDeck) return
+                                            win.wallDeck = text; controller.setWallpaperText("deck", text)
+                                        }
+                                        Connections {
+                                            target: win
+                                            function onWallDeckChanged() {
+                                                if (wallDeckField.text !== win.wallDeck) wallDeckField.text = win.wallDeck
+                                            }
+                                        }
+                                    }
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 8
+                                    TextField {
+                                        id: wallPlaceField
+                                        Layout.fillWidth: true
+                                        placeholderText: "Place"
+                                        text: win.wallPlace; font.pixelSize: 12
+                                        onTextEdited: { win.wallPlace = text; controller.setWallpaperText("place", text) }
+                                        Connections {
+                                            target: win
+                                            function onWallPlaceChanged() {
+                                                if (wallPlaceField.text !== win.wallPlace) wallPlaceField.text = win.wallPlace
+                                            }
+                                        }
+                                    }
+                                    TextField {
+                                        id: wallDateField
+                                        Layout.fillWidth: true
+                                        placeholderText: "Date (auto from EXIF)"
+                                        text: win.wallDate; font.pixelSize: 12
+                                        onTextEdited: { win.wallDate = text; controller.setWallpaperText("date", text) }
+                                        Connections {
+                                            target: win
+                                            function onWallDateChanged() {
+                                                if (wallDateField.text !== win.wallDate) wallDateField.text = win.wallDate
+                                            }
+                                        }
+                                    }
+                                }
+                                Label {
+                                    Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                    text: "Plate titles are filled from each photo's caption when you assign it; edit them freely. Shooting info comes from EXIF — leave the date empty to use the hero photo's capture month."
+                                    color: "#888"; font.pixelSize: 11
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 8
+                                    ComboBox {
+                                        id: wallFaceCombo
+                                        Layout.fillWidth: true
+                                        model: ["Serif", "Sans"]
+                                        currentIndex: win.wallTypeface
+                                        onActivated: { win.wallTypeface = currentIndex; win.wallSave("typeface", currentIndex) }
+                                        Connections {
+                                            target: win
+                                            function onWallTypefaceChanged() { wallFaceCombo.currentIndex = win.wallTypeface }
+                                        }
+                                        Connections {
+                                            target: wallFaceCombo.popup
+                                            function onClosed() { viewport.forceActiveFocus() }
+                                        }
+                                    }
+                                    ComboBox {
+                                        id: wallHeroCombo
+                                        Layout.fillWidth: true
+                                        model: ["Hero left", "Hero right"]
+                                        currentIndex: win.wallHeroSide
+                                        onActivated: { win.wallHeroSide = currentIndex; win.wallSave("heroSide", currentIndex) }
+                                        Connections {
+                                            target: win
+                                            function onWallHeroSideChanged() { wallHeroCombo.currentIndex = win.wallHeroSide }
+                                        }
+                                        Connections {
+                                            target: wallHeroCombo.popup
+                                            function onClosed() { viewport.forceActiveFocus() }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // ---- 트립틱 전용: 갭 ----
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                visible: win.wallLayout === 0
+                                spacing: 8
+                                Label {
+                                    text: "Gap:  " + win.wallGap + " px"
+                                    color: "white"
+                                }
+                                Slider {
+                                    id: wallGapSlider
+                                    Layout.fillWidth: true
+                                    from: 0; to: 60; stepSize: 1
+                                    value: win.wallGap
+                                    onMoved: win.wallGap = Math.round(value)
+                                    Connections {
+                                        target: win
+                                        function onWallGapChanged() {
+                                            if (wallGapSlider.value !== win.wallGap) wallGapSlider.value = win.wallGap
+                                        }
+                                    }
+                                    property real defaultValue: 18
+                                    property real _lastPressMs: 0
+                                    property bool _pendingReset: false
+                                    onPressedChanged: {
+                                        if (pressed) { _pendingReset = win.isDblPress(wallGapSlider); return }
+                                        if (_pendingReset) { _pendingReset = false; win.wallGap = defaultValue }
+                                        win.wallSave("gap", win.wallGap)      // 드래그 끝난 뒤 1회 저장
+                                    }
                                 }
                             }
 
@@ -7392,7 +7826,11 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 model: ["3840 × 2160 (4K)", "2560 × 1440 (QHD)", "1920 × 1080 (FHD)"]
                                 currentIndex: win.wallResIndex
-                                onActivated: win.wallResIndex = currentIndex
+                                onActivated: { win.wallResIndex = currentIndex; win.wallSave("resIndex", currentIndex) }
+                                Connections {
+                                    target: win
+                                    function onWallResIndexChanged() { wallResCombo.currentIndex = win.wallResIndex }
+                                }
                                 Connections {
                                     target: wallResCombo.popup
                                     function onClosed() { viewport.forceActiveFocus() }

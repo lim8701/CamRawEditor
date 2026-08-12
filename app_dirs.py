@@ -39,6 +39,14 @@ def _user_data_dir() -> str:
 
 MODELS_DIR = os.path.join(_user_data_dir(), "models")
 
+
+def user_data_path(name: str) -> str:
+    """사용자 데이터 디렉터리 안의 파일 경로(모델 외 설정 파일 등). 상위 폴더는 생성한다.
+    OS 별 위치는 모듈 상단 주석 참조 — 레지스트리 대신 이 경로에 JSON 으로 남긴다."""
+    d = _user_data_dir()
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, name)
+
 _copy_lock = threading.Lock()
 
 

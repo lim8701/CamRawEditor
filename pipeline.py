@@ -16,7 +16,7 @@ import threading
 
 import numpy as np
 import rawpy
-from PySide6.QtCore import QBuffer, QIODevice
+from PySide6.QtCore import QBuffer, QIODevice, Qt
 from PySide6.QtGui import QImage
 from scipy.ndimage import affine_transform, gaussian_filter, map_coordinates, zoom
 
@@ -995,4 +995,235 @@ def compose_wallpaper(panels, canvas_w, canvas_h, gap, offsets):
         y0 = (nh - canvas_h) // 2
         canvas[:, x:x + pw] = arr[y0:y0 + canvas_h, x0:x0 + pw]
         x += pw + gap
+    return canvas
+
+
+# ---------------------------------------------------------------- 잡지 레이아웃
+# 에디토리얼 스프레드: 한쪽은 히어로 사진 풀블리드, 반대쪽은 종이 면에 타이포그래피
+# (키커/헤드라인/리드문/인덱스) + 작은 사진 2장. 텍스트 렌더는 앱의 기존 방식과 같은
+# Qt QPainter(date_stamp 와 동일) — QImage 대상 페인팅이라 워커 스레드에서 안전.
+MAG_PAPER = (246, 245, 241)
+MAG_INK = (22, 22, 26)
+MAG_GRAY = (118, 118, 124)
+MAG_HAIR = (205, 203, 197)
+MAG_RUST = (156, 59, 46)
+# (헤드라인 후보, 본문 후보, 강조색, 헤드라인 자간, 대문자화, 줄높이 계수)
+MAG_FACES = {
+    "serif": (["Constantia", "Cambria", "Georgia", "Times New Roman"],
+              ["Constantia", "Cambria", "Georgia", "Times New Roman"],
+              MAG_INK, 0.0, False, 1.12),
+    "sans": (["Franklin Gothic Medium Cond", "Arial Narrow", "Bahnschrift SemiCondensed",
+              "Segoe UI"],
+             ["Arial Narrow", "Bahnschrift Condensed", "Segoe UI"],
+             MAG_RUST, 0.015, True, 1.08),
+}
+
+
+def _pick_family(candidates):
+    from PySide6.QtGui import QFontDatabase
+    have = set(QFontDatabase.families())
+    for c in candidates:
+        if c in have:
+            return c
+    return candidates[-1]
+
+
+def _qfont(family, px, bold=False, italic=False):
+    from PySide6.QtGui import QFont
+    f = QFont(family)
+    f.setPixelSize(max(1, int(round(px))))
+    f.setBold(bold)
+    f.setItalic(italic)
+    return f
+
+
+def _np_to_qimage(arr):
+    arr = np.ascontiguousarray(arr)
+    h, w = arr.shape[:2]
+    return QImage(arr.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+
+
+def _draw_text(p, x, y_top, s, font, color, tracking_px=0.0, upper=False):
+    """좌상단 기준 텍스트(자간 지원). 반환=그린 폭."""
+    from PySide6.QtGui import QColor, QFontMetricsF
+    if upper:
+        s = s.upper()
+    p.setFont(font)
+    p.setPen(QColor(*color))
+    fm = QFontMetricsF(font)
+    base = y_top + fm.ascent()
+    if tracking_px <= 0:
+        p.drawText(int(round(x)), int(round(base)), s)
+        return fm.horizontalAdvance(s)
+    cx = float(x)
+    for ch in s:
+        p.drawText(int(round(cx)), int(round(base)), ch)
+        cx += fm.horizontalAdvance(ch) + tracking_px
+    return cx - x
+
+
+def _wrap(font, s, max_w):
+    from PySide6.QtGui import QFontMetricsF
+    fm = QFontMetricsF(font)
+    lines, cur = [], ""
+    for word in s.split():
+        t = (cur + " " + word).strip()
+        if fm.horizontalAdvance(t) <= max_w:
+            cur = t
+        else:
+            if cur:
+                lines.append(cur)
+            cur = word
+    if cur:
+        lines.append(cur)
+    return lines or [""]
+
+
+def _text_w(font, s, tracking_px=0.0, upper=False):
+    from PySide6.QtGui import QFontMetricsF
+    if upper:
+        s = s.upper()
+    fm = QFontMetricsF(font)
+    return fm.horizontalAdvance(s) + tracking_px * max(0, len(s) - 1)
+
+
+def compose_magazine(panels, canvas_w, canvas_h, opts):
+    """에디토리얼 스프레드 합성 -> QImage.
+
+    panels: [좌, 중(히어로), 우] uint8 (H,W,3). 히어로는 cover 크롭, 작은 2장은 크롭 0%.
+    opts: heroSide('left'|'right'), typeface('serif'|'sans'), kicker/headline/deck/place,
+          titles[3], shots[3](EXIF 요약 문자열), indexLabel, heroFrac(0.5~0.75).
+    좌표는 3840x2160 기준으로 잡고 s=canvas_h/2160 로 스케일 — 4K/QHD/FHD 동일 비율."""
+    from PySide6.QtGui import QColor, QPainter
+
+    s = canvas_h / 2160.0
+
+    def S(v):
+        return int(round(v * s))
+
+    face = MAG_FACES.get(str(opts.get("typeface", "serif")), MAG_FACES["serif"])
+    head_fams, body_fams, accent, track_frac, upper, lh = face
+    fam_h = _pick_family(head_fams)
+    fam_b = _pick_family(body_fams)
+    hero_left = str(opts.get("heroSide", "right")) == "left"
+    hero_frac = float(opts.get("heroFrac", 0.61))
+    hero_w = max(1, int(round(canvas_w * hero_frac)))
+    col_w_total = canvas_w - hero_w                      # 텍스트 면 전체 폭
+
+    canvas = QImage(canvas_w, canvas_h, QImage.Format.Format_RGB888)
+    canvas.fill(QColor(*MAG_PAPER))
+    p = QPainter(canvas)
+    try:
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
+        # ── 히어로: cover 크롭 후 풀블리드. 오프셋 슬라이더(-1..+1)는 **실제로 잘리는 축**에
+        # 적용한다 — 세로 사진이 가로형 히어로 칸에 들어가면 폭은 딱 맞고 위아래가 잘리므로
+        # 가로 오프셋은 움직일 여지가 0이다(슬라이더가 안 먹는 것처럼 보였던 원인).
+        hero = _np_to_qimage(panels[1]).scaled(
+            hero_w, canvas_h, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation)
+        try:
+            off = float(list(opts.get("offsets", [0.0, 0.0, 0.0]))[1])
+        except (IndexError, TypeError, ValueError):
+            off = 0.0
+        slack_x = max(0, hero.width() - hero_w)
+        slack_y = max(0, hero.height() - canvas_h)
+        t = (off + 1.0) * 0.5                       # -1..+1 → 0..1 (0=위/왼쪽 끝)
+        if slack_x >= slack_y:
+            hx, hy = int(round(slack_x * t)), slack_y // 2
+        else:
+            hx, hy = slack_x // 2, int(round(slack_y * t))
+        p.drawImage(0 if hero_left else canvas_w - hero_w, 0,
+                    hero.copy(hx, hy, hero_w, canvas_h))
+
+        # ── 텍스트 칼럼 기준선
+        m_out = S(170)                                    # 바깥 여백
+        m_in = S(190)                                     # 히어로 쪽 여백
+        cx = (hero_w + m_out) if hero_left else m_out
+        cw = col_w_total - m_out - m_in
+        tr = track_frac * S(130)                          # 헤드라인 자간(px)
+
+        # 키커
+        f_kick = _qfont(fam_b, S(30), bold=True)
+        y = S(170)
+        _draw_text(p, cx, y, str(opts.get("kicker", "")), f_kick, accent, S(6), True)
+
+        # 헤드라인
+        f_head = _qfont(fam_h, S(130), bold=True)
+        y = S(258)
+        for ln in _wrap(f_head, str(opts.get("headline", "")), cw):
+            _draw_text(p, cx, y, ln, f_head, MAG_INK, tr, upper)
+            y += S(130) * lh
+        y = int(y)
+        p.fillRect(cx, y + S(34), S(130), max(1, S(3)), QColor(*MAG_INK))
+
+        # 리드문
+        f_deck = _qfont(fam_b, S(36))
+        y += S(96)
+        for ln in _wrap(f_deck, str(opts.get("deck", "")), cw):
+            _draw_text(p, cx, y, ln, f_deck, MAG_GRAY)
+            y += S(48)
+
+        # 인덱스(번호 · 제목 · 촬영정보) — 빈 공간을 채우는 지면 장치
+        titles = list(opts.get("titles", ["", "", ""]))[:3]
+        shots = list(opts.get("shots", ["", "", ""]))[:3]
+        if any(t for t in titles) or any(t for t in shots):
+            y += S(74)
+            _draw_text(p, cx, y, str(opts.get("indexLabel", "In this frame")),
+                       _qfont(fam_b, S(26), bold=True), MAG_GRAY, S(5), True)
+            y += S(52)
+            f_num = _qfont(fam_h, S(40), bold=True)
+            f_tit = _qfont(fam_b, S(34))
+            f_shot = _qfont(fam_b, S(25))
+            for i in range(3):
+                p.fillRect(cx, y, cw, 1, QColor(*MAG_HAIR))
+                _draw_text(p, cx, y + S(22), f"0{i + 1}", f_num, accent)
+                _draw_text(p, cx + S(90), y + S(24), titles[i] if i < len(titles) else "",
+                           f_tit, MAG_INK)
+                sh = shots[i] if i < len(shots) else ""
+                if sh:
+                    _draw_text(p, cx + cw - _text_w(f_shot, sh), y + S(34), sh,
+                               f_shot, MAG_GRAY)
+                y += S(92)
+            p.fillRect(cx, y, cw, 1, QColor(*MAG_HAIR))
+
+        # ── 작은 사진 2장(크롭 0%) + 캡션.
+        # 헤드라인 줄 수(서체·문장 길이)에 따라 위 블록 높이가 변하므로 남은 높이에
+        # 맞춰 크기를 정한다(고정 크기면 겹침).
+        cap_band = S(66)
+        gap = S(40)
+        avail_h = (canvas_h - S(170) - cap_band) - (y + S(60))
+        smalls = [_np_to_qimage(panels[0]), _np_to_qimage(panels[2])]
+        if avail_h > S(120):
+            ws = [avail_h * im.width() / im.height() for im in smalls]
+            hh = avail_h
+            if sum(ws) + gap > cw:                       # 폭이 넘치면 폭 기준 축소
+                hh = avail_h * (cw - gap) / sum(ws)
+            sy = canvas_h - S(170) - cap_band - int(round(hh))
+            sx = cx
+            for i, im in enumerate(smalls):
+                sw = max(1, int(round(hh * im.width() / im.height())))
+                sc = im.scaled(sw, int(round(hh)), Qt.AspectRatioMode.IgnoreAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation)
+                p.drawImage(sx, sy, sc)
+                lab = f"Plate 0{1 if i == 0 else 3}"
+                _draw_text(p, sx, sy + sc.height() + S(18), lab,
+                           _qfont(fam_b, S(23), bold=True), accent, S(3), True)
+                sub = [str(opts.get("place", "")), str(opts.get("date", ""))][i]
+                if sub:
+                    _draw_text(p, sx + S(200), sy + sc.height() + S(20), sub,
+                               _qfont(fam_b, S(23)), MAG_GRAY)
+                sx += sc.width() + gap
+
+        # ── 히어로 위 캡션(흰 글씨, 사진 하단 바깥쪽 모서리)
+        cap = str(opts.get("heroCaption", "")).strip()
+        if cap:
+            f_cap = _qfont(fam_b, S(27))
+            cwid = _text_w(f_cap, cap)
+            capx = (hero_w - S(120) - cwid) if hero_left else (canvas_w - S(120) - cwid)
+            _draw_text(p, capx, canvas_h - S(108), cap, f_cap, (255, 255, 255))
+    finally:
+        p.end()
     return canvas

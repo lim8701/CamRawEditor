@@ -104,6 +104,13 @@ def _set_keep_awake(on: bool) -> None:
     except Exception:
         pass                            # 실패해도 기능 자체는 무영향(슬립만 못 막음)
 
+def wallpaper_prefs_path() -> str:
+    """배경화면 패널 설정(잡지 텍스트·슬롯·옵션) 저장 파일 — OS 공통 사용자 데이터 폴더.
+    앱 폴더가 아니라 여기 두는 이유는 models 와 동일(설치 폴더 무쓰기·업데이트에도 보존).
+    app_dirs 는 파일 상단 규약대로 지연 임포트."""
+    import app_dirs
+    return app_dirs.user_data_path("wallpaper.json")
+
 # 업데이트 확인: GitHub 릴리스 목록(공개 repo, 무인증 60회/시간 — 시작 시 1회면 충분)
 _RELEASES_API = "https://api.github.com/repos/lim8701/FilmRawstery/releases"
 
@@ -1084,6 +1091,12 @@ class Controller(QObject):
         self._rescan_timer.timeout.connect(self._do_auto_rescan)
         # 마지막 탐색 폴더 영구 저장(재시작 시 복원 + 폴더 대화상자 시작 위치)
         self._settings = QSettings("FilmRawstery", "FilmRawstery")
+        # 배경화면 설정은 레지스트리가 아니라 사용자 데이터 폴더의 JSON(_wall_prefs).
+        self._wall_prefs_cache = None
+        self._wall_prefs_timer = QTimer(self)
+        self._wall_prefs_timer.setSingleShot(True)
+        self._wall_prefs_timer.setInterval(500)   # 타이핑 중 연속 저장 합치기
+        self._wall_prefs_timer.timeout.connect(self._flush_wall_prefs)
 
     def _update_watcher(self, folder: str) -> None:
         old = self._watcher.directories()
@@ -1945,7 +1958,9 @@ class Controller(QObject):
 
     @Slot(QUrl, "QVariantMap")
     def wallpaperCompose(self, file_url: QUrl, opts) -> None:  # noqa: N802 (QML 슬롯)
-        """opts: canvasW, canvasH, gap, offsets[3]. 3패널 합성 → 저장(스레드)."""
+        """opts: canvasW, canvasH, layout('triptych'|'magazine'), 그리고
+        트립틱=gap/offsets[3], 잡지=heroSide/typeface/kicker/headline/deck/titles[3]/
+        place/date/paths[3]. 3패널 합성 → 저장(스레드)."""
         if self._exporting:
             return
         panels = list(self._wall_panels)
@@ -1963,13 +1978,47 @@ class Controller(QObject):
         threading.Thread(target=self._do_wall_compose, args=(path, panels, o),
                          daemon=True).start()
 
+    @staticmethod
+    def _shot_summary(path: str) -> tuple:
+        """(촬영정보 1줄, 'September 2023' 형태 날짜) — 잡지 레이아웃 캡션용."""
+        try:
+            fields, _ = read_shooting_info(path)
+        except Exception:
+            return "", ""
+        d = {f["label"]: f["value"] for f in fields}
+        line = "  ·  ".join(v for v in (d.get("Focal Length"), d.get("Aperture"),
+                                        d.get("Shutter"), d.get("ISO")) if v)
+        month = ""
+        raw = d.get("Date", "")
+        try:
+            from datetime import datetime
+            month = datetime.strptime(raw[:10], "%Y-%m-%d").strftime("%B %Y")
+        except Exception:
+            month = raw[:7].replace("-", ". ")
+        return line, month
+
     def _do_wall_compose(self, path: str, panels, o: dict) -> None:
         try:
             import pipeline
-            canvas = pipeline.compose_wallpaper(
-                panels, int(o["canvasW"]), int(o["canvasH"]), int(o.get("gap", 18)),
-                [float(v) for v in o.get("offsets", [0.0, 0.0, 0.0])])
-            ok = pipeline.save_image(canvas, path)
+            if str(o.get("layout", "triptych")) == "magazine":
+                paths = [str(x) for x in o.get("paths", ["", "", ""])]
+                shots = [self._shot_summary(p)[0] for p in paths]
+                mo = dict(o)
+                if not str(mo.get("date", "")).strip():     # 비어 있으면 히어로 EXIF 로 채움
+                    mo["date"] = self._shot_summary(paths[1])[1] if len(paths) > 1 else ""
+                mo["shots"] = shots
+                titles = [str(t) for t in mo.get("titles", ["", "", ""])]
+                cap_bits = [t for t in ("02", titles[1] if len(titles) > 1 else "",
+                                        shots[1] if len(shots) > 1 else "") if t]
+                mo["heroCaption"] = "   ·   ".join(cap_bits)
+                img = pipeline.compose_magazine(panels, int(o["canvasW"]),
+                                                int(o["canvasH"]), mo)
+                ok = bool(img.save(path))
+            else:
+                canvas = pipeline.compose_wallpaper(
+                    panels, int(o["canvasW"]), int(o["canvasH"]), int(o.get("gap", 18)),
+                    [float(v) for v in o.get("offsets", [0.0, 0.0, 0.0])])
+                ok = pipeline.save_image(canvas, path)
             msg = f"Saved: {path}" if ok else f"Save failed: {path}"
         except Exception as exc:
             msg = f"Failed: {exc}"
@@ -1978,6 +2027,141 @@ class Controller(QObject):
             self._exporting = False
             self._keepAwakeSig.emit(False)
         print(f"[wallpaper] {msg}")
+
+    # ---------- 배경화면 설정 영구 저장 (사용자 데이터 폴더의 JSON) ----------
+    # 잡지 텍스트·슬롯 사진 경로·오프셋·레이아웃 옵션을 매번 다시 지정하지 않도록 보존한다.
+    # 레지스트리(QSettings) 대신 **OS 공통 사용자 데이터 폴더의 JSON**(app_dirs.user_data_path)
+    # 에 남긴다 — Win/mac/Linux 동일 방식, 백업·이전·삭제가 쉽다. 값은 전부 문자열.
+    def _wall_prefs(self) -> dict:
+        if self._wall_prefs_cache is None:
+            data = {}
+            try:
+                p = Path(wallpaper_prefs_path())
+                if p.is_file():
+                    with open(p, encoding="utf-8") as f:
+                        raw = json.load(f)
+                    if isinstance(raw, dict):
+                        # 값은 문자열로 통일하되 "presets"(이름→설정 dict)만 중첩 유지
+                        data = {str(k): (v if k == "presets" and isinstance(v, dict)
+                                         else str(v))
+                                for k, v in raw.items()}
+            except Exception:
+                data = {}                      # 손상 시 기본값으로 시작(다음 저장에 덮어씀)
+            if not data:
+                data = self._migrate_wall_prefs_from_registry()
+            self._wall_prefs_cache = data
+        return self._wall_prefs_cache
+
+    def _migrate_wall_prefs_from_registry(self) -> dict:
+        """구버전(레지스트리 QSettings) 값 1회 이관 후 그 그룹을 제거. 없으면 빈 dict."""
+        data = {}
+        try:
+            self._settings.beginGroup("wallpaper")
+            for k in self._settings.childKeys():
+                v = self._settings.value(k, "")
+                if v not in (None, ""):
+                    data[str(k)] = str(v)
+            self._settings.endGroup()
+            if data:
+                _atomic_write_json(wallpaper_prefs_path(), data)
+                self._settings.remove("wallpaper")   # 레지스트리에는 남기지 않는다
+                self._settings.sync()
+                print(f"[wallpaper] 설정 {len(data)}개를 {wallpaper_prefs_path()} 로 이관")
+        except Exception as exc:
+            print(f"[wallpaper] 레지스트리 이관 실패(무시): {exc}")
+        return data
+
+    def _flush_wall_prefs(self) -> None:
+        try:
+            _atomic_write_json(wallpaper_prefs_path(), self._wall_prefs())
+        except Exception as exc:
+            print(f"[wallpaper] 설정 저장 실패: {exc}")
+
+    @Slot(str, result=str)
+    def wallpaperText(self, key: str) -> str:  # noqa: N802 (QML 슬롯)
+        return self._wall_prefs().get(key, "")
+
+    @Slot(str, result=str)
+    def wallpaperSlotPath(self, key: str) -> str:  # noqa: N802 (QML 슬롯)
+        """저장된 슬롯 경로 — 파일이 사라졌으면 빈 문자열(빈 슬롯으로 복원)."""
+        p = self._wall_prefs().get(key, "")
+        return p if p and Path(p).is_file() else ""
+
+    @Slot(str, str)
+    def setWallpaperText(self, key: str, value: str) -> None:  # noqa: N802 (QML 슬롯)
+        # 타이핑마다 디스크를 때리지 않도록 500ms 디바운스 후 한 번에 기록.
+        self._wall_prefs()[key] = str(value)
+        self._wall_prefs_timer.start()
+
+    # ---------- 배경화면 프리셋(이름 붙인 설정 묶음) ----------
+    # 같은 wallpaper.json 의 "presets" 아래에 이름→설정 dict 로 저장. 사진 슬롯 경로까지
+    # 포함해 구성 전체를 되살린다(불러올 때 사라진 파일은 빈 슬롯으로).
+    _WALL_PRESET_KEYS = (
+        "layout", "typeface", "heroSide", "resIndex", "gap",
+        "off0", "off1", "off2", "slot0", "slot1", "slot2",
+        "kicker", "headline", "deck", "place", "date", "title0", "title1", "title2")
+
+    def _wall_presets(self) -> dict:
+        pres = self._wall_prefs().get("presets")
+        if not isinstance(pres, dict):
+            pres = {}
+            self._wall_prefs()["presets"] = pres
+        return pres
+
+    @Slot(result="QStringList")
+    def wallpaperPresetNames(self) -> list:  # noqa: N802 (QML 슬롯)
+        return sorted(self._wall_presets().keys(), key=str.lower)
+
+    @Slot(str, "QVariantMap")
+    def saveWallpaperPreset(self, name: str, values) -> None:  # noqa: N802 (QML 슬롯)
+        name = str(name).strip()
+        if not name:
+            return
+        self._wall_presets()[name] = {k: str(values[k]) for k in values
+                                      if k in self._WALL_PRESET_KEYS}
+        self._flush_wall_prefs()          # 프리셋은 디바운스 없이 즉시 기록
+        print(f"[wallpaper] 프리셋 저장: {name}")
+
+    @Slot(str, result="QVariantMap")
+    def loadWallpaperPreset(self, name: str) -> dict:  # noqa: N802 (QML 슬롯)
+        p = self._wall_presets().get(str(name))
+        if not isinstance(p, dict):
+            return {}
+        out = {k: str(v) for k, v in p.items() if k in self._WALL_PRESET_KEYS}
+        for k in ("slot0", "slot1", "slot2"):        # 사라진 사진은 빈 슬롯으로
+            if out.get(k) and not Path(out[k]).is_file():
+                out[k] = ""
+        return out
+
+    @Slot(str)
+    def deleteWallpaperPreset(self, name: str) -> None:  # noqa: N802 (QML 슬롯)
+        if self._wall_presets().pop(str(name), None) is not None:
+            self._flush_wall_prefs()
+
+    @Slot(str, result=str)
+    def captionTitle(self, path: str) -> str:  # noqa: N802 (QML 슬롯)
+        """임의 파일의 저장된 캡션 → 제목용 한 줄(첫 글자 대문자, 끝 마침표 제거).
+        짧은 캡션 우선(가장 정확). 캡션이 없으면 빈 문자열.
+        ⚠️다른 폴더면 캐시를 갈아끼우지 않고 그 폴더 사이드카만 직접 읽는다(탐색기 검색/
+        인덱스 카운터가 남의 폴더 캡션으로 오염되는 것 방지)."""
+        p = Path(path)
+        folder = str(p.parent)
+        with self._caption_lock:
+            if folder == self._captions_folder:
+                entry = self._captions.get(p.name)
+            else:
+                entry = self._load_captions(folder).get(p.name)
+        if not isinstance(entry, dict):
+            return ""
+        text = ""
+        for k in self._CAPTION_KEYS:                 # short → detailed → paragraph
+            if entry.get(k):
+                text = str(entry[k])
+                break
+        text = text.strip().split("\n")[0].strip()
+        if text.endswith("."):
+            text = text[:-1]
+        return text[:1].upper() + text[1:] if text else ""
 
     @Slot(int, int, result=QUrl)
     def suggestedWallpaperUrl(self, w: int, h: int) -> QUrl:  # noqa: N802 (QML 슬롯)
@@ -4328,6 +4512,8 @@ def main() -> int:
     app.installEventFilter(_ClickOutsideFocusFilter(_stamp_field, controller))
     _close_splash_when_ready(root, splash)         # 메인 창 첫 프레임에 스플래시 닫기
     _serve_single_instance(si_server, root, controller)   # 재실행 → 이 창 활성화(+경로 열기)
+    # 배경화면 설정은 500ms 디바운스로 저장하므로, 직후 종료 시 미기록분이 남지 않게 flush.
+    app.aboutToQuit.connect(controller._flush_wall_prefs)
 
     # 디스플레이 색관리(프리뷰 전용): 현재 모니터 ICC 로 CM LUT 생성 + 모니터 전환 시 재생성.
     def _refresh_cm(*_):
