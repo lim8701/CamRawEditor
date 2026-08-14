@@ -1098,17 +1098,24 @@ ApplicationWindow {
     property var wallOffsets: [0.0, 0.0, 0.0]     // 가로 크롭 오프셋(-1 왼쪽끝..+1 오른쪽끝)
     property int wallGap: 18                      // 패널 사이 검정 갭(px, 캔버스 기준)
     property int wallResIndex: 0
-    // 레이아웃: 0=트립틱(3분할), 1=잡지 스프레드(히어로 풀블리드 + 타이포 칼럼)
+    // 레이아웃: 0=트립틱(3분할), 1=잡지 스프레드(메인 사진 풀블리드 + 타이포 칼럼)
     property int wallLayout: 0
     readonly property var wallLayoutKeys: ["triptych", "magazine"]
-    property int wallTypeface: 0                  // 0=Serif, 1=Sans
-    property int wallHeroSide: 1                  // 0=Left, 1=Right
+    property int wallTypeface: 0                  // 0=Serif, 1=Sans, 2=Serif(KR), 3=Sans(KR)
+    readonly property var wallTypefaceKeys: ["serif", "sans", "serif_ko", "sans_ko"]
+    property int wallMainSide: 1                  // 0=Left, 1=Right
+    // 화면에서 보이는 좌→우 슬롯 순서(compose_magazine 과 동일 규칙). 트립틱은 슬롯 순서가
+    // 곧 좌→우이고, 잡지는 메인 사진(가운데 슬롯)이 좌/우 끝에 놓이므로 순서가 달라진다.
+    // 패널의 슬롯 카드도 이 순서로 나열해 번호(Frame 0N)와 위치가 어긋나지 않게 한다.
+    readonly property var wallSlotOrder: win.wallLayout === 0 ? [0, 1, 2]
+                                         : (win.wallMainSide === 0 ? [1, 0, 2] : [0, 2, 1])
+    function wallFrameNo(slot) { return win.wallSlotOrder.indexOf(slot) + 1 }
     // 잡지 레이아웃 텍스트(사용자 입력) — controller 가 QSettings 에 영구 저장
     property string wallKicker: ""
     property string wallHeadline: ""
     property string wallDeck: ""
     property string wallPlace: ""
-    property string wallDate: ""                  // 비우면 히어로 EXIF 촬영월로 자동
+    property string wallDate: ""                  // 비우면 메인 사진 EXIF 촬영월로 자동
     property var wallTitles: ["", "", ""]
     function wallSetTitle(i, v) {
         var a = win.wallTitles.slice(); a[i] = v; win.wallTitles = a
@@ -1137,14 +1144,20 @@ ApplicationWindow {
         win.wallOffsets = [num("off0", 0, -1, 1), num("off1", 0, -1, 1),
                            num("off2", 0, -1, 1)]
         win.wallLayout = num("layout", 0, 0, 1)
-        win.wallTypeface = num("typeface", 0, 0, 1)
-        win.wallHeroSide = num("heroSide", 1, 0, 1)
-        win.wallResIndex = num("resIndex", 0, 0, 2)
+        win.wallTypeface = num("typeface", 0, 0, 3)
+        win.wallMainSide = num("mainSide", 1, 0, 1)
+        win.wallResIndex = num("resIndex", 0, 0, 6)
         win.wallGap = num("gap", 18, 0, 60)
+        win.wallDualAspect = controller.wallpaperText("dual") !== "0"
         win.wallRefreshPresets()
     }
-    readonly property var wallResW: [3840, 2560, 1920]
-    readonly property var wallResH: [2160, 1440, 1080]
+    // 앞 3개는 기존 순서 유지(저장된 resIndex 호환) + 16:10 3종 + 현재 화면 크기
+    readonly property var wallResW: [3840, 2560, 1920, 3840, 2560, 1920, controller.screenW]
+    readonly property var wallResH: [2160, 1440, 1080, 2400, 1600, 1200, controller.screenH]
+    // 한 파일로 16:9·16:10 양쪽 대응: 사진은 꽉 채우고 글자는 두 비율 공통 안전영역 안에만
+    // 배치(잡지 레이아웃에만 의미 있음 — 트립틱은 보호할 글자가 없다).
+    property bool wallDualAspect: true
+    readonly property var wallSafeAspects: win.wallDualAspect ? [16 / 9, 16 / 10] : []
     readonly property int wallFilled: {
         var n = 0
         for (var i = 0; i < 3; i++) if (wallSlots[i] !== "") n++
@@ -1168,11 +1181,12 @@ ApplicationWindow {
     function wallCurrentState() {
         return {
             "layout": win.wallLayout, "typeface": win.wallTypeface,
-            "heroSide": win.wallHeroSide, "resIndex": win.wallResIndex, "gap": win.wallGap,
+            "mainSide": win.wallMainSide, "resIndex": win.wallResIndex, "gap": win.wallGap,
             "off0": win.wallOffsets[0], "off1": win.wallOffsets[1], "off2": win.wallOffsets[2],
             "slot0": win.wallSlots[0], "slot1": win.wallSlots[1], "slot2": win.wallSlots[2],
             "kicker": win.wallKicker, "headline": win.wallHeadline, "deck": win.wallDeck,
             "place": win.wallPlace, "date": win.wallDate,
+            "dual": win.wallDualAspect ? 1 : 0,
             "title0": win.wallTitles[0], "title1": win.wallTitles[1], "title2": win.wallTitles[2]
         }
     }
@@ -1184,10 +1198,11 @@ ApplicationWindow {
         }
         function str(k) { return m[k] === undefined ? "" : String(m[k]) }
         win.wallLayout = num("layout", win.wallLayout, 0, 1)
-        win.wallTypeface = num("typeface", win.wallTypeface, 0, 1)
-        win.wallHeroSide = num("heroSide", win.wallHeroSide, 0, 1)
-        win.wallResIndex = num("resIndex", win.wallResIndex, 0, 2)
+        win.wallTypeface = num("typeface", win.wallTypeface, 0, 3)
+        win.wallMainSide = num("mainSide", win.wallMainSide, 0, 1)
+        win.wallResIndex = num("resIndex", win.wallResIndex, 0, 6)
         win.wallGap = num("gap", win.wallGap, 0, 60)
+        if (m["dual"] !== undefined) win.wallDualAspect = String(m["dual"]) !== "0"
         win.wallOffsets = [num("off0", 0, -1, 1), num("off1", 0, -1, 1), num("off2", 0, -1, 1)]
         win.wallSlots = [str("slot0"), str("slot1"), str("slot2")]
         win.wallKicker = str("kicker"); win.wallHeadline = str("headline")
@@ -1250,8 +1265,9 @@ ApplicationWindow {
                 "layout": win.wallLayoutKeys[win.wallLayout],
                 "gap": win.wallGap, "offsets": win.wallOffsets,
                 // 잡지 레이아웃용(트립틱이면 Python 이 무시)
-                "typeface": win.wallTypeface === 0 ? "serif" : "sans",
-                "heroSide": win.wallHeroSide === 0 ? "left" : "right",
+                "typeface": win.wallTypefaceKeys[win.wallTypeface],
+                "mainSide": win.wallMainSide === 0 ? "left" : "right",
+                "safeAspects": win.wallSafeAspects,
                 "kicker": win.wallKicker, "headline": win.wallHeadline,
                 "deck": win.wallDeck, "place": win.wallPlace, "date": win.wallDate,
                 "titles": win.wallTitles, "paths": win.wallSlots })
@@ -7293,7 +7309,7 @@ ApplicationWindow {
                                 Layout.fillWidth: true; wrapMode: Text.WordWrap
                                 text: win.wallLayout === 0
                                       ? "Select a photo in the explorer (single click), then click a slot below. Each photo is developed with its own edits, then composed side by side."
-                                      : "Magazine spread: the center slot becomes the full-bleed hero; left and right slots appear as small plates in the text column."
+                                      : "Magazine spread: the center slot becomes the full-bleed main photo; the other two appear as small frames in the text column."
                                 color: "#888"; font.pixelSize: 11
                             }
 
@@ -7396,15 +7412,36 @@ ApplicationWindow {
                             Rectangle {
                                 id: wallPreview
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: width * 9 / 16
+                                // 선택한 캔버스 비율을 그대로 반영(16:9 / 16:10 / 화면 비율)
+                                Layout.preferredHeight: width * win.wallResH[win.wallResIndex]
+                                                        / Math.max(1, win.wallResW[win.wallResIndex])
                                 color: win.wallLayout === 0 ? "black" : "#f6f5f1"
                                 radius: 4; clip: true
                                 readonly property real gapPx: win.wallGap * width / win.wallResW[win.wallResIndex]
                                 readonly property real cellW: (width - 2 * gapPx) / 3
-                                // 잡지: 히어로(가운데 슬롯) 61% 풀블리드 + 텍스트 칼럼의 작은 사진 2장
-                                readonly property real heroW: width * 0.61
-                                readonly property real heroX: win.wallHeroSide === 0 ? 0 : width - heroW
-                                readonly property real colX: win.wallHeroSide === 0 ? heroW : 0
+                                // 잡지: 메인 사진(가운데 슬롯) 61% 풀블리드 + 텍스트 칼럼의 작은 사진 2장
+                                readonly property real mainW: width * 0.61
+                                readonly property real mainX: win.wallMainSide === 0 ? 0 : width - mainW
+                                // 안전영역(compose_magazine 과 동일 수식): 지정 비율들의 가시영역 교집합
+                                readonly property var safeRect: {
+                                    var W = width, H = height, sw = W, sh = H
+                                    var arr = win.wallSafeAspects
+                                    for (var i = 0; i < arr.length; i++) {
+                                        var a = arr[i]
+                                        var vw = Math.min(W, H * a)
+                                        sw = Math.min(sw, vw); sh = Math.min(sh, vw / a)
+                                    }
+                                    return { w: sw, h: sh, x: (W - sw) / 2, y: (H - sh) / 2 }
+                                }
+                                readonly property real mOut: safeRect.h * (170 / 2160)
+                                readonly property real mIn: safeRect.h * (190 / 2160)
+                                readonly property real colL: Math.max(safeRect.x,
+                                                                      win.wallMainSide === 0 ? mainW : 0)
+                                readonly property real colR: Math.min(safeRect.x + safeRect.w,
+                                                                      win.wallMainSide === 0 ? width : width - mainW)
+                                readonly property real colW: Math.max(10, colR - colL - mOut - mIn)
+                                readonly property real smallGap: safeRect.h * (40 / 2160)
+                                readonly property real smallW: (colW - smallGap) / 2
 
                                 Repeater {
                                     model: 3
@@ -7412,16 +7449,20 @@ ApplicationWindow {
                                         id: wallCell
                                         required property int index
                                         readonly property bool mag: win.wallLayout === 1
-                                        readonly property bool hero: index === 1
-                                        // 트립틱: 3등분 셀 / 잡지: 히어로는 풀블리드, 0·2 는 칼럼 안 작은 판
-                                        readonly property real smallW: (wallPreview.width - wallPreview.heroW) * 0.34
+                                        readonly property bool isMain: index === 1
+                                        // 트립틱: 3등분 셀 / 잡지: 메인은 풀블리드(캔버스 기준),
+                                        // 0·2 는 텍스트 칼럼 안 작은 판(안전영역 기준 — 합성과 동일)
+                                        readonly property real smallH: wallPreview.safeRect.h * 0.34
                                         x: !mag ? index * (wallPreview.cellW + wallPreview.gapPx)
-                                                : (hero ? wallPreview.heroX
-                                                        : wallPreview.colX + wallPreview.width * 0.028
-                                                          + (index === 0 ? 0 : smallW + wallPreview.width * 0.012))
-                                        y: !mag || hero ? 0 : wallPreview.height * 0.56
-                                        width: !mag ? wallPreview.cellW : (hero ? wallPreview.heroW : smallW)
-                                        height: !mag || hero ? wallPreview.height : wallPreview.height * 0.36
+                                                : (isMain ? wallPreview.mainX
+                                                          : wallPreview.colL + wallPreview.mOut
+                                                            + (index === 0 ? 0 : wallPreview.smallW + wallPreview.smallGap))
+                                        y: !mag || isMain ? 0
+                                           : wallPreview.safeRect.y + wallPreview.safeRect.h
+                                             - wallPreview.mOut - wallPreview.safeRect.h * (66 / 2160) - smallH
+                                        width: !mag ? wallPreview.cellW
+                                                    : (isMain ? wallPreview.mainW : wallPreview.smallW)
+                                        height: !mag || isMain ? wallPreview.height : smallH
                                         clip: true
 
                                         // 빈 슬롯: 어디에 어떤 크기로 들어갈지 보이도록 자리 표시
@@ -7436,8 +7477,7 @@ ApplicationWindow {
                                                 width: parent.width - 8
                                                 horizontalAlignment: Text.AlignHCenter
                                                 elide: Text.ElideRight
-                                                text: (win.wallLayout === 0 ? ["Left", "Center", "Right"]
-                                                                            : ["Plate 01", "Hero", "Plate 03"])[wallCell.index]
+                                                text: "Frame 0" + win.wallFrameNo(wallCell.index)
                                                 color: win.wallLayout === 0 ? "#7a7a7a" : "#9a978f"
                                                 font.pixelSize: 10
                                             }
@@ -7455,7 +7495,7 @@ ApplicationWindow {
                                             asynchronous: true
                                             fillMode: Image.Stretch
                                             // 잡지의 작은 판은 크롭 0%(fit), 그 외는 cover
-                                            readonly property bool fitMode: parent.mag && !parent.hero
+                                            readonly property bool fitMode: parent.mag && !parent.isMain
                                             readonly property real s: (implicitWidth > 0 && implicitHeight > 0)
                                                 ? (fitMode ? Math.min(parent.height / implicitHeight, parent.width / implicitWidth)
                                                            : Math.max(parent.height / implicitHeight, parent.width / implicitWidth))
@@ -7474,9 +7514,9 @@ ApplicationWindow {
                                 // 잡지 텍스트 칼럼 자리 표시(제목·리드문 위치 감만 잡는 플레이스홀더)
                                 Column {
                                     visible: win.wallLayout === 1
-                                    x: wallPreview.colX + wallPreview.width * 0.028
-                                    y: wallPreview.height * 0.09
-                                    width: (wallPreview.width - wallPreview.heroW) * 0.72
+                                    x: wallPreview.colL + wallPreview.mOut
+                                    y: wallPreview.safeRect.y + wallPreview.mOut
+                                    width: wallPreview.colW
                                     spacing: 6
                                     Text {
                                         text: win.wallKicker
@@ -7486,7 +7526,8 @@ ApplicationWindow {
                                         width: parent.width; wrapMode: Text.WordWrap
                                         text: win.wallHeadline !== "" ? win.wallHeadline : "Headline"
                                         color: "#16161a"; font.pixelSize: 16; font.bold: true
-                                        font.family: win.wallTypeface === 0 ? "Constantia" : "Franklin Gothic Medium Cond"
+                                        font.family: ["Constantia", "Franklin Gothic Medium Cond",
+                                                      "Noto Serif KR", "Noto Sans KR"][win.wallTypeface]
                                     }
                                     Text {
                                         width: parent.width; wrapMode: Text.WordWrap
@@ -7495,22 +7536,37 @@ ApplicationWindow {
                                         color: "#76767c"; font.pixelSize: 8
                                     }
                                 }
+                                // 안전영역 가이드 — 다른 비율에서 잘려나가는 띠를 눈으로 확인
+                                Rectangle {
+                                    visible: win.wallDualAspect
+                                             && (wallPreview.safeRect.x > 0.5 || wallPreview.safeRect.y > 0.5)
+                                    x: wallPreview.safeRect.x; y: wallPreview.safeRect.y
+                                    width: wallPreview.safeRect.w; height: wallPreview.safeRect.h
+                                    color: "transparent"
+                                    border.width: 1
+                                    border.color: win.wallLayout === 0 ? "#6688cc" : "#8ab4f8"
+                                    opacity: 0.75
+                                }
                             }
 
-                            // ---- 슬롯 카드 x3 (트립틱=좌/중/우, 잡지=Plate 01/히어로/Plate 03) ----
+                            // ---- 슬롯 카드 x3: **화면 좌→우 순서로 나열**(Frame 01/02/03) ----
+                            // index=목록상 위치, slot=실제 슬롯 인덱스(순서가 다를 수 있음)
                             Repeater {
-                                model: win.wallLayout === 0 ? ["Left", "Center", "Right"]
-                                                            : ["Plate 01", "Hero", "Plate 03"]
+                                model: win.wallSlotOrder
                                 Rectangle {
-                                    required property string modelData
                                     required property int index
+                                    required property var modelData
                                     id: wallCard
+                                    readonly property int slot: modelData
+                                    readonly property string cardLabel:
+                                        "Frame 0" + (index + 1)
+                                        + (win.wallLayout === 1 && slot === 1 ? " · Main" : "")
                                     Layout.fillWidth: true
                                     implicitHeight: cardCol.implicitHeight + 20
                                     color: "#242424"; radius: 4
                                     border.color: wallCardMouse.containsMouse ? "#8ab4f8" : "#444"
                                     border.width: 1
-                                    readonly property string slotPath: win.wallSlots[index]
+                                    readonly property string slotPath: win.wallSlots[slot]
 
                                     // 카드 클릭 = 탐색기 현재 선택 파일 할당(✕/슬라이더가 위에서 우선)
                                     MouseArea {
@@ -7518,7 +7574,7 @@ ApplicationWindow {
                                         anchors.fill: parent
                                         hoverEnabled: true
                                         cursorShape: Qt.PointingHandCursor
-                                        onClicked: win.wallAssign(wallCard.index)
+                                        onClicked: win.wallAssign(wallCard.slot)
                                     }
 
                                     ColumnLayout {
@@ -7558,7 +7614,7 @@ ApplicationWindow {
                                                     elide: Text.ElideMiddle
                                                     text: wallCard.slotPath !== ""
                                                           ? wallCard.slotPath.split(/[\\/]/).pop()
-                                                          : wallCard.modelData + " — click to assign"
+                                                          : wallCard.cardLabel + " — click to assign"
                                                     color: wallCard.slotPath !== "" ? "#e6e6e6" : "#888"
                                                     font.pixelSize: 12
                                                 }
@@ -7588,7 +7644,7 @@ ApplicationWindow {
                                                 MouseArea {
                                                     anchors.fill: parent
                                                     cursorShape: Qt.PointingHandCursor
-                                                    onClicked: win.wallClearSlot(wallCard.index)
+                                                    onClicked: win.wallClearSlot(wallCard.slot)
                                                 }
                                             }
                                         }
@@ -7599,14 +7655,14 @@ ApplicationWindow {
                                             id: wallTitleField
                                             Layout.fillWidth: true
                                             visible: win.wallLayout === 1 && wallCard.slotPath !== ""
-                                            placeholderText: "Plate title (printed in the index)"
-                                            text: win.wallTitles[wallCard.index]
+                                            placeholderText: "Frame title (printed in the index)"
+                                            text: win.wallTitles[wallCard.slot]
                                             font.pixelSize: 12
-                                            onTextEdited: win.wallSetTitle(wallCard.index, text)
+                                            onTextEdited: win.wallSetTitle(wallCard.slot, text)
                                             Connections {
                                                 target: win
                                                 function onWallTitlesChanged() {
-                                                    var v = win.wallTitles[wallCard.index]
+                                                    var v = win.wallTitles[wallCard.slot]
                                                     if (wallTitleField.text !== v) wallTitleField.text = v
                                                 }
                                             }
@@ -7616,10 +7672,10 @@ ApplicationWindow {
                                             Layout.fillWidth: true
                                             // 오프셋은 cover 크롭에만 의미 있음 — 잡지의 작은 판은 크롭 0%
                                             visible: wallCard.slotPath !== ""
-                                                     && (win.wallLayout === 0 || wallCard.index === 1)
+                                                     && (win.wallLayout === 0 || wallCard.slot === 1)
                                             Label {
-                                                // 잡지 히어로는 세로 사진이면 위아래가 잘린다 → 축을 알려줌
-                                                text: (win.wallLayout === 1 && wallCard.index === 1)
+                                                // 잡지 메인 사진는 세로 사진이면 위아래가 잘린다 → 축을 알려줌
+                                                text: (win.wallLayout === 1 && wallCard.slot === 1)
                                                       ? "Crop" : "Offset"
                                                 color: "#aaa"; font.pixelSize: 11
                                             }
@@ -7627,12 +7683,12 @@ ApplicationWindow {
                                                 id: wallOffSlider
                                                 Layout.fillWidth: true
                                                 from: -1.0; to: 1.0
-                                                value: win.wallOffsets[wallCard.index]
-                                                onMoved: win.wallSetOffset(wallCard.index, value)
+                                                value: win.wallOffsets[wallCard.slot]
+                                                onMoved: win.wallSetOffset(wallCard.slot, value)
                                                 Connections {
                                                     target: win
                                                     function onWallOffsetsChanged() {
-                                                        var v = win.wallOffsets[wallCard.index]
+                                                        var v = win.wallOffsets[wallCard.slot]
                                                         if (wallOffSlider.value !== v) wallOffSlider.value = v
                                                     }
                                                 }
@@ -7646,9 +7702,9 @@ ApplicationWindow {
                                                     }
                                                     if (_pendingReset) {
                                                         _pendingReset = false
-                                                        win.wallSetOffset(wallCard.index, defaultValue)
+                                                        win.wallSetOffset(wallCard.slot, defaultValue)
                                                     }
-                                                    win.wallSaveOffset(wallCard.index)
+                                                    win.wallSaveOffset(wallCard.slot)
                                                 }
                                             }
                                         }
@@ -7658,7 +7714,7 @@ ApplicationWindow {
 
                             Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
 
-                            // ---- 잡지 레이아웃 전용: 텍스트(사용자 입력) + 서체/히어로 위치 ----
+                            // ---- 잡지 레이아웃 전용: 텍스트(사용자 입력) + 서체/메인 사진 위치 ----
                             ColumnLayout {
                                 Layout.fillWidth: true
                                 visible: win.wallLayout === 1
@@ -7746,7 +7802,7 @@ ApplicationWindow {
                                 }
                                 Label {
                                     Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                    text: "Plate titles are filled from each photo's caption when you assign it; edit them freely. Shooting info comes from EXIF — leave the date empty to use the hero photo's capture month."
+                                    text: "Frame titles are filled from each photo's caption when you assign it; edit them freely. Shooting info comes from EXIF — leave the date empty to use the main photo's capture month."
                                     color: "#888"; font.pixelSize: 11
                                 }
                                 RowLayout {
@@ -7755,7 +7811,7 @@ ApplicationWindow {
                                     ComboBox {
                                         id: wallFaceCombo
                                         Layout.fillWidth: true
-                                        model: ["Serif", "Sans"]
+                                        model: ["Serif", "Sans", "Serif (한글)", "Sans (한글)"]
                                         currentIndex: win.wallTypeface
                                         onActivated: { win.wallTypeface = currentIndex; win.wallSave("typeface", currentIndex) }
                                         Connections {
@@ -7768,17 +7824,17 @@ ApplicationWindow {
                                         }
                                     }
                                     ComboBox {
-                                        id: wallHeroCombo
+                                        id: wallMainCombo
                                         Layout.fillWidth: true
-                                        model: ["Hero left", "Hero right"]
-                                        currentIndex: win.wallHeroSide
-                                        onActivated: { win.wallHeroSide = currentIndex; win.wallSave("heroSide", currentIndex) }
+                                        model: ["Main left", "Main right"]
+                                        currentIndex: win.wallMainSide
+                                        onActivated: { win.wallMainSide = currentIndex; win.wallSave("mainSide", currentIndex) }
                                         Connections {
                                             target: win
-                                            function onWallHeroSideChanged() { wallHeroCombo.currentIndex = win.wallHeroSide }
+                                            function onWallMainSideChanged() { wallMainCombo.currentIndex = win.wallMainSide }
                                         }
                                         Connections {
-                                            target: wallHeroCombo.popup
+                                            target: wallMainCombo.popup
                                             function onClosed() { viewport.forceActiveFocus() }
                                         }
                                     }
@@ -7824,7 +7880,10 @@ ApplicationWindow {
                             ComboBox {
                                 id: wallResCombo
                                 Layout.fillWidth: true
-                                model: ["3840 × 2160 (4K)", "2560 × 1440 (QHD)", "1920 × 1080 (FHD)"]
+                                model: ["3840 × 2160 (4K · 16:9)", "2560 × 1440 (QHD · 16:9)",
+                                        "1920 × 1080 (FHD · 16:9)", "3840 × 2400 (4K · 16:10)",
+                                        "2560 × 1600 (16:10)", "1920 × 1200 (16:10)",
+                                        "Match screen (" + controller.screenW + " × " + controller.screenH + ")"]
                                 currentIndex: win.wallResIndex
                                 onActivated: { win.wallResIndex = currentIndex; win.wallSave("resIndex", currentIndex) }
                                 Connections {
@@ -7835,6 +7894,37 @@ ApplicationWindow {
                                     target: wallResCombo.popup
                                     function onClosed() { viewport.forceActiveFocus() }
                                 }
+                            }
+
+                            // 16:9·16:10 겸용: 사진은 꽉 채우고 글자만 공통 안전영역 안에.
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                CheckBox {
+                                    id: wallDualCheck
+                                    checked: win.wallDualAspect
+                                    onToggled: {
+                                        win.wallDualAspect = checked
+                                        win.wallSave("dual", checked ? 1 : 0)
+                                    }
+                                    Connections {
+                                        target: win
+                                        function onWallDualAspectChanged() {
+                                            wallDualCheck.checked = win.wallDualAspect
+                                        }
+                                    }
+                                }
+                                Label {
+                                    Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                    text: "Keep text safe on 16:9 and 16:10"
+                                    color: "white"; font.pixelSize: 12
+                                }
+                            }
+                            Label {
+                                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                visible: win.wallLayout === 1
+                                text: "Photos still bleed to the edges; only the typography stays inside the area both aspect ratios show, so one file works on either monitor."
+                                color: "#888"; font.pixelSize: 11
                             }
 
                             Button {

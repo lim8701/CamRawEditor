@@ -1016,6 +1016,13 @@ MAG_FACES = {
               "Segoe UI"],
              ["Arial Narrow", "Bahnschrift Condensed", "Segoe UI"],
              MAG_RUST, 0.015, True, 1.08),
+    # 한글: 대문자화·자간 확대는 한글에 의미가 없어 끄고, 줄높이만 조금 넉넉하게.
+    "serif_ko": (["Noto Serif KR", "Batang", "Gungsuh"],
+                 ["Noto Serif KR", "Batang", "Gungsuh"],
+                 MAG_INK, 0.0, False, 1.18),
+    "sans_ko": (["Noto Sans KR", "Malgun Gothic", "Dotum"],
+                ["Noto Sans KR", "Malgun Gothic", "Dotum"],
+                MAG_RUST, 0.0, False, 1.14),
 }
 
 
@@ -1090,13 +1097,36 @@ def _text_w(font, s, tracking_px=0.0, upper=False):
 def compose_magazine(panels, canvas_w, canvas_h, opts):
     """에디토리얼 스프레드 합성 -> QImage.
 
-    panels: [좌, 중(히어로), 우] uint8 (H,W,3). 히어로는 cover 크롭, 작은 2장은 크롭 0%.
-    opts: heroSide('left'|'right'), typeface('serif'|'sans'), kicker/headline/deck/place,
-          titles[3], shots[3](EXIF 요약 문자열), indexLabel, heroFrac(0.5~0.75).
-    좌표는 3840x2160 기준으로 잡고 s=canvas_h/2160 로 스케일 — 4K/QHD/FHD 동일 비율."""
+    panels: [좌, 중(메인 사진), 우] uint8 (H,W,3). 메인은 cover 크롭, 작은 2장은 크롭 0%.
+    opts: mainSide('left'|'right'), typeface('serif'|'sans'|'serif_ko'|'sans_ko'),
+          kicker/headline/deck/place/date, titles[3], shots[3](EXIF 요약), indexLabel,
+          mainFrac(0.5~0.75; 메인 사진이 차지하는 폭 비율),
+          safeAspects(예: [16/9, 16/10]) — 이 비율들에서 모두 살아남는 영역에만 글자를 둔다.
+    사진은 캔버스를 꽉 채우고(풀블리드) **타이포그래피만 안전영역 안**에 배치하므로 한 장으로
+    16:9·16:10 양쪽에서 잘림 없이 읽힌다. 좌표는 안전영역 높이 2160 기준으로 스케일."""
     from PySide6.QtGui import QColor, QPainter
 
-    s = canvas_h / 2160.0
+    # 안전영역 = 지정한 화면 비율들에서 '채우기'로 보이는 영역의 교집합(중앙 정렬).
+    # 배경화면을 채우기로 깔면 이미지보다 납작한 화면은 좌우를, 홀쭉한 화면은 위아래를
+    # 잘라낸다. 각 비율에서 보이는 부분은 '이미지 안에 들어가는 최대 중앙 사각형'이라
+    # 폭·높이를 각각 최솟값으로 모으면 모든 비율에서 안전한 사각형이 된다.
+    safe_w, safe_h = float(canvas_w), float(canvas_h)
+    for a in (opts.get("safeAspects") or []):
+        try:
+            a = float(a)
+        except (TypeError, ValueError):
+            continue
+        if a <= 0:
+            continue
+        vw = min(canvas_w, canvas_h * a)
+        safe_w = min(safe_w, vw)
+        safe_h = min(safe_h, vw / a)
+    safe_w, safe_h = max(1.0, safe_w), max(1.0, safe_h)
+    sx0 = int(round((canvas_w - safe_w) / 2.0))
+    sy0 = int(round((canvas_h - safe_h) / 2.0))
+    sx1, sy1 = sx0 + int(round(safe_w)), sy0 + int(round(safe_h))
+
+    s = safe_h / 2160.0                                  # 글자 크기는 안전영역 기준
 
     def S(v):
         return int(round(v * s))
@@ -1105,10 +1135,16 @@ def compose_magazine(panels, canvas_w, canvas_h, opts):
     head_fams, body_fams, accent, track_frac, upper, lh = face
     fam_h = _pick_family(head_fams)
     fam_b = _pick_family(body_fams)
-    hero_left = str(opts.get("heroSide", "right")) == "left"
-    hero_frac = float(opts.get("heroFrac", 0.61))
-    hero_w = max(1, int(round(canvas_w * hero_frac)))
-    col_w_total = canvas_w - hero_w                      # 텍스트 면 전체 폭
+    # 구 키(heroSide/heroFrac/heroCaption)는 이전에 저장된 프리셋 호환용 폴백
+    main_left = str(opts.get("mainSide", opts.get("heroSide", "right"))) == "left"
+    main_frac = float(opts.get("mainFrac", opts.get("heroFrac", 0.61)))
+    main_w = max(1, int(round(canvas_w * main_frac)))     # 메인 사진은 캔버스 기준 풀블리드
+
+    # 프레임 번호는 **화면에서 보이는 좌→우 순서**로 매긴다(슬롯 순서로 매기면 메인이 가운데
+    # 슬롯인데 좌/우 끝에 놓여 01·03 이 뒤섞여 헷갈린다).
+    # slot_order = 왼쪽부터의 슬롯 인덱스, no[slot] = 그 슬롯의 번호(1..3).
+    slot_order = [1, 0, 2] if main_left else [0, 2, 1]
+    no = {sl: i + 1 for i, sl in enumerate(slot_order)}
 
     canvas = QImage(canvas_w, canvas_h, QImage.Format.Format_RGB888)
     canvas.fill(QColor(*MAG_PAPER))
@@ -1118,41 +1154,43 @@ def compose_magazine(panels, canvas_w, canvas_h, opts):
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
-        # ── 히어로: cover 크롭 후 풀블리드. 오프셋 슬라이더(-1..+1)는 **실제로 잘리는 축**에
-        # 적용한다 — 세로 사진이 가로형 히어로 칸에 들어가면 폭은 딱 맞고 위아래가 잘리므로
+        # ── 메인 사진: cover 크롭 후 풀블리드. 오프셋 슬라이더(-1..+1)는 **실제로 잘리는 축**에
+        # 적용한다 — 세로 사진이 가로형 메인 칸에 들어가면 폭은 딱 맞고 위아래가 잘리므로
         # 가로 오프셋은 움직일 여지가 0이다(슬라이더가 안 먹는 것처럼 보였던 원인).
-        hero = _np_to_qimage(panels[1]).scaled(
-            hero_w, canvas_h, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+        main_img = _np_to_qimage(panels[1]).scaled(
+            main_w, canvas_h, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
             Qt.TransformationMode.SmoothTransformation)
         try:
             off = float(list(opts.get("offsets", [0.0, 0.0, 0.0]))[1])
         except (IndexError, TypeError, ValueError):
             off = 0.0
-        slack_x = max(0, hero.width() - hero_w)
-        slack_y = max(0, hero.height() - canvas_h)
+        slack_x = max(0, main_img.width() - main_w)
+        slack_y = max(0, main_img.height() - canvas_h)
         t = (off + 1.0) * 0.5                       # -1..+1 → 0..1 (0=위/왼쪽 끝)
         if slack_x >= slack_y:
             hx, hy = int(round(slack_x * t)), slack_y // 2
         else:
             hx, hy = slack_x // 2, int(round(slack_y * t))
-        p.drawImage(0 if hero_left else canvas_w - hero_w, 0,
-                    hero.copy(hx, hy, hero_w, canvas_h))
+        p.drawImage(0 if main_left else canvas_w - main_w, 0,
+                    main_img.copy(hx, hy, main_w, canvas_h))
 
-        # ── 텍스트 칼럼 기준선
+        # ── 텍스트 칼럼 기준선(안전영역 안쪽에서 잡는다)
         m_out = S(170)                                    # 바깥 여백
-        m_in = S(190)                                     # 히어로 쪽 여백
-        cx = (hero_w + m_out) if hero_left else m_out
-        cw = col_w_total - m_out - m_in
+        m_in = S(190)                                     # 메인 사진 쪽 여백
+        col_l = max(sx0, main_w if main_left else 0)
+        col_r = min(sx1, canvas_w if main_left else canvas_w - main_w)
+        cx = col_l + m_out
+        cw = max(S(200), col_r - cx - m_in)
         tr = track_frac * S(130)                          # 헤드라인 자간(px)
 
         # 키커
         f_kick = _qfont(fam_b, S(30), bold=True)
-        y = S(170)
+        y = sy0 + S(170)
         _draw_text(p, cx, y, str(opts.get("kicker", "")), f_kick, accent, S(6), True)
 
         # 헤드라인
         f_head = _qfont(fam_h, S(130), bold=True)
-        y = S(258)
+        y = sy0 + S(258)
         for ln in _wrap(f_head, str(opts.get("headline", "")), cw):
             _draw_text(p, cx, y, ln, f_head, MAG_INK, tr, upper)
             y += S(130) * lh
@@ -1171,18 +1209,18 @@ def compose_magazine(panels, canvas_w, canvas_h, opts):
         shots = list(opts.get("shots", ["", "", ""]))[:3]
         if any(t for t in titles) or any(t for t in shots):
             y += S(74)
-            _draw_text(p, cx, y, str(opts.get("indexLabel", "In this frame")),
+            _draw_text(p, cx, y, str(opts.get("indexLabel", "In this set")),
                        _qfont(fam_b, S(26), bold=True), MAG_GRAY, S(5), True)
             y += S(52)
             f_num = _qfont(fam_h, S(40), bold=True)
             f_tit = _qfont(fam_b, S(34))
             f_shot = _qfont(fam_b, S(25))
-            for i in range(3):
+            for pos, sl in enumerate(slot_order):      # 좌→우 순서로 나열
                 p.fillRect(cx, y, cw, 1, QColor(*MAG_HAIR))
-                _draw_text(p, cx, y + S(22), f"0{i + 1}", f_num, accent)
-                _draw_text(p, cx + S(90), y + S(24), titles[i] if i < len(titles) else "",
+                _draw_text(p, cx, y + S(22), f"0{pos + 1}", f_num, accent)
+                _draw_text(p, cx + S(90), y + S(24), titles[sl] if sl < len(titles) else "",
                            f_tit, MAG_INK)
-                sh = shots[i] if i < len(shots) else ""
+                sh = shots[sl] if sl < len(shots) else ""
                 if sh:
                     _draw_text(p, cx + cw - _text_w(f_shot, sh), y + S(34), sh,
                                f_shot, MAG_GRAY)
@@ -1194,36 +1232,55 @@ def compose_magazine(panels, canvas_w, canvas_h, opts):
         # 맞춰 크기를 정한다(고정 크기면 겹침).
         cap_band = S(66)
         gap = S(40)
-        avail_h = (canvas_h - S(170) - cap_band) - (y + S(60))
+        avail_h = (sy1 - S(170) - cap_band) - (y + S(60))
         smalls = [_np_to_qimage(panels[0]), _np_to_qimage(panels[2])]
         if avail_h > S(120):
             ws = [avail_h * im.width() / im.height() for im in smalls]
             hh = avail_h
             if sum(ws) + gap > cw:                       # 폭이 넘치면 폭 기준 축소
                 hh = avail_h * (cw - gap) / sum(ws)
-            sy = canvas_h - S(170) - cap_band - int(round(hh))
+            sy = sy1 - S(170) - cap_band - int(round(hh))
             sx = cx
             for i, im in enumerate(smalls):
                 sw = max(1, int(round(hh * im.width() / im.height())))
                 sc = im.scaled(sw, int(round(hh)), Qt.AspectRatioMode.IgnoreAspectRatio,
                                Qt.TransformationMode.SmoothTransformation)
                 p.drawImage(sx, sy, sc)
-                lab = f"Plate 0{1 if i == 0 else 3}"
+                lab = f"Frame 0{no[0 if i == 0 else 2]}"
                 _draw_text(p, sx, sy + sc.height() + S(18), lab,
                            _qfont(fam_b, S(23), bold=True), accent, S(3), True)
-                sub = [str(opts.get("place", "")), str(opts.get("date", ""))][i]
-                if sub:
-                    _draw_text(p, sx + S(200), sy + sc.height() + S(20), sub,
-                               _qfont(fam_b, S(23)), MAG_GRAY)
                 sx += sc.width() + gap
 
-        # ── 히어로 위 캡션(흰 글씨, 사진 하단 바깥쪽 모서리)
-        cap = str(opts.get("heroCaption", "")).strip()
+        # ── 폴리오(지면 하단 러닝풋): 장소 · 날짜.
+        # 장소/날짜는 사진별 정보가 아니라 지면 전체 정보라 프레임 라벨 옆이 아니라 여기에
+        # 둔다(라벨 옆에 두면 '그 사진의 장소/날짜'처럼 읽혔다).
+        place = str(opts.get("place", "")).strip()
+        date = str(opts.get("date", "")).strip()
+        if place or date:
+            f_fol = _qfont(fam_b, S(26))
+            fy = sy1 - S(104)
+            p.fillRect(cx, sy1 - S(126), cw, 1, QColor(*MAG_HAIR))
+            if place:
+                _draw_text(p, cx, fy, place, f_fol, MAG_GRAY, S(4), upper)
+            if date:
+                _draw_text(p, cx + cw - _text_w(f_fol, date, S(4), upper), fy, date,
+                           f_fol, MAG_GRAY, S(4), upper)
+
+        # ── 메인 사진 위 캡션(흰 글씨, 사진 하단 바깥쪽 모서리). 번호는 위 좌→우 규칙과
+        # 동일하게 여기서 만든다 — 호출측에서 조립하면 번호 규칙이 두 곳으로 갈라진다.
+        cap = str(opts.get("mainCaption", opts.get("heroCaption", ""))).strip()
+        if not cap:
+            bits = [f"0{no[1]}"]
+            if len(titles) > 1 and titles[1]:
+                bits.append(str(titles[1]))
+            if len(shots) > 1 and shots[1]:
+                bits.append(str(shots[1]))
+            cap = "   ·   ".join(bits) if len(bits) > 1 else ""
         if cap:
             f_cap = _qfont(fam_b, S(27))
             cwid = _text_w(f_cap, cap)
-            capx = (hero_w - S(120) - cwid) if hero_left else (canvas_w - S(120) - cwid)
-            _draw_text(p, capx, canvas_h - S(108), cap, f_cap, (255, 255, 255))
+            edge = min(main_w, sx1) if main_left else min(canvas_w, sx1)
+            _draw_text(p, edge - S(120) - cwid, sy1 - S(108), cap, f_cap, (255, 255, 255))
     finally:
         p.end()
     return canvas

@@ -850,6 +850,7 @@ class Controller(QObject):
     searchChanged = Signal()     # 탐색기 캡션 검색어 변경 알림(explorerFiles 재평가)
     indexChanged = Signal()      # 폴더 배치 인덱싱 busy/진행/상태 갱신
     updateChanged = Signal()     # 새 버전 발견 알림(updateVersion/updateUrl 갱신)
+    screenSizeChanged = Signal()  # 창이 놓인 화면의 픽셀 크기 갱신(배경화면 'Match screen')
     # 깊이 범위 자동 시드 확정 → QML 이 'depth@auto' 센티넬을 실제 값으로 교체하고 슬라이더에 반영.
     # (켜는 순간엔 거리 맵이 없어 범위를 정할 수 없다 — 맵이 나온 뒤에야 분포에서 시드된다)
     depthAutoResolved = Signal(int, float, float, float)   # layer, near, far, feather
@@ -1009,6 +1010,7 @@ class Controller(QObject):
         self._keep_awake_export = False
         self._keep_awake_ui = False
         self._keep_awake_cur = False
+        self._screen_w, self._screen_h = 3840, 2160   # main 의 _refresh_cm 이 실제값으로 갱신
         self._exif_fields = []      # [{"label","value"}, ...] 패널용
         self._exif_summary = ""     # 오버레이용 2줄 요약
         self._stamp_text = ""       # 날짜 스탬프 텍스트 ('YY MM DD)
@@ -1959,7 +1961,7 @@ class Controller(QObject):
     @Slot(QUrl, "QVariantMap")
     def wallpaperCompose(self, file_url: QUrl, opts) -> None:  # noqa: N802 (QML 슬롯)
         """opts: canvasW, canvasH, layout('triptych'|'magazine'), 그리고
-        트립틱=gap/offsets[3], 잡지=heroSide/typeface/kicker/headline/deck/titles[3]/
+        트립틱=gap/offsets[3], 잡지=mainSide/typeface/kicker/headline/deck/titles[3]/
         place/date/paths[3]. 3패널 합성 → 저장(스레드)."""
         if self._exporting:
             return
@@ -2008,9 +2010,7 @@ class Controller(QObject):
                     mo["date"] = self._shot_summary(paths[1])[1] if len(paths) > 1 else ""
                 mo["shots"] = shots
                 titles = [str(t) for t in mo.get("titles", ["", "", ""])]
-                cap_bits = [t for t in ("02", titles[1] if len(titles) > 1 else "",
-                                        shots[1] if len(shots) > 1 else "") if t]
-                mo["heroCaption"] = "   ·   ".join(cap_bits)
+                # 메인 사진 캡션은 compose_magazine 이 조립한다(프레임 번호 규칙 단일화)
                 img = pipeline.compose_magazine(panels, int(o["canvasW"]),
                                                 int(o["canvasH"]), mo)
                 ok = bool(img.save(path))
@@ -2049,6 +2049,16 @@ class Controller(QObject):
                 data = {}                      # 손상 시 기본값으로 시작(다음 저장에 덮어씀)
             if not data:
                 data = self._migrate_wall_prefs_from_registry()
+
+            # 용어 변경(hero → main) 이전에 저장된 값 이관: 마지막 상태 + 프리셋 전부.
+            # 구 키는 항상 제거하고, 새 키가 없을 때만 값을 물려준다.
+            def _rename(d):
+                if isinstance(d, dict) and "heroSide" in d:
+                    old = d.pop("heroSide")
+                    d.setdefault("mainSide", old)
+            _rename(data)
+            for pre in (data.get("presets") or {}).values():
+                _rename(pre)
             self._wall_prefs_cache = data
         return self._wall_prefs_cache
 
@@ -2097,7 +2107,7 @@ class Controller(QObject):
     # 같은 wallpaper.json 의 "presets" 아래에 이름→설정 dict 로 저장. 사진 슬롯 경로까지
     # 포함해 구성 전체를 되살린다(불러올 때 사라진 파일은 빈 슬롯으로).
     _WALL_PRESET_KEYS = (
-        "layout", "typeface", "heroSide", "resIndex", "gap",
+        "layout", "typeface", "mainSide", "resIndex", "gap", "dual",
         "off0", "off1", "off2", "slot0", "slot1", "slot2",
         "kicker", "headline", "deck", "place", "date", "title0", "title1", "title2")
 
@@ -2405,6 +2415,22 @@ class Controller(QObject):
 
     # 내보내는 중 여부(스피너 표시용). 상태 변경과 동시에 갱신되므로 같은 시그널로 통지.
     exporting = Property(bool, _get_exporting, notify=exportStatusChanged)
+
+    @Slot(int, int)
+    def setScreenSize(self, w: int, h: int) -> None:  # noqa: N802 (main 에서 호출)
+        """창이 놓인 화면의 실제 픽셀 크기(배경화면 'Match screen' 해상도용)."""
+        if (int(w), int(h)) != (self._screen_w, self._screen_h):
+            self._screen_w, self._screen_h = int(w), int(h)
+            self.screenSizeChanged.emit()
+
+    def _get_screen_w(self) -> int:
+        return self._screen_w
+
+    def _get_screen_h(self) -> int:
+        return self._screen_h
+
+    screenW = Property(int, _get_screen_w, notify=screenSizeChanged)
+    screenH = Property(int, _get_screen_h, notify=screenSizeChanged)
 
     def _get_wallpaper_enabled(self) -> bool:
         return WALLPAPER_PANEL
@@ -4519,6 +4545,11 @@ def main() -> int:
     def _refresh_cm(*_):
         scr = root.screen()
         controller.refreshDisplayCm(scr.name() if scr is not None else "")
+        # 배경화면 패널의 'Match screen' 해상도용 — 창이 있는 화면의 실제 픽셀 크기.
+        if scr is not None:
+            g = scr.geometry()
+            r = scr.devicePixelRatio()
+            controller.setScreenSize(round(g.width() * r), round(g.height() * r))
     _refresh_cm()
     root.screenChanged.connect(_refresh_cm)
 
