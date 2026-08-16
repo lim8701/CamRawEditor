@@ -1069,12 +1069,16 @@ ApplicationWindow {
                 // 이게 없으면 장당 20초 타임아웃을 그대로 기다린다.
                 var maskPending = win.maskKeys.length > 0 &&
                                   !controller.hasSkyMask && !controller.maskSettled
-                if (!controller.busy && !controller.skyBusy && (!maskPending || waited > 20000)) {
+                // GPU 엔진은 셰이더가 nrBase 텍스처를 그대로 쓰므로(CPU 처럼 직접 계산 안 함)
+                // 준비 전에 grab 하면 그 장만 휘도 NR 이 조용히 빠진다 → 마스크와 같이 대기.
+                var nrPending = win.useGpuExport && !controller.nrReady
+                if (!controller.busy && !controller.skyBusy
+                        && ((!maskPending && !nrPending) || waited > 20000)) {
                     var url = controller.batchExportUrl(
                         win.batchDestUrl, win.batchQueue[win.batchIndex], win.batchExt)
                     if (url === "") { win.batchFails++; win.batchIndex++; win.batchLoadNext(); return }
-                    controller.exportImage(url, win.exportParams())
-                    if (!controller.exporting) {   // 슬롯 가드에 걸림(비정상) → 실패 처리
+                    // 설정(Render 콤보 CPU/GPU + 16bit)을 단일 export 와 동일하게 따른다.
+                    if (!win.startExport(url, win.exportParams())) {   // 슬롯 가드에 걸림(비정상) → 실패 처리
                         win.batchFails++; win.batchIndex++; win.batchLoadNext(); return
                     }
                     win.batchPhase = 3; win.batchPhaseT0 = Date.now()
@@ -1488,6 +1492,23 @@ ApplicationWindow {
         var sk = win.skyEditParams()
         for (var k in sk) o[k] = sk[k]
         return o
+    }
+
+    // 렌더 엔진 = Export 패널의 Render 콤보(0=CPU, 1=GPU). 16bit 는 GPU grab 이 8bit 라 항상 CPU.
+    // 단일/배치가 같은 규칙을 쓰도록 여기 한 곳에만 둔다.
+    readonly property bool useGpuExport: renderModeCombo.currentIndex === 1 && !bitDepth16Check.checked
+    // Export 실행 진입점(단일 저장·배치 공용). 반환값 = 실제로 시작됐는지(슬롯 재진입 가드 결과).
+    function startExport(url, p) {
+        if (win.useGpuExport) {
+            win.gpuExportEdge = p["outEdge"]   // 요청 시점 스냅샷(디코드 중 콤보 변경과 분리)
+            controller.exportImageGpu(url, p)
+            // 실제로 진행됐을 때만 로더 활성 — 슬롯 가드에 걸려 시작 안 됐는데 active=true 로
+            // 두면 grab 을 구동할 디코드가 없어 pipeFull 이 떠 있게 됨.
+            if (controller.exporting) gpuExportLoader.active = true
+        } else {
+            controller.exportImage(url, p)
+        }
+        return controller.exporting
     }
 
     // (앱 종료 시 편집 플러시 저장은 quitDialog 확인 후 onAccepted 에서 수행)
@@ -2668,19 +2689,7 @@ ApplicationWindow {
         nameFilters: ["PNG (*.png)", "JPEG (*.jpg)", "TIFF (*.tif)"]
         defaultSuffix: "png"
         // 렌더 모드: 0=CPU(render_full), 1=GPU(프리뷰 셰이더로 풀해상도 렌더 → 프리뷰=Export)
-        onAccepted: {
-            var p = win.exportParams()
-            // GPU grab 은 8bit 라 16bit 선택 시 무조건 CPU 경로 사용.
-            if (renderModeCombo.currentIndex === 1 && !bitDepth16Check.checked) {
-                win.gpuExportEdge = p["outEdge"]   // 요청 시점 스냅샷(디코드 중 콤보 변경과 분리)
-                controller.exportImageGpu(selectedFile, p)
-                // 실제로 진행됐을 때만 로더 활성 — 슬롯 가드에 걸려 시작 안 됐는데 active=true 로
-                // 두면 grab 을 구동할 디코드가 없어 pipeFull 이 떠 있게 됨(버튼은 위에서 재진입 차단).
-                if (controller.exporting) gpuExportLoader.active = true
-            } else {
-                controller.exportImage(selectedFile, p)
-            }
-        }
+        onAccepted: win.startExport(selectedFile, win.exportParams())   // 엔진 선택은 win.startExport
     }
 
     FileDialog {

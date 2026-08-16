@@ -89,17 +89,27 @@ WALLPAPER_PANEL = _flag_on(FEATURE_FLAGS, "WALLPAPER_PANEL")
 # ---------- 시스템 슬립 방지 (Windows SetThreadExecutionState) ----------
 _ES_CONTINUOUS = 0x80000000
 _ES_SYSTEM_REQUIRED = 0x00000001
+_ES_DISPLAY_REQUIRED = 0x00000002
 
 
 def _set_keep_awake(on: bool) -> None:
-    """export 류 긴 작업 동안 Windows 시스템 슬립 방지(화면 꺼짐/노트북 덮개 정책은 그대로).
+    """export 류 긴 작업 동안 Windows 시스템 슬립 방지.
+    ⚠️**ES_DISPLAY_REQUIRED 가 반드시 함께 있어야 한다** — 요즘 PC 는 대부분
+    **Modern Standby(S0 저전력 대기)** 이고(`powercfg /a` 에 'Standby (S0 Low Power Idle)'
+    가 보이면 해당), 그 환경에서 ES_SYSTEM_REQUIRED 는 문서상 **무효**다
+    (PowerRequestSystemRequired 도 동일). Modern Standby 는 '화면 꺼짐 = 대기 진입' 이라
+    화면을 붙잡는 것 말고는 막을 방법이 없다 — 실제로 SYSTEM_REQUIRED 만 걸었을 때 긴
+    export 가 디스플레이 타임아웃(기본 10분) 뒤 대기로 들어가며 멈췄다(사용자 보고).
+    대가로 export 중에는 화면이 안 꺼진다(끝나면 해제되어 원래 전원 정책으로 복귀).
     ⚠️ES_CONTINUOUS 상태는 '호출한 스레드'에 귀속(스레드 종료 시 자동 해제)이라 반드시
     메인 스레드에서만 호출할 것 — 워커에서는 Controller._keepAwakeSig 로 큐잉."""
     if sys.platform != "win32":
         return
     try:
         import ctypes
-        state = _ES_CONTINUOUS | (_ES_SYSTEM_REQUIRED if on else 0)
+        state = _ES_CONTINUOUS
+        if on:
+            state |= _ES_SYSTEM_REQUIRED | _ES_DISPLAY_REQUIRED
         ctypes.windll.kernel32.SetThreadExecutionState(state)
     except Exception:
         pass                            # 실패해도 기능 자체는 무영향(슬립만 못 막음)
