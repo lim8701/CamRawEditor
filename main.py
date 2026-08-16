@@ -210,6 +210,41 @@ RAW_EXTS = {
 }
 
 
+def _pair_flags(folder: str, names: list) -> list:
+    """파일명 리스트 → 탐색기 항목 + **RAW/JPEG 페어 표식**.
+
+    카메라가 RAW+JPEG 를 동시 기록하면 같은 사진이 목록에 두 번 나온다(실측: X100V 폴더에서
+    RAF 503 / JPG 497 이 **stem 기준 497쌍 정확히 일치**, JPEG 단독 0장). 같은 폴더·같은 stem 에
+    RAW 가 있는 일반 이미지에 `paired` 를 달아 기본으로 접고, 짝을 가진 RAW 행에는 배지용
+    `pair`("JPG")를 단다.
+    ⚠️목록에서 **빼지 않고 플래그만** 단다 — QML 토글(P)이 재스캔 없이 즉시 펼칠 수 있게.
+    ⚠️'RAW 만 보기' 같은 포맷 필터가 아니라 **중복 필터**다. 그래서 이미지 전용 폴더(필름 스캔·
+      export 결과 등, 이 라이브러리의 절반 이상)는 접을 짝이 없어 자동으로 무영향이고,
+      RAW 단독 사진도 그대로 남는다.
+    """
+    raw_stems = set()
+    for n in names:
+        stem, ext = os.path.splitext(n)
+        if ext.lower() in RAW_EXTS:
+            raw_stems.add(stem.lower())
+    pair_exts = {}
+    for n in names:
+        stem, ext = os.path.splitext(n)
+        if ext.lower() not in RAW_EXTS and stem.lower() in raw_stems:
+            pair_exts.setdefault(stem.lower(), set()).add(ext.lstrip(".").upper())
+    out = []
+    for n in names:
+        stem, ext = os.path.splitext(n)
+        key, is_raw = stem.lower(), ext.lower() in RAW_EXTS
+        it = {"name": n, "path": os.path.join(folder, n), "isDir": False}
+        if not is_raw and key in raw_stems:
+            it["paired"] = True                          # 짝 RAW 가 있는 일반 이미지 → 기본 접힘
+        elif is_raw and key in pair_exts:
+            it["pair"] = "+".join(sorted(pair_exts[key]))  # RAW 행 배지("JPG")
+        out.append(it)
+    return out
+
+
 def _openable_exts() -> set:
     """탐색기에 나열/열기 가능한 확장자 = RAW + 일반 이미지(display-referred 어댑터).
     image_loader 는 지연 임포트(_load_heavy_modules)라 로드 전에는 RAW 만 — 실사용에서는
@@ -1239,14 +1274,24 @@ class Controller(QObject):
         with self._caption_lock:
             self._ensure_caption_cache(self._folder)
             caps = self._captions
-        return sum(1 for f in self._files if not f.get("isDir") and caps.get(f.get("name")))
+        return sum(1 for f in self._files
+                   if not f.get("isDir") and not f.get("paired") and caps.get(f.get("name")))
 
     indexedCount = Property(int, _get_indexed_count, notify=captionChanged)
 
     def _get_photo_count(self) -> int:
-        return sum(1 for f in self._files if not f.get("isDir"))
+        # 짝 JPEG(paired)은 세지 않는다 — '이 폴더의 사진 수'는 파일 수가 아니라 사진 수여야
+        # 한다(RAW+JPEG 동시기록 폴더에서 1000 이 아니라 503). 펼침 토글과 무관하게 고정.
+        return sum(1 for f in self._files if not f.get("isDir") and not f.get("paired"))
 
     photoCount = Property(int, _get_photo_count, notify=folderChanged)
+
+    def _get_folder_has_pairs(self) -> bool:
+        """이 폴더에 RAW+JPEG 동시기록 짝이 있나 — 있을 때만 펼치기 토글을 노출한다
+        (이미지 전용/RAW 전용 폴더에서는 쓸모없는 버튼이라 아예 안 보이게)."""
+        return any(f.get("paired") for f in self._files)
+
+    folderHasPairs = Property(bool, _get_folder_has_pairs, notify=folderChanged)
 
     def _build_kw_index(self) -> dict:
         """현재 폴더의 역인덱스 {내용어: [사진경로...]} 구축 후 self._kw_index 에 캐시.
@@ -1260,7 +1305,7 @@ class Controller(QObject):
         idx = {}
         idx_liked = {}
         for f in self._files:
-            if f.get("isDir"):
+            if f.get("isDir") or f.get("paired"):   # 짝 JPEG 은 같은 사진 — 워드클라우드 이중 계수 방지
                 continue
             name = f.get("name")
             entry = caps.get(name)
@@ -1339,7 +1384,7 @@ class Controller(QObject):
         photos = 0
         indexed = 0
         for f in self._files:
-            if f.get("isDir"):
+            if f.get("isDir") or f.get("paired"):   # photoCount 와 같은 기준(사진 수 = 파일 수 아님)
                 continue
             photos += 1
             if caps.get(f.get("name")):
@@ -2762,7 +2807,7 @@ class Controller(QObject):
         dirs.sort(key=str.lower)
         raws.sort(key=str.lower)
         items = [{"name": n, "path": os.path.join(folder, n), "isDir": True} for n in dirs]
-        items += [{"name": n, "path": os.path.join(folder, n), "isDir": False} for n in raws]
+        items += _pair_flags(folder, raws)
         likes = self._load_likes(folder)          # 사이드카 읽기(off-thread)
         edited = self._load_edited_names(folder)   # 편집 배지용(off-thread)
         self._folderScanSig.emit((seq, folder, items, likes, edited, force))

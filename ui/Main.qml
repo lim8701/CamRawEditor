@@ -1536,6 +1536,17 @@ ApplicationWindow {
             Qt.callLater(function() { win.selectInExplorer(sel) })   // 목록 바인딩 갱신 뒤 스크롤
     }
     Shortcut { sequence: "L"; enabled: !win._typing; onActivated: win.toggleLikedOnly() }
+    // 짝 JPEG 펼치기/접기 — 선택 항목이 사라져 인덱스가 다른 파일을 가리키는 것 방지(L 과 동일 규율)
+    Shortcut {
+        sequence: "P"; enabled: !win._typing
+        onActivated: {
+            var sel = ""
+            if (fileListView.currentIndex >= 0 && win.explorerFiles[fileListView.currentIndex])
+                sel = win.explorerFiles[fileListView.currentIndex].path
+            win.showPairedImages = !win.showPairedImages
+            if (sel !== "") Qt.callLater(function () { win.selectInExplorer(sel) })
+        }
+    }
     // H = 폴더 태그 워드 클라우드 토글(열기/닫기). 폴더가 있어야 열림.
     Shortcut {
         sequence: "H"; enabled: !win._typing
@@ -1544,6 +1555,10 @@ ApplicationWindow {
             else if (controller.currentFolder !== "") win.openTagCloud()
         }
     }
+    // 카메라 RAW+JPEG 동시기록에서 짝 JPEG 을 별도 행으로 볼지(기본 꺼짐 = 접어서 중복 제거).
+    // 라이트룸의 'Treat JPEG files next to raw files as separate photos' 와 같은 의미.
+    property bool showPairedImages: false
+
     // 필터 적용된 표시 목록: 좋아요만 보기면 폴더(탐색용) + 좋아요된 RAW 만.
     //  - controller.fileList(1회만 마샬링)·likeRevision·showLikedOnly 변경 시 자동 재평가
     property var explorerFiles: {
@@ -1551,12 +1566,16 @@ ApplicationWindow {
         controller.searchQuery                // 캡션 검색어 변경 시 재평가용 의존
         var files = controller.fileList        // folderChanged 시 재평가 + 1회만 읽기
         var q = controller.searchQuery
-        if (!win.showLikedOnly && q === "")
+        // 접을 짝이 없는 폴더(이미지 전용·RAW 전용)는 예전처럼 원본 배열을 그대로 — 999장 폴더에서
+        // 좋아요를 누를 때마다 전체를 순회하지 않게(기존 fast path 유지).
+        if (!win.showLikedOnly && q === ""
+                && (win.showPairedImages || !controller.folderHasPairs))
             return files
         var out = []
         for (var i = 0; i < files.length; i++) {
             var it = files[i]
             if (it.isDir) { out.push(it); continue }        // 폴더는 항상 표시(탐색용)
+            if (!win.showPairedImages && it.paired) continue  // 짝 RAW 가 있는 JPEG → 접기
             if (win.showLikedOnly && !controller.isLiked(it.path)) continue
             if (q !== "" && !controller.matchesSearch(it.path)) continue
             out.push(it)
@@ -2910,6 +2929,35 @@ ApplicationWindow {
                             onClicked: win.toggleLikedOnly()
                         }
                     }
+                    // 짝 JPEG 펼치기 토글 — 카메라 RAW+JPEG 동시기록 폴더에서만 보인다.
+                    // 접힌 상태(기본)에서는 RAW 행에 JPG 배지가 붙어 짝이 있음을 알려준다.
+                    Rectangle {
+                        id: pairBtn
+                        visible: controller.folderHasPairs
+                        Layout.preferredWidth: 30
+                        Layout.preferredHeight: 22
+                        radius: 4
+                        color: win.showPairedImages ? "#2a3340"
+                             : (pbHover.hovered ? "#3a3f4b" : "transparent")
+                        border.color: win.showPairedImages ? "#7fb3e0" : "#555555"
+                        border.width: 1
+                        ToolTip.visible: pbHover.hovered
+                        ToolTip.text: win.showPairedImages
+                            ? "Paired JPEGs shown as separate photos (P)"
+                            : "Paired JPEGs folded into their RAW (P)"
+                        Text {
+                            anchors.centerIn: parent
+                            text: "⧉"
+                            color: win.showPairedImages ? "#7fb3e0" : "#cfcfcf"
+                            font.pixelSize: 14
+                        }
+                        HoverHandler { id: pbHover }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: win.showPairedImages = !win.showPairedImages
+                        }
+                    }
                     // 배치 export 선택(체크박스) 모드 토글 — 켜면 파일 클릭=체크, 하단에 Export 바.
                     Rectangle {
                         id: selModeBtn
@@ -3014,6 +3062,8 @@ ApplicationWindow {
                         for (var i = 0; i < files.length; i++) {
                             var it = files[i]
                             if (it.isDir) continue
+                            // 짝 JPEG 은 같은 사진 — 캡션을 두 번 만들지 않는다(접힘 상태와 무관).
+                            if (it.paired) continue
                             if (win.showLikedOnly && controller.isLiked(it.path)) liked.push(it.path)
                             else rest.push(it.path)
                         }
@@ -3221,6 +3271,28 @@ ApplicationWindow {
                                         text: "No preview"
                                         color: "#888888"
                                         font.pixelSize: 10
+                                    }
+                                    // 짝 JPEG 배지 — 이 RAW 옆에 같은 이름의 JPEG 이 접혀 있다는 표시.
+                                    // 펼친 상태에서는 실제 행이 따로 보이므로 배지를 숨긴다.
+                                    Rectangle {
+                                        visible: !modelData.isDir && !win.showPairedImages
+                                                 && modelData.pair !== undefined
+                                        anchors.left: parent.left
+                                        anchors.bottom: parent.bottom
+                                        anchors.margins: 1
+                                        width: pairTxt.implicitWidth + 6
+                                        height: pairTxt.implicitHeight + 2
+                                        radius: 2
+                                        color: "#cc1e1e1e"
+                                        border.color: "#7fb3e0"
+                                        border.width: 1
+                                        Text {
+                                            id: pairTxt
+                                            anchors.centerIn: parent
+                                            text: modelData.pair !== undefined ? modelData.pair : ""
+                                            color: "#7fb3e0"
+                                            font.pixelSize: 9
+                                        }
                                     }
                                     // 좋아요(셀렉트) 하트 배지 — likeRevision 참조로 토글/폴더변경 시 갱신
                                     Text {
