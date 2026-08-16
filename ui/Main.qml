@@ -1558,6 +1558,21 @@ ApplicationWindow {
     // 카메라 RAW+JPEG 동시기록에서 짝 JPEG 을 별도 행으로 볼지(기본 꺼짐 = 접어서 중복 제거).
     // 라이트룸의 'Treat JPEG files next to raw files as separate photos' 와 같은 의미.
     property bool showPairedImages: false
+    // 다시 접으면 화면에서 사라지므로 배치 체크도 함께 푼다 — 안 보이는 파일이 Export 에
+    // 섞여 나가는 것 방지(폴더 이동 시 초기화되는 batchClearChecked 와 같은 취지).
+    onShowPairedImagesChanged: {
+        if (win.showPairedImages || win.batchCheckedCount === 0) return
+        var files = controller.fileList
+        var changed = false
+        for (var i = 0; i < files.length; i++) {
+            var it = files[i]
+            if (it.paired && win.batchChecked[it.path] === true) {
+                delete win.batchChecked[it.path]
+                changed = true
+            }
+        }
+        if (changed) win.batchCheckedRev++
+    }
 
     // 필터 적용된 표시 목록: 좋아요만 보기면 폴더(탐색용) + 좋아요된 RAW 만.
     //  - controller.fileList(1회만 마샬링)·likeRevision·showLikedOnly 변경 시 자동 재평가
@@ -3274,6 +3289,9 @@ ApplicationWindow {
                                     }
                                     // 짝 JPEG 배지 — 이 RAW 옆에 같은 이름의 JPEG 이 접혀 있다는 표시.
                                     // 펼친 상태에서는 실제 행이 따로 보이므로 배지를 숨긴다.
+                                    // ⚠️'JPG' 만 쓰면 이 행이 **JPEG 파일처럼** 읽힌다(파일명에는
+                                    //   .RAF 가 붙어 있는데 배지가 더 눈에 띔) → 앞에 '+' 를 붙여
+                                    //   '덤으로 딸려 있다'로 읽히게 하고 색도 회색으로 낮춘다.
                                     Rectangle {
                                         visible: !modelData.isDir && !win.showPairedImages
                                                  && modelData.pair !== undefined
@@ -3283,14 +3301,14 @@ ApplicationWindow {
                                         width: pairTxt.implicitWidth + 6
                                         height: pairTxt.implicitHeight + 2
                                         radius: 2
-                                        color: "#cc1e1e1e"
-                                        border.color: "#7fb3e0"
+                                        color: "#99000000"
+                                        border.color: "#6a6a6a"
                                         border.width: 1
                                         Text {
                                             id: pairTxt
                                             anchors.centerIn: parent
-                                            text: modelData.pair !== undefined ? modelData.pair : ""
-                                            color: "#7fb3e0"
+                                            text: modelData.pair !== undefined ? "+" + modelData.pair : ""
+                                            color: "#9a9a9a"
                                             font.pixelSize: 9
                                         }
                                     }
