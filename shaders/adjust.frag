@@ -100,6 +100,7 @@ layout(std140, binding = 0) uniform buf {
     float nrOn;          // 1=nrBase(디노이즈드 중성 luma) 준비됨. 0이면 휘도 NR 무동작(로드 직후 잠깐)
     float nrChroma;      // 1=nrBase 가 AI RGB 베이스(크로마 유효) → 컬러 NR 이 AI 크로마 사용
     float zoneShow;      // [프리뷰 전용] 1=존 시스템 오버레이(휘도를 존 0..X 로 양자화 표시). export=0.
+    float hlDesat;       // 하이라이트 디새추 강도: 1=RAW(센서클립 색끼 제거), 0=일반 이미지 입력
 } ubuf;
 
 layout(binding = 1) uniform sampler2D src;       // 원본(카메라네이티브 감마 인코딩)
@@ -438,10 +439,14 @@ void main() {
     // 0.5) 하이라이트 디새추레이션: near-clip 센서클립 색끼(예: 불꽃 코어 청록) 제거 → 중성.
     //      ⚠️쿨(청/녹 우세) 하이라이트만 중성화 — 밝은 빨강/주황 광원(네온·간판)은 보존.
     //      max(G,B)-R 게이트(따뜻한 색은 음수→0). filmic 뒤 display 공간.
-    {
+    //      ⚠️hlDesat=0(일반 이미지 입력)이면 통째로 끈다 — 센서 클립이 없는 display-referred
+    //      소스에선 밝은 파랑/청록이 '정상 색'이라 이 단계가 하늘·네온을 흰색으로 날린다
+    //      (실측: 실사진 최대 11 code / 채도 높은 파랑은 흰색까지). pipeline._dehaze 옆 동일 게이트.
+    if (ubuf.hlDesat > 0.0) {
         float mx = max(rgb.r, max(rgb.g, rgb.b));
         float cool = max(rgb.g, rgb.b) - rgb.r;
-        rgb = mix(rgb, vec3(mx), smoothstep(0.95, 1.0, mx) * smoothstep(0.05, 0.35, cool));
+        rgb = mix(rgb, vec3(mx), ubuf.hlDesat
+                  * smoothstep(0.95, 1.0, mx) * smoothstep(0.05, 0.35, cool));
     }
 
     // 3) 톤 영역별 — hi/sh 마스크 = 중성 dispSrc(claBlur) 국소 평균 휘도(노출 무관, 장면 구조 기준).

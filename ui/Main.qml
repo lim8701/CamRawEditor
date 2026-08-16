@@ -3728,6 +3728,9 @@ ApplicationWindow {
                         property real clipWarn: 0.0   // export 는 클리핑 오버레이 미적용
                         property real zoneShow: 0.0   // export 는 존 시스템 오버레이 미적용
                         property real displayCM: 0.0  // export 는 디스플레이 색관리 미적용(표준 sRGB)
+                        // 하이라이트 디새추(센서 클립 색끼 제거)는 RAW 전용 — 일반 이미지 입력에서는
+                        // 밝은 파랑/청록이 정상 색이라 끈다. ⚠️pipe/pipeFull/pipeline 세 곳 동일해야 함.
+                        property real hlDesat: controller.isDisplayImage ? 0.0 : 1.0
                         property variant cmLut: cmLutImage
                         property real cmLutSize: controller.cmLutN
                         // 컬러 그레이딩 — 프리뷰(pipe)와 동일 바인딩(export 일치).
@@ -4068,6 +4071,8 @@ ApplicationWindow {
                         property real grainTexelH: 1.0 / Math.max(1, height)
                         property real clipWarn: win.clipWarn ? 1.0 : 0.0   // 클리핑 경고 오버레이(프리뷰 전용)
                         property real zoneShow: win.zoneOverlay ? 1.0 : 0.0 // 존 시스템 오버레이(프리뷰 전용)
+                        // 하이라이트 디새추 게이트 — pipeFull(GPU export)/pipeline 과 동일해야 함(위 주석).
+                        property real hlDesat: controller.isDisplayImage ? 0.0 : 1.0
                         // 디스플레이 색관리(프리뷰 전용): 토글 ON + 유효 CM LUT 있을 때만.
                         property real displayCM: (win.displayCM && controller.hasDisplayCM) ? 1.0 : 0.0
                         property variant cmLut: cmLutImage

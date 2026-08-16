@@ -22,6 +22,7 @@ from scipy.ndimage import affine_transform, gaussian_filter, map_coordinates, zo
 
 import coeffs
 import date_stamp
+import image_loader
 import lens
 import raw_loader
 import wb
@@ -405,29 +406,45 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
                 progress(f)
             except Exception:
                 pass   # 진행률 보고는 부수효과일 뿐 — 실패해도 export 본체는 진행
-    with rawpy.imread(path) as raw:
-        cam = np.array(raw.rgb_xyz_matrix)[:3, :3]
-        ref = np.array(raw.daylight_whitebalance, dtype=float)[:3]
-        ref = ref / ref[1] if (ref[1] > 0 and np.all(np.isfinite(ref))) else np.ones(3)  # 빈/0 WB → 중성 폴백(NaN/블랙 방지)
-        as_shot, as_shot_tint = wb.estimate_wb(cam, ref, raw.camera_whitebalance)  # as-shot WB(K,tint)
-        target_median = raw_loader._embedded_jpeg_median(raw)   # 이미지별 자동 노출 목표(중앙값)
-        # 프록시와 동일: 카메라 네이티브(매트릭스 미적용) + TREF daylight 베이크 + 감마 저장.
-        rgb16 = raw.postprocess(user_wb=baked_wb(cam, ref),
-                                output_color=rawpy.ColorSpace.raw,
-                                # Bayer=AHD(고화질)/X-Trans=LINEAR(프록시 정합). raw_loader.load_full 과 동일.
-                                demosaic_algorithm=raw_loader._export_demosaic(raw),
-                                output_bps=16, no_auto_bright=True,
-                                gamma=(2.4, 12.92),
-                                highlight_mode=rawpy.HighlightMode.Clip)
+    # 소스 디코드 — 두 갈래 모두 `nat`(카메라네이티브 scene-linear float32, 자동노출 적용 후)로
+    # 수렴한다. 이후 단계는 소스 종류를 모른다.
+    # ⚠️일반 이미지는 filmic⁻¹ 결과가 1.0 을 넘어(최대 2.17/3.83) uint16 캐리어로 표현이 안 되고,
+    #   lens.apply 는 float 입력을 [0,1] 로 클립하며 _downscale_to_edge 는 uint16 전용이라
+    #   **다운스케일/렌즈 보정은 RAW 분기 안(감마 코드 공간)에 그대로 둔다.**
+    if image_loader.is_display_image(path):
+        cam, ref, as_shot, as_shot_tint = image_loader.meta()
+        # 축소는 display 코드 공간에서(프록시와 동일) → filmic⁻¹ → scene-linear.
+        # 자동노출/렌즈 프로파일 없음(auto_exposure_gain(None)=1.0 과 동치).
+        nat = image_loader.scene_linear(path, int(p.get("outEdge", 0) or 0))
+    else:
+        with rawpy.imread(path) as raw:
+            cam = np.array(raw.rgb_xyz_matrix)[:3, :3]
+            ref = np.array(raw.daylight_whitebalance, dtype=float)[:3]
+            ref = ref / ref[1] if (ref[1] > 0 and np.all(np.isfinite(ref))) else np.ones(3)  # 빈/0 WB → 중성 폴백(NaN/블랙 방지)
+            as_shot, as_shot_tint = wb.estimate_wb(cam, ref, raw.camera_whitebalance)  # as-shot WB(K,tint)
+            target_median = raw_loader._embedded_jpeg_median(raw)   # 이미지별 자동 노출 목표(중앙값)
+            # 프록시와 동일: 카메라 네이티브(매트릭스 미적용) + TREF daylight 베이크 + 감마 저장.
+            rgb16 = raw.postprocess(user_wb=baked_wb(cam, ref),
+                                    output_color=rawpy.ColorSpace.raw,
+                                    # Bayer=AHD(고화질)/X-Trans=LINEAR(프록시 정합). raw_loader.load_full 과 동일.
+                                    demosaic_algorithm=raw_loader._export_demosaic(raw),
+                                    output_bps=16, no_auto_bright=True,
+                                    gamma=(2.4, 12.92),
+                                    highlight_mode=rawpy.HighlightMode.Clip)
 
-    # 출력 해상도 지정(긴 변): 처리 전 다운스케일 -> 빠르고, 효과 sigma 가 해상도에
-    # 비례해 룩 동일 유지(그레인/스탬프도 이미지 상대 크기라 일관).
-    rgb16 = _downscale_to_edge(rgb16, int(p.get("outEdge", 0) or 0))
-    if p.get("lensCorrection", True):
-        rgb16 = lens.apply(rgb16, lens.load_profile(path))   # RAF 내장 샷별 보정(프록시와 동일)
+        # 출력 해상도 지정(긴 변): 처리 전 다운스케일 -> 빠르고, 효과 sigma 가 해상도에
+        # 비례해 룩 동일 유지(그레인/스탬프도 이미지 상대 크기라 일관).
+        rgb16 = _downscale_to_edge(rgb16, int(p.get("outEdge", 0) or 0))
+        if p.get("lensCorrection", True):
+            rgb16 = lens.apply(rgb16, lens.load_profile(path))   # RAF 내장 샷별 보정(프록시와 동일)
+        # 카메라네이티브 감마 -> 선형화 -> 자동노출(중앙값). 여기서 float32 로 승격하는 위치는
+        # 예전 그대로다(디코드 직후부터 float 로 들고 가면 26MP 에서 150MB 를 더 오래 문다).
+        nat = wb.srgb_to_linear(rgb16.astype(np.float32) / 65535.0)
+        nat *= wb.auto_exposure_gain(target_median, cam, ref, as_shot, nat)
+        del rgb16
     _prog(0.30)   # 디코드 + 다운스케일 + 렌즈 보정 완료(가장 큰 단일 비용)
 
-    h, w, _ = rgb16.shape
+    h, w, _ = nat.shape
     scale = max(h, w) / float(proxy_edge)     # 프록시 텍셀 반경 -> 풀해상도 px
 
     # 로컬 마스크 레이어(최대 3) — 각 레이어 파라미터 + 마스크(프록시→풀해상도 업샘플, invert 베이크).
@@ -471,10 +488,9 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     exp_add, hi_add, sh_add, deh_add = (_accum("exp"), _accum("hi"), _accum("sh"), _accum("dehaze"))
 
     # === scene-linear 프론트엔드(셰이더 adjust.frag 와 동일 수학) ===
-    # 카메라네이티브 감마 -> 선형화 -> 자동노출(중앙값) -> WB(카메라공간) -> cam->sRGB 매트릭스
-    # -> scene-linear sRGB -> 유저노출(scene-linear) -> filmic(단일 톤커브) -> display sRGB.
-    nat = wb.srgb_to_linear(rgb16.astype(np.float32) / 65535.0)
-    nat *= wb.auto_exposure_gain(target_median, cam, ref, as_shot, nat)  # 카메라네이티브(자동노출 후)
+    # nat(카메라네이티브 scene-linear, 자동노출 적용 후 — 위 디코드 분기가 만든다)
+    # -> WB(카메라공간) -> cam->sRGB 매트릭스 -> scene-linear sRGB -> 유저노출(scene-linear)
+    # -> filmic(단일 톤커브) -> display sRGB.
     M = cam_to_srgb_matrix(cam).astype(np.float32)
     # 중성 display 베이스(as-shot WB, 유저노출/desat 없음) — 셰이더 dispSrc/claBlur 와 동일.
     #   hi/sh 톤영역 마스크는 이 '장면 구조' 휘도로 계산해야 프리뷰=Export(노출 무관 마스크).
@@ -490,13 +506,18 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         expo_gain = 2.0 ** _base_exp
     linsrgb = (nat @ M.T) * expo_gain
     disp = wb.filmic(linsrgb).astype(np.float32)                     # scene→display[0,1]
-    del rgb16, nat, linsrgb   # 이후 미사용 — 26MP 공간단계 피크에서 조기 해제(수백 MB)
+    del nat, linsrgb          # 이후 미사용 — 26MP 공간단계 피크에서 조기 해제(수백 MB)
     # 하이라이트 디새추레이션: near-clip 센서클립 색끼(예: 불꽃 코어 청록) 제거 → 중성(흰색).
     # ⚠️쿨(청/녹 우세) 하이라이트만 중성화한다 — 밝은 빨강/주황 광원(예: 네온·간판)은
     # 보존해야 하므로 max(G,B)-R 로 게이트(따뜻한 색은 음수→게이트 0). filmic 뒤 display 공간.
-    _mx = disp.max(axis=2, keepdims=True)
-    _cool = np.maximum(disp[..., 1:2], disp[..., 2:3]) - disp[..., 0:1]
-    disp = disp + (_mx - disp) * (_smoothstep(0.95, 1.0, _mx) * _smoothstep(0.05, 0.35, _cool))
+    # ⚠️hlDesat=0(일반 이미지 입력)이면 통째로 끈다 — 센서 클립이 없는 display-referred 소스에선
+    # 밝은 파랑/청록이 '정상 색'이라 이 단계가 하늘·네온을 흰색으로 날린다. 셰이더 0.5 단계와 동일.
+    _hld = float(p.get("hlDesat", 1.0))
+    if _hld > 0.0:
+        _mx = disp.max(axis=2, keepdims=True)
+        _cool = np.maximum(disp[..., 1:2], disp[..., 2:3]) - disp[..., 0:1]
+        disp = disp + (_mx - disp) * (_hld * _smoothstep(0.95, 1.0, _mx)
+                                      * _smoothstep(0.05, 0.35, _cool))
 
     hi, sh = float(p.get("highlights", 0)), float(p.get("shadows", 0))
     wh, bl = float(p.get("whites", 0)), float(p.get("blacks", 0))
