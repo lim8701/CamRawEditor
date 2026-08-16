@@ -2888,48 +2888,47 @@ ApplicationWindow {
                     }
                 }
 
-                // 헤더 2줄: 폴더 통계(전체 폭 한 줄). fileList(folderChanged)·editsRevision·
-                // likeRevision 참조로 변경 시 자동 재계산. 통계는 좋아요 필터와 무관하게 폴더 전체.
-                // ⚠️토글 버튼과 같은 줄에 두지 않는다 — 패널 폭이 260 고정이라 버튼이 하나
-                //   늘 때마다 30+6px 씩 깎여 문구가 잘린다(실측: 버튼 2개 172px / 3개 136px 가용,
-                //   문구는 최대 157px). 줄을 나눠 두면 가용 폭이 244px 로 고정돼 버튼을 더 넣어도
-                //   안전하다.
-                Label {
-                    objectName: "folderStatsLabel"
-                    Layout.fillWidth: true
-                    visible: controller.currentFolder !== ""
-                    readonly property var stats: {
-                        controller.likeRevision; controller.editsRevision
-                        var files = controller.fileList
-                        var n = 0, liked = 0, edited = 0
-                        for (var i = 0; i < files.length; i++) {
-                            // 짝 JPEG 은 같은 사진 — 목록에 접혀 있으므로 수에도 넣지 않는다
-                            // (RAW+JPEG 폴더에서 1000 이 아니라 503 이 '사진 수'다).
-                            if (files[i].isDir || files[i].paired) continue
-                            n++
-                            if (controller.hasEdits(files[i].path)) edited++
-                            if (controller.isLiked(files[i].path)) liked++
-                        }
-                        return [n, edited, liked]
-                    }
-                    textFormat: Text.StyledText
-                    text: stats[0] + " photos" +
-                          (stats[1] > 0 ? "  ·  <font color='#E0A226'>" + stats[1] + " edited</font>" : "") +
-                          (stats[2] > 0 ? "  ·  <font color='#ff6b6b'>" + stats[2] + " ♥</font>" : "")
-                    color: "#7f7f7f"
-                    font.pixelSize: 11
-                    elide: Text.ElideRight
-                }
-
-                // 헤더 3줄: 필터/모드 토글(우측 정렬) — ♥ 좋아요만 / ⧉ 짝 펼치기 / ☑ 배치 선택
+                // 헤더 2줄: 폴더 통계(좌) + ♥ 좋아요만 / ⧉ 짝 펼치기 / ☑ 배치 선택(우, 컴팩트)
+                // 통계는 전체 폴더 기준(좋아요 필터 무관). fileList(folderChanged)·editsRevision·
+                // likeRevision 참조로 변경 시 자동 재계산.
+                // ⚠️패널 폭 260 고정이라 이 줄은 늘 빠듯하다. **글자 크기(11px)는 줄이지 말 것** —
+                //   대신 구분자 여백('  ·  '→' · ')과 버튼 폭(24px)에서 벌어 뒀다. 실측(실폰트):
+                //   버튼 3개 기준 가용 160px vs 최악 문구 157.2px("1000 photos · 999 edited · 999 ♥").
+                //   버튼을 더 붙이려면 24×n+4×n 만큼 다시 계산할 것(하나 더 = 28px 부족).
                 RowLayout {
                     Layout.fillWidth: true
-                    spacing: 6
-                    Item { Layout.fillWidth: true }          // 버튼을 오른쪽 끝으로
+                    spacing: 4
+                    Label {
+                        objectName: "folderStatsLabel"
+                        Layout.fillWidth: true
+                        visible: controller.currentFolder !== ""
+                        readonly property var stats: {
+                            controller.likeRevision; controller.editsRevision
+                            var files = controller.fileList
+                            var n = 0, liked = 0, edited = 0
+                            for (var i = 0; i < files.length; i++) {
+                                // 짝 JPEG 은 같은 사진 — 목록에 접혀 있으므로 수에도 넣지 않는다
+                                // (RAW+JPEG 폴더에서 1000 이 아니라 503 이 '사진 수'다).
+                                if (files[i].isDir || files[i].paired) continue
+                                n++
+                                if (controller.hasEdits(files[i].path)) edited++
+                                if (controller.isLiked(files[i].path)) liked++
+                            }
+                            return [n, edited, liked]
+                        }
+                        textFormat: Text.StyledText
+                        text: stats[0] + " photos" +
+                              (stats[1] > 0 ? " · <font color='#E0A226'>" + stats[1] + " edited</font>" : "") +
+                              (stats[2] > 0 ? " · <font color='#ff6b6b'>" + stats[2] + " ♥</font>" : "")
+                        color: "#7f7f7f"
+                        font.pixelSize: 11
+                        elide: Text.ElideRight
+                    }
+                    Item { visible: controller.currentFolder === ""; Layout.fillWidth: true }
                     // "좋아요만 보기" 토글 — ♥(채움)/♡(빈) 글리프로 활성/비활성 표시
                     Rectangle {
                         id: likeFilterBtn
-                        Layout.preferredWidth: 30
+                        Layout.preferredWidth: 24     // 폭 24 = 통계 문구 자리 확보(위 주석). 글리프는 그대로 14px
                         Layout.preferredHeight: 22
                         radius: 4
                         color: win.showLikedOnly ? "#3a2a2e"
@@ -2956,7 +2955,7 @@ ApplicationWindow {
                     Rectangle {
                         id: pairBtn
                         visible: controller.folderHasPairs
-                        Layout.preferredWidth: 30
+                        Layout.preferredWidth: 24
                         Layout.preferredHeight: 22
                         radius: 4
                         color: win.showPairedImages ? "#2a3340"
@@ -2983,7 +2982,7 @@ ApplicationWindow {
                     // 배치 export 선택(체크박스) 모드 토글 — 켜면 파일 클릭=체크, 하단에 Export 바.
                     Rectangle {
                         id: selModeBtn
-                        Layout.preferredWidth: 30
+                        Layout.preferredWidth: 24
                         Layout.preferredHeight: 22
                         radius: 4
                         color: win.batchSelectMode ? "#2e3a2a"
