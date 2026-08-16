@@ -37,13 +37,58 @@ def _is_raf(path) -> bool:
     return str(path).lower().endswith(".raf")
 
 
+def _is_display_image(path) -> bool:
+    """일반 이미지(display-referred) 인가 — 확장자 목록의 단일 출처는 image_loader.
+    지연 임포트(numpy/scipy 를 끌고 오므로), 없으면 조용히 False."""
+    try:
+        from image_loader import IMAGE_EXTS
+    except Exception:
+        return False
+    import os
+    return os.path.splitext(str(path))[1].lower() in IMAGE_EXTS
+
+
+def _display_preview_jpeg(path, max_bytes):
+    """일반 이미지 -> 프리뷰 JPEG 바이트.
+    JPEG 은 **파일 그대로** 돌려준다 — 호출부가 setScaledSize 로 libjpeg 축소 디코딩을 하므로
+    여기서 디코드하면 그 이득을 버리게 된다. PNG/TIFF 만 1회 디코드 후 JPEG 로 재인코딩."""
+    import os
+    if os.path.splitext(str(path))[1].lower() in (".jpg", ".jpeg"):
+        try:
+            with open(path, "rb") as f:
+                return f.read(max_bytes)
+        except Exception:
+            return None
+    try:
+        import numpy as np
+        from PySide6.QtGui import QImage, QImageReader
+        rd = QImageReader(str(path))
+        rd.setAutoTransform(True)                 # EXIF 방향(로더/썸네일 공통 규약)
+        img = rd.read()
+        if img.isNull():
+            return None
+        img = img.convertToFormat(QImage.Format.Format_RGB888)
+        w, h = img.width(), img.height()
+        a = (np.frombuffer(img.constBits(), np.uint8)
+             .reshape(h, img.bytesPerLine())[:, :w * 3].reshape(h, w, 3))
+        return _encode_bitmap_jpeg(a)
+    except Exception:
+        return None
+
+
 def embedded_preview_jpeg(path, max_bytes=64 * 1024 * 1024):
     """포맷 중립 임베드 프리뷰 JPEG 바이트. 실패/없음 시 None.
 
     RAF(후지 독자 컨테이너)는 헤더 오프셋 고속 파싱, 그 외 제조사 RAW(CR2/CR3/NEF/ARW/DNG…)는
-    rawpy(LibRaw)가 컨테이너별 최대 임베드 프리뷰를 추출한다. 썸네일/프리뷰/캡션 입력 공용."""
+    rawpy(LibRaw)가 컨테이너별 최대 임베드 프리뷰를 추출한다. 썸네일/프리뷰/캡션 입력 공용.
+
+    ⚠️일반 이미지(JPG/PNG/TIFF)도 여기로 온다 — 호출부(썸네일/호버 프리뷰/배경화면 썸네일/
+      캡션 입력, 총 5곳)가 전부 `QImageReader(buf, b"jpeg")` 로 **포맷을 하드코딩**하고 있어서
+      이 한 곳에서 JPEG 바이트로 맞춰 주는 게 가장 작은 변경이다(호출부 무수정)."""
     if _is_raf(path):
         return _read_embedded_jpeg(path, max_bytes=max_bytes)
+    if _is_display_image(path):
+        return _display_preview_jpeg(path, max_bytes)
     try:
         import rawpy
         with rawpy.imread(str(path)) as raw:

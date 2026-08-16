@@ -29,6 +29,7 @@ from PySide6.QtQuick import QQuickImageProvider, QQuickItem
 #    lut, raw_loader)은 여기서 임포트하지 않는다. 최상단에 두면 QGuiApplication/splash 가
 #    뜨기 전에 전부 로드돼 '아무 동작 없는' 대기 구간이 길어진다. main() 에서 splash 를
 #    띄운 *직후* _load_heavy_modules() 로 로드한다(체감 시작 시간 단축).
+image_loader = None   # 지연 로드되는 일반 이미지(display-referred) 어댑터 — 위 규약대로
 
 def app_base() -> Path:
     """번들 자산(qml/shaders/luts/fonts)이 위치한 디렉터리.
@@ -207,6 +208,18 @@ RAW_EXTS = {
     ".kdc", ".dcr",                # Kodak
     ".erf",                        # Epson
 }
+
+
+def _openable_exts() -> set:
+    """탐색기에 나열/열기 가능한 확장자 = RAW + 일반 이미지(display-referred 어댑터).
+    image_loader 는 지연 임포트(_load_heavy_modules)라 로드 전에는 RAW 만 — 실사용에서는
+    폴더 스캔이 항상 그 뒤라 문제되지 않고, 방어적으로 폴백만 둔다.
+    ⚠️일반 이미지가 목록에 들어오면 **우리가 내보낸 `<원본>_exported.jpg` 도 같이 보인다**
+      (의도된 트레이드오프 — 원본 옆에서 결과를 바로 비교할 수 있고, 사이드카는 파일명
+      기준이라 충돌하지 않는다)."""
+    if image_loader is None:
+        return RAW_EXTS
+    return RAW_EXTS | image_loader.IMAGE_EXTS
 
 # GPU 고성능(외장 GPU) 강제: Windows 그래픽 설정과 동일하게 이 실행파일(python.exe)의
 # GPU 환경설정을 '고성능'으로 레지스트리에 기록한다. False 면 Windows 기본(보통 내장) 사용.
@@ -1883,6 +1896,7 @@ class Controller(QObject):
             return
         path = file_url.toLocalFile()
         pdict = {k: params[k] for k in params}     # QVariantMap -> 평범한 dict
+        pdict["proxyEdge"] = max(self._proxy_w, self._proxy_h)   # 공간 반경 스케일 기준(스냅샷)
         # 요청 시점 스냅샷 — export 중 마스크 변경/이미지 전환과 분리.
         # ⚠️소스 경로/WB 도 반드시 스냅샷: 워커에서 self._path 를 읽으면 export 중 다른
         # 사진을 로드했을 때 '새 사진 + 이전 편집값'이 이전 파일명으로 저장되는 버그.
@@ -1907,8 +1921,16 @@ class Controller(QObject):
         curves = params.get("curves") or [ident, ident, ident, ident]
         curve_rgb = pipeline.compose_curves(*curves)
         src_path, src_kelvin, src_tint = src   # 요청 시점 스냅샷(라이브 self._path 금지)
+        # 하이라이트 디새추는 센서 클립 보정 → display-referred 소스에선 끈다(셰이더 hlDesat 와 동기).
+        params = dict(params)
+        params["hlDesat"] = 0.0 if image_loader.is_display_image(src_path) else 1.0
+        # ⚠️proxy_edge = 실제 프록시의 긴 변. 기본값 2560 을 그대로 쓰면 프록시가 2560 보다
+        #   작은 소스(웹 크기 JPEG 등)에서 공간 반경(블러/샤프닝/NR)이 프리뷰와 어긋난다
+        #   — RAW 는 항상 2560 이라 드러나지 않던 문제. 값은 요청 시점 스냅샷(params) 에서
+        #   가져온다 — 워커에서 self._proxy_* 를 읽으면 export 중 다른 사진을 로드했을 때 틀어진다.
         return pipeline.render_full(
             src_path, src_kelvin, src_tint, params, lut_arr, lut_n, curve_rgb,
+            proxy_edge=int(params.get("proxyEdge", 0) or 0) or 2560,
             bitdepth=int(params.get("bitDepth", 8)), sky_masks=sky_masks,
             progress=lambda f: self._exportProgressSig.emit(f), haze=haze)
 
@@ -1941,6 +1963,7 @@ class Controller(QObject):
             return
         pdict = {k: params[k] for k in params}
         pdict["bitDepth"] = 8                      # 패널은 항상 8bit(합성 캔버스가 uint8)
+        pdict["proxyEdge"] = max(self._proxy_w, self._proxy_h)   # exportImage 와 동일(스냅샷)
         src = (self._path, self._kelvin, self._tint)   # exportImage 와 동일 스냅샷
         sky_masks = list(self._layer_masks)
         haze = (self._haze_t, list(self._haze_A), self._haze_conf)
@@ -2210,7 +2233,10 @@ class Controller(QObject):
 
     def _do_full_decode(self, src_path: str) -> None:
         try:
-            img, *_ = load_full(src_path, bool(self._gpu_params.get("lensCorrection", True)))
+            lens_on = bool(self._gpu_params.get("lensCorrection", True))
+            img, *_ = (image_loader.load_full(src_path, lens_on)
+                       if image_loader.is_display_image(src_path)
+                       else load_full(src_path, lens_on))
             self._full_provider.set_image(img)
             self._fullDecoded.emit(True)
         except Exception as exc:
@@ -2726,7 +2752,8 @@ class Controller(QObject):
                         if e.is_dir():
                             if not e.name.startswith("."):   # .filmrawsteryedits 등 숨김
                                 dirs.append(e.name)
-                        elif e.is_file() and os.path.splitext(e.name)[1].lower() in RAW_EXTS:
+                        elif e.is_file() and (os.path.splitext(e.name)[1].lower()
+                                              in _openable_exts()):
                             raws.append(e.name)
                     except OSError:
                         pass
@@ -4073,16 +4100,21 @@ class Controller(QObject):
     def _render_worker(self, seq, path, lens_on) -> None:
         err = ""
         try:
-            res = load_proxy(path, lens_correct=lens_on)
+            # 일반 이미지(JPG/PNG/TIFF)는 display-referred 어댑터로 — 반환 계약은 동일한 6-튜플.
+            res = (image_loader.load_proxy(path, lens_correct=lens_on)
+                   if image_loader.is_display_image(path)
+                   else load_proxy(path, lens_correct=lens_on))
         except Exception as exc:
             res = None
-            err = self._decode_error_message(exc)
+            err = self._decode_error_message(exc, path)
             print(f"[load] 실패: {type(exc).__name__}: {exc}")
         self._renderReady.emit((seq, res, err))   # 메인 스레드로 큐잉
 
     @staticmethod
-    def _decode_error_message(exc) -> str:
+    def _decode_error_message(exc, path: str = "") -> str:
         """디코드 예외 → 사용자 안내 문구. LibRaw 가 못 여는 포맷/기종은 '미지원'으로 구분."""
+        if path and image_loader.is_display_image(path):
+            return "Cannot open this image (corrupt, or an unsupported variant)."
         try:
             import rawpy
             if isinstance(exc, rawpy.LibRawFileUnsupportedError):
@@ -4227,8 +4259,15 @@ class Controller(QObject):
     def _get_baked_t(self) -> float:
         return 0.0
 
+    def _get_is_display_image(self) -> bool:
+        """현재 사진이 일반 이미지(JPG/PNG/TIFF)인가 — 셰이더 hlDesat 게이트용.
+        RAW 는 센서 클립 색끼를 지워야 하지만 display-referred 소스는 그게 '정상 색'이다."""
+        return bool(self._path) and image_loader is not None \
+            and image_loader.is_display_image(self._path)
+
     imageUrl = Property(str, _get_url, notify=imageChanged)
     imagePath = Property(str, _get_path, notify=imageChanged)
+    isDisplayImage = Property(bool, _get_is_display_image, notify=imageChanged)
     caption = Property(str, _get_caption, notify=captionChanged)
     hashtags = Property(str, _get_hashtags, notify=captionChanged)
     captionBusy = Property(bool, _get_caption_busy, notify=captionChanged)
@@ -4261,7 +4300,8 @@ def _load_heavy_modules() -> None:
     global date_stamp, make_luts, read_shooting_info, read_orientation, _read_embedded_jpeg
     global embedded_preview_jpeg
     global wb, atlas_qimage, load_cube, PROXY_HEADROOM, load_full, load_proxy
-    import date_stamp, make_luts, wb                                  # noqa: E401
+    global image_loader
+    import date_stamp, image_loader, make_luts, wb                    # noqa: E401
     from exif_info import (read_shooting_info, read_orientation, _read_embedded_jpeg,
                            embedded_preview_jpeg)
     from lut import atlas_qimage, load_cube
@@ -4471,6 +4511,10 @@ def main() -> int:
         _prefer_high_performance_gpu()   # 외장 GPU 우선(다음 실행부터). Windows 한정.
 
     app = QGuiApplication(sys.argv)
+    # Qt 기본 이미지 할당 한도는 256MB — 16bit 이미지 기준 32MP 를 넘으면 **예외 없이 null
+    # QImage** 를 돌려준다(45MP TIFF 등). 우리가 여는 파일은 사용자가 명시적으로 고른 사진이라
+    # 한도를 푼다(0=무제한). 썸네일 경로에도 같이 적용된다.
+    QImageReader.setAllocationLimit(0)
     # 창/작업표시줄 아이콘. exe 리소스 아이콘(spec icon=)과 같은 파일 — dev 실행에서도 동일하게.
     _icon = BASE / "icons" / "app.ico"
     if _icon.is_file():
