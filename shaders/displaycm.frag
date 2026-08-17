@@ -12,6 +12,7 @@ layout(std140, binding = 0) uniform buf {
     float qt_Opacity;
     float displayCM;    // 1=색관리 적용
     float cmLutSize;    // CM LUT 한 변 N (0=미적용)
+    float hlDesat;      // 하이라이트 디새추 강도: 1=RAW / 0=일반 이미지 입력(adjust.frag 와 동일 의미)
 } ubuf;
 
 layout(binding = 1) uniform sampler2D src;     // display sRGB 입력(dispPre)
@@ -51,10 +52,14 @@ void main() {
     // 하이라이트 디새추레이션(쿨 하이라이트 → 중성): adjust.frag 0.5 단계와 동일 수식.
     // src(dispPre/convert.frag)는 이 단계가 없으므로 Compare original 이 무편집 pipe 와 어긋났다
     // (밝은 쿨 하이라이트=하늘/구름에서 색끼 차이). 여기서 같은 디새추를 거쳐 정합시킨다.
-    {
+    // ⚠️hlDesat 게이트도 adjust.frag/pipeline 과 **똑같이** 받아야 한다 — 일반 이미지 입력에서
+    //   여기만 디새추가 살아 있으면 Compare original 창만 밝은 파랑을 흰색으로 날려
+    //   '있지도 않은 편집 차이'를 보여준다(실측 최대 250/255).
+    if (ubuf.hlDesat > 0.0) {
         float mx = max(rgb.r, max(rgb.g, rgb.b));
         float cool = max(rgb.g, rgb.b) - rgb.r;
-        rgb = mix(rgb, vec3(mx), smoothstep(0.95, 1.0, mx) * smoothstep(0.05, 0.35, cool));
+        rgb = mix(rgb, vec3(mx), ubuf.hlDesat
+                  * smoothstep(0.95, 1.0, mx) * smoothstep(0.05, 0.35, cool));
     }
 
     if (ubuf.displayCM > 0.5 && ubuf.cmLutSize > 1.5) {

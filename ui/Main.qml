@@ -2270,6 +2270,10 @@ ApplicationWindow {
                 return
             }
         }
+        // 목록에 없음(필터/접기로 사라짐) → currentIndex 를 그대로 두면 **다른 사진**을 가리킨
+        // 채 남아서 Return/방향키가 엉뚱한 파일에 작동한다. 선택을 명시적으로 해제한다.
+        // (짝 접기는 기본 상태이고 행의 절반을 없애므로 좋아요 필터보다 훨씬 자주 걸린다.)
+        fileListView.currentIndex = -1
     }
 
     // 검색어 변경(입력/삭제) 처리: 모델(explorerFiles) 재평가로 currentIndex 가 다른 항목을
@@ -4026,6 +4030,9 @@ ApplicationWindow {
                         property variant cmLut: cmLutImage
                         property real displayCM: (win.displayCM && controller.hasDisplayCM) ? 1.0 : 0.0
                         property real cmLutSize: controller.cmLutN
+                        // pipe/pipeFull 과 동일한 게이트 — 이 값이 어긋나면 Compare original 이
+                        // 편집하지 않은 차이를 보여준다(displaycm.frag 주석 참조).
+                        property real hlDesat: controller.isDisplayImage ? 0.0 : 1.0
                         fragmentShader: "../shaders/displaycm.frag.qsb"
                     }
 
@@ -5888,7 +5895,17 @@ ApplicationWindow {
                 Slider {
                     id: tempSlider
                     Layout.fillWidth: true
-                    from: 2000; to: 12000; value: 6500
+                    // ⚠️일반 이미지(display-referred) 는 **하한 2500K** — 카메라 공간이 선형 sRGB
+                    //   원색이라 그 아래에서 blue 게인이 실제 카메라 대비 폭발한다(실측 rel_gain
+                    //   blue: 2000K 28.7 vs 카메라 2.57 = 11.2배 / 2500K 4.87 vs 2.04 = 2.4배 /
+                    //   3000K 이상은 1.6배 이내). 8bit 로 구워진 사진을 2000K 로 재밸런싱하는 건
+                    //   양자화 노이즈를 ×28 증폭하는 것이라 의미도 없다(라이트룸도 비-RAW 에는
+                    //   절대 켈빈 대신 제한된 상대 범위를 준다). 고역은 오히려 실제 카메라보다
+                    //   순해서(12000K 0.56 vs 0.71) 클램프 불필요.
+                    //   ⚠️Bradford LMS 를 카메라 공간으로 쓰면 Temp 는 고쳐지지만(2000K 5.50)
+                    //   8bit 프록시 왕복 오차가 실사진에서 2.0→8.3 code 로 4배가 된다 → 기각.
+                    from: controller.isDisplayImage ? 2500 : 2000
+                    to: 12000; value: 6500
                     stepSize: 50
                     // 더블클릭 -> as-shot 색온도로 리셋
                     property real defaultValue: controller.asShotKelvin

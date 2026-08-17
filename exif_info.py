@@ -48,22 +48,39 @@ def _is_display_image(path) -> bool:
     return os.path.splitext(str(path))[1].lower() in IMAGE_EXTS
 
 
-def _display_preview_jpeg(path, max_bytes):
+def _display_preview_jpeg(path, max_bytes, edge=0):
     """일반 이미지 -> 프리뷰 JPEG 바이트.
+
     JPEG 은 **파일 그대로** 돌려준다 — 호출부가 setScaledSize 로 libjpeg 축소 디코딩을 하므로
-    여기서 디코드하면 그 이득을 버리게 된다. PNG/TIFF 만 1회 디코드 후 JPEG 로 재인코딩."""
+    여기서 디코드하면 그 이득을 버리게 된다. PNG/TIFF 는 임베드 프리뷰가 없어 디코드 후
+    JPEG 로 재인코딩해야 한다.
+    ⚠️`edge`(요청 긴 변) 를 받으면 **읽는 단계에서 축소**한다 — 없으면 96px 썸네일 하나 때문에
+      12MP PNG 를 풀해상도로 디코드하고 10.7MB JPEG 을 만든다(실측 0.78s/장). 썸네일 프로바이더는
+      비동기 스레드에서 동시에 여러 장을 굽기 때문에 필름 스캔·TIFF export 폴더를 열면 그대로 체증이 된다.
+    ⚠️JPEG 이 max_bytes 보다 크면 **잘라서 주지 않는다** — 잘린 JPEG 은 실패가 아니라 아래쪽이
+      회색인 반쪽 이미지로 렌더돼(placeholder 로도 안 떨어짐) 더 나쁘다. 디코드 경로로 넘긴다."""
     import os
     if os.path.splitext(str(path))[1].lower() in (".jpg", ".jpeg"):
         try:
-            with open(path, "rb") as f:
-                return f.read(max_bytes)
+            if os.path.getsize(path) <= max_bytes:
+                with open(path, "rb") as f:
+                    return f.read()
         except Exception:
             return None
+        # 너무 큰 JPEG → 아래 디코드/재인코딩(축소 포함)으로 폴백
     try:
         import numpy as np
+        from PySide6.QtCore import QSize
         from PySide6.QtGui import QImage, QImageReader
         rd = QImageReader(str(path))
         rd.setAutoTransform(True)                 # EXIF 방향(로더/썸네일 공통 규약)
+        if edge > 0:
+            sz = rd.size()                        # 헤더만 읽음(디코드 전)
+            long_e = max(sz.width(), sz.height())
+            if long_e > edge > 0:
+                f = edge / float(long_e)
+                rd.setScaledSize(QSize(max(1, round(sz.width() * f)),
+                                       max(1, round(sz.height() * f))))
         img = rd.read()
         if img.isNull():
             return None
@@ -76,7 +93,7 @@ def _display_preview_jpeg(path, max_bytes):
         return None
 
 
-def embedded_preview_jpeg(path, max_bytes=64 * 1024 * 1024):
+def embedded_preview_jpeg(path, max_bytes=64 * 1024 * 1024, edge=0):
     """포맷 중립 임베드 프리뷰 JPEG 바이트. 실패/없음 시 None.
 
     RAF(후지 독자 컨테이너)는 헤더 오프셋 고속 파싱, 그 외 제조사 RAW(CR2/CR3/NEF/ARW/DNG…)는
@@ -84,11 +101,13 @@ def embedded_preview_jpeg(path, max_bytes=64 * 1024 * 1024):
 
     ⚠️일반 이미지(JPG/PNG/TIFF)도 여기로 온다 — 호출부(썸네일/호버 프리뷰/배경화면 썸네일/
       캡션 입력, 총 5곳)가 전부 `QImageReader(buf, b"jpeg")` 로 **포맷을 하드코딩**하고 있어서
-      이 한 곳에서 JPEG 바이트로 맞춰 주는 게 가장 작은 변경이다(호출부 무수정)."""
+      이 한 곳에서 JPEG 바이트로 맞춰 주는 게 가장 작은 변경이다(호출부 무수정).
+    edge: 요청 긴 변(px). 일반 이미지 중 임베드 프리뷰가 없는 PNG/TIFF 를 이 크기로 **축소
+      디코딩**하는 데만 쓰인다(0=원본). RAW 경로는 임베드 프리뷰가 이미 작아 무관."""
     if _is_raf(path):
         return _read_embedded_jpeg(path, max_bytes=max_bytes)
     if _is_display_image(path):
-        return _display_preview_jpeg(path, max_bytes)
+        return _display_preview_jpeg(path, max_bytes, edge)
     try:
         import rawpy
         with rawpy.imread(str(path)) as raw:
@@ -147,6 +166,11 @@ def _exif_tags(path):
             return tags
     except Exception:
         pass
+    # 일반 이미지는 위의 '파일 직접'이 곧 최종 답이다 — 폴백으로 가면 PNG/TIFF 를 통째로
+    # 디코드해 JPEG 로 재인코딩하는데(사진 열 때마다 2회, 실측 1.11s/12MP) Qt JPEG 라이터는
+    # EXIF 를 쓰지 않으므로 결과가 항상 빈 딕셔너리다. 순수 낭비라 여기서 끊는다.
+    if _is_display_image(path):
+        return {}
     # 폴백(CR3 등): 임베드 프리뷰 JPEG 의 표준 EXIF.
     jpeg = embedded_preview_jpeg(path)
     if not jpeg:

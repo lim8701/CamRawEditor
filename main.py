@@ -685,7 +685,9 @@ class ThumbProvider(QQuickImageProvider):
         # 2차: EXIF 썸네일이 없거나 큰 썸네일(>160px) 요청이면 내장 풀 프리뷰를
         #      요청 크기로 축소 디코딩(libjpeg 스케일드 디코딩, 13MP 풀디코딩 회피).
         try:
-            jpeg = embedded_preview_jpeg(path)
+            # edge 를 넘겨야 임베드 프리뷰가 없는 PNG/TIFF 를 **축소 디코딩**한다
+            # (없으면 96px 타일 하나에 12MP 풀디코드 + 10.7MB JPEG 재인코딩 — exif_info 주석 참조).
+            jpeg = embedded_preview_jpeg(path, edge=edge)
             if not jpeg:
                 return QImage()                      # null -> QML status=Error -> placeholder
             buf = QBuffer()
@@ -783,7 +785,7 @@ class PreviewProvider(QQuickImageProvider):
     @staticmethod
     def _make_preview(path, edge) -> QImage:
         try:
-            jpeg = embedded_preview_jpeg(path)
+            jpeg = embedded_preview_jpeg(path, edge=edge)   # PNG/TIFF 축소 디코딩(_make_thumb 동일)
             if not jpeg:
                 return QImage()
             buf = QBuffer()
@@ -4158,7 +4160,9 @@ class Controller(QObject):
     @staticmethod
     def _decode_error_message(exc, path: str = "") -> str:
         """디코드 예외 → 사용자 안내 문구. LibRaw 가 못 여는 포맷/기종은 '미지원'으로 구분."""
-        if path and image_loader.is_display_image(path):
+        # ⚠️image_loader None 가드 필수 — 이 함수는 _render_worker 의 except 안에서 돌기 때문에
+        #   여기서 AttributeError 가 나면 _renderReady 를 못 emit 하고 busy 가 영구 True 로 남는다.
+        if path and image_loader is not None and image_loader.is_display_image(path):
             return "Cannot open this image (corrupt, or an unsupported variant)."
         try:
             import rawpy
@@ -4557,9 +4561,11 @@ def main() -> int:
 
     app = QGuiApplication(sys.argv)
     # Qt 기본 이미지 할당 한도는 256MB — 16bit 이미지 기준 32MP 를 넘으면 **예외 없이 null
-    # QImage** 를 돌려준다(45MP TIFF 등). 우리가 여는 파일은 사용자가 명시적으로 고른 사진이라
-    # 한도를 푼다(0=무제한). 썸네일 경로에도 같이 적용된다.
-    QImageReader.setAllocationLimit(0)
+    # QImage** 를 돌려준다(45MP TIFF 등). 큰 사진을 열 수 있게 올리되 **끄지는 않는다(0 금지)** —
+    # 이 한도는 사용자가 고른 사진에만 걸리는 게 아니라 폴더를 열면 자동으로 도는 썸네일/호버
+    # 프리뷰 경로에도 걸린다. 무제한이면 손상 파일이나 치수를 크게 선언한 파일 하나로 프로세스가
+    # OOM 으로 죽는다(가드가 있으면 null QImage → placeholder 로 끝난다).
+    QImageReader.setAllocationLimit(2048)
     # 창/작업표시줄 아이콘. exe 리소스 아이콘(spec icon=)과 같은 파일 — dev 실행에서도 동일하게.
     _icon = BASE / "icons" / "app.ico"
     if _icon.is_file():

@@ -99,7 +99,7 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
 |------|------|
 | `main.py` | 앱 진입점, 이미지 프로바이더(Raw/Lut/Curve), Controller(로드·WB·export) |
 | `raw_loader.py` | RAF → 프록시 QImage (절대 Kelvin WB, half_size, max_edge=2560) |
-| `image_loader.py` | **일반 이미지(JPG/PNG/TIFF) → 같은 프록시 계약** (display-referred 어댑터). 프론트엔드가 `filmic()` 을 거는 것을 로드 시 `filmic⁻¹` 로 상쇄 → **중립 설정 export 가 원본과 비트 동일**(실측). 카메라공간=선형 sRGB(cam2srgb 항등, Temp/Tint 는 유효), 자동노출/렌즈보정 없음. 순백은 역함수가 발산해 최상단 코드의 1/4 빈 아래에서 클램프(8bit 2.171 / 16bit 3.834 < PROXY_HEADROOM). ⚠️`hlDesat=0` 필수 — 하이라이트 디새추는 센서 클립 보정이라 display-referred 소스에선 하늘·네온을 흰색으로 날린다(셰이더·pipeline·QML 두 ShaderEffect 동시 관리) |
+| `image_loader.py` | **일반 이미지(JPG/PNG/TIFF) → 같은 프록시 계약** (display-referred 어댑터). 프론트엔드가 `filmic()` 을 거는 것을 로드 시 `filmic⁻¹` 로 상쇄 → **중립 설정 export 가 원본과 비트 동일**(실측). 카메라공간=선형 sRGB(cam2srgb 항등, Temp/Tint 는 유효), 자동노출/렌즈보정 없음. 순백은 역함수가 발산해 최상단 코드의 1/4 빈 아래에서 클램프(8bit 2.171 / 16bit 3.834 < PROXY_HEADROOM). ⚠️`hlDesat=0` 필수 — 하이라이트 디새추는 센서 클립 보정이라 display-referred 소스에선 하늘·네온을 흰색으로 날린다. **같은 수식이 `adjust.frag`·`displaycm.frag`(Compare original 패스)·`pipeline.render_full` 세 곳에 있고 QML 은 `pipe`/`pipeFull`/`comparePipe` 세 ShaderEffect 에 게이트를 물려야 한다** — `displaycm.frag` 를 빠뜨려 `\` 비교창만 파랑을 날리는 버그가 있었다. Temp 는 일반 이미지에서 하한 2500K(선형 sRGB 원색의 저색온도 폭발 회피 — Bradford 교체는 프록시 정밀도 4배 악화로 기각) |
 | `wb.py` | Kelvin(+tint) → rawpy user_wb 배수, as-shot 색온도 추정 |
 | `lut.py` | `.cube` 3D LUT 파서 → 2D 아틀라스(셰이더용) |
 | `exif_info.py` | RAF 임베드 JPEG에서 EXIF 촬영정보 추출(exifread) → 패널/오버레이 |
