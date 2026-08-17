@@ -50,7 +50,7 @@ BASE = app_base()
 SHADERS_DIR = BASE / "shaders"
 SHADER_NAMES = ["adjust.frag", "blur.frag", "convert.frag", "displaycm.frag", "stamp.frag"]
 LUTS_DIR = BASE / "luts"
-APP_VERSION = "1.8.2"   # SemVer(MAJOR.MINOR.PATCH). 올릴 때 packaging/version_info.txt(exe 버전 리소스)도 수동으로 맞출 것
+APP_VERSION = "1.9.0"   # SemVer(MAJOR.MINOR.PATCH). 올릴 때 packaging/version_info.txt(exe 버전 리소스)도 수동으로 맞출 것
 
 
 def _feature_flags() -> dict:
