@@ -2572,6 +2572,31 @@ class Controller(QObject):
     shootingInfo = Property("QVariantList", _get_exif, notify=exifChanged)
     shootingSummary = Property(str, _get_exif_summary, notify=exifChanged)
 
+    def _exif_field(self, label: str) -> str:
+        """캐시된 촬영정보에서 라벨 하나 — 없으면 빈 문자열.
+        read_shooting_info 가 값이 있는 행만 담으므로, 없는 라벨은 자연히 빈 값이 된다."""
+        return next((f["value"] for f in self._exif_fields if f["label"] == label), "")
+
+    @Slot(result="QVariantMap")
+    def presetSource(self):  # noqa: N802 (QML 슬롯)
+        """레시피 프리셋에 기록할 **출처**. 저장 시 기록과 불러올 때의 비교가 같은 것을 쓴다.
+
+        ⚠️EXIF 를 다시 읽지 않는다 — `_load` 가 이미 `_exif_fields` 에 캐시해 뒀다.
+        ⚠️값이 없으면 빈 문자열이고 **그게 정상인 경우가 많다**: 우리가 export 한 JPEG 은 Qt 가
+          EXIF 를 안 써서 태그가 0개이고, PNG 은 애초에 없다. 렌즈는 고정렌즈 바디·구형 RAW·
+          MakerNote 전용 기록에서 비므로 초점거리가 실질적인 식별자다(exif_info 주석 참조).
+        ⚠️필름 스캔은 `camera` 가 스캐너 이름(`NORITSU KOKI EZ Controller`)이다. 가공하지 않고
+          그대로 기록한다 — 실제로 그 장비에서 나온 것이 맞고, 임의로 바꾸면 더 헷갈린다."""
+        return {
+            "camera": self._exif_field("Camera"),
+            "lens": self._exif_field("Lens"),
+            "focalLength": self._exif_field("Focal Length"),
+            "aperture": self._exif_field("Aperture"),
+            "iso": self._exif_field("ISO"),
+            # 촬영일은 날짜만(시각은 출처 표시에 불필요하고 파일명에도 못 쓴다)
+            "shotDate": self._exif_field("Date")[:10],
+        }
+
     def _get_stamp_url(self) -> str:
         return self._stamp_url
 
@@ -2800,9 +2825,7 @@ class Controller(QObject):
             self._stamp_rot = date_stamp.rot_from_orientation(read_orientation(path))
         except Exception:
             self._stamp_rot = 0
-        date_val = next((f["value"] for f in self._exif_fields
-                         if f["label"] == "Date"), "")
-        self._stamp_text = date_stamp.stamp_text_from_date(date_val)
+        self._stamp_text = date_stamp.stamp_text_from_date(self._exif_field("Date"))
         self.exifChanged.emit()
         # 좌측 file explorer 를 이 파일의 폴더로 동기화(다른 폴더 파일을 열어도 따라옴).
         parent = str(Path(path).parent)
