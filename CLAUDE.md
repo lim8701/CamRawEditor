@@ -109,6 +109,7 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
 | `lens.py` | RAF 내장 샷별 렌즈 보정(FujiIFD 0xf00b/0f/10 파싱 — 후지 전 기종, 기종 등록 불필요) |
 | `date_stamp.py` | 필름 데이트백: DSEG7 7-세그 날짜+글로우 렌더, 프리뷰/export 합성 |
 | `make_luts.py` | 근사 필름룩을 .cube 로 베이크(폴백용) |
+| `presets.py` | 레시피 프리셋(`.frpreset`) — 룩만 담는 JSON + **출처(카메라·렌즈·초점거리·촬영일·appVersion) 기록**, 파일명 새니타이저, 검증기. 구분색 12색 팔레트 상수도 여기 |
 | `pipeline.py` | **풀해상도 export** (numpy, 셰이더와 동일 파이프라인 재현) |
 | `ui/Main.qml` | 전체 UI (좌: 이미지 / 우: 스크롤 패널) |
 | `ui/CurveEditor.qml` | 톤 커브 위젯(드래그/추가/삭제, Catmull-Rom) |
@@ -166,6 +167,40 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
 - 셰이더 텍스처는 image provider 경로(Image→sampler)가 검증됨. Canvas→ShaderEffectSource 직접
   바인딩은 과거 검정화면 유발(커브 LUT를 provider 방식으로 전환해 해결).
 
+## 레시피 프리셋 (`.frpreset`)
+
+편집 '룩'만 저장/공유하고 **출처를 함께 기록**한다. 목적이 "레시피는 장비에 묶여 있다"를 사용자가
+알게 하는 것이므로(피드백 발단), 기록만 하지 않고 **적용 시점에 배너로 보여준다**.
+
+- **담는 키의 단일 진실원 = `main.Controller._PRESET_KEYS`** (QML 에 `presetKeys` 로 노출).
+  저장 필터·로드 필터·QML 의 '기본값으로 되돌릴 키' 목록이 **반드시 이 하나**를 봐야 한다.
+  ⚠️새 슬라이더를 추가하면 이 목록에 넣을지 판단할 것 — 넣지 않으면 프리셋에 안 실리고,
+  검증 스크립트가 `_PRESET_KEYS + 제외 = editParams() 전체`를 대조하므로 그때 걸린다.
+- **제외 이유**(각각 다름): `temp`/`tint`=장면 조명별 · 크롭/기하/`stampText`/`dateStamp`=사진별
+  · `maskLayers`=그 사진 구도에 묶임(숫자만 실으면 `layerHasMask` 게이팅 때문에 "슬라이더는 0이
+  아닌데 효과가 0"인 상태가 되어 **더 나쁘다**) · `aiNr`=수신자 기계에서 모델 다운로드·모달 유발
+  · `lensCorrection`=그 렌즈/그 샷 성질 + 풀 재디코드 유발 · `lumaNR`/`colorNR`=그 사진 ISO 의존.
+  ⚠️**복사/붙여넣기는 `lumaNR`/`colorNR`/`maskLayers` 를 싣는다** — 프리셋과 의도적으로 다르다.
+- ⚠️**적용은 `applyPresetEdits` 의 3단 병합**이어야 한다. 프리셋 dict 를 `applyEdits` 에 그대로
+  넘기면 `applySkyEdits` 가 **대상 사진의 마스크를 삭제**하고 WB·크롭·스탬프 텍스트도 초기화된다.
+  병합만 하면 **이전 프리셋의 룩이 남는다** → 프리셋 소유 키를 먼저 지운 뒤 덮어쓴다.
+  삭제 목록은 **정확히 `presetKeys`**(프리셋이 안 가진 키를 지우면 기본값으로 강제 — 예:
+  `lensCorrection` 은 기본 true 라 조용히 켜지며 재디코드). `simIndex` 도 지워야 이전 필름시뮬이
+  부활하지 않는다.
+- ⚠️`applyEdits` 는 **`try/finally`** 로 감쌀 것 — 프리셋은 앱 외부에서 편집·공유되는 첫 입력이고,
+  예외가 나면 `_applying` 이 영구 true 로 남아 그 세션의 자동저장·undo 가 조용히 죽는다.
+- ⚠️배너는 **undo/redo(`applySnapshot`)와 사진 전환(`onEditsReady`) 두 곳에서 지운다** — 없으면
+  Ctrl+Z 후에도 "남의 레시피 적용됨"이라 거짓말을 한다.
+- ⚠️**초점거리는 비교하지 않는다**(줌이면 매번 오탐). 비교는 `camera`, 그리고 `lens` 는 양쪽에 다
+  있을 때만. 렌즈는 대부분 빈다 — 고정렌즈 바디는 태그를 안 쓰고 `_exif_tags` 는 `details=False`
+  로 MakerNote 를 파싱하지 않는다(실측 8개 파일 전부 없음).
+- 파일명: 앱 내부는 `<이름>.frpreset` 로 짧게(패널 300px 라 출처를 넣으면 잘려 오히려 안 보인다),
+  **공유(Export) 제안 파일명에만** 출처를 넣는다. 파일명은 항상 **내부 `name` 에서 재파생**
+  (들어온 파일명을 믿으면 `../../foo` 가 경로 탈출 쓰기가 된다).
+- `.frpreset` 파일 연결은 등록하지 않음 → 공유받은 파일은 **Import 로만** 들어온다.
+- 저장 위치: `%LOCALAPPDATA%/FilmRawstery/presets/` (models 와 같은 base dir — 로밍 안 되고
+  언인스톨 후에도 남는다. 기능 하나 때문에 두 번째 base dir 를 만들지 않는다).
+
 ## Export
 
 - `pipeline.py` 가 풀해상도(6246×4170)를 동일 파이프라인으로 현상 → jpg/png/tif(8bit) 저장.
@@ -221,5 +256,5 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
 
 ## 향후 후보
 
-디헤이즈 물리모델 계수 튜닝(라이트룸 나란히 비교 — DEHAZE_TMIN/RESID), 프리셋 저장·불러오기,
+디헤이즈 물리모델 계수 튜닝(라이트룸 나란히 비교 — DEHAZE_TMIN/RESID),
 16bit GPU export, export 속도 최적화, 범위 마스크(휘도/색상), 그라디언트 필터.
