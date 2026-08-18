@@ -1941,12 +1941,12 @@ class Controller(QObject):
         import presets
         out = []
         for d in presets.listdir(self._presets_dir(), self._PRESET_KEYS):
-            out.append({k: d[k] for k in ("name", "color", "createdAt", "appVersion",
-                                          "source", "file")})
+            out.append({k: d[k] for k in ("name", "description", "color", "createdAt",
+                                          "appVersion", "source", "file")})
         return out
 
-    @Slot(str, str, "QVariantMap", result=str)
-    def savePreset(self, name: str, color: str, edits) -> str:  # noqa: N802 (QML 슬롯)
+    @Slot(str, str, str, "QVariantMap", result=str)
+    def savePreset(self, name: str, color: str, description: str, edits) -> str:  # noqa: N802
         """현재 편집의 '룩'만 프리셋으로 저장. 성공 시 파일 경로, 실패 시 "".
         edits 는 QML 이 넘긴 전체 편집값 — 허용 목록으로 걸러서 사진별 값이 새지 않게 한다."""
         import datetime
@@ -1960,7 +1960,8 @@ class Controller(QObject):
             print(f"[preset] 저장 거부: {err}")
             return ""
         doc = presets.build(name, str(color or ""), self.presetSource(), keep,
-                            APP_VERSION, datetime.date.today().isoformat())
+                            APP_VERSION, datetime.date.today().isoformat(),
+                            str(description or ""))
         try:
             path = presets.write(self._presets_dir(), doc)
         except Exception as exc:
@@ -1980,6 +1981,36 @@ class Controller(QObject):
             return {"error": err}
         d["error"] = ""
         return d
+
+    @Slot(str, str, str, str, result=str)
+    def editPreset(self, file: str, name: str, color: str, description: str) -> str:  # noqa: N802
+        """이름/구분색/설명만 수정. **룩과 출처는 그대로 유지**한다 — 룩을 바꾸려면 같은 이름으로
+        다시 저장하면 된다(내부 name 이 같으면 덮어쓰는 규약).
+        ⚠️이름이 바뀌면 파일명도 바뀌므로 **이전 파일을 지워야** 한다(안 그러면 둘로 늘어난다)."""
+        import presets
+        name = str(name or "").strip()
+        if not name:
+            return ""
+        d, err = presets.read(str(file), self._PRESET_KEYS)
+        if err:
+            print(f"[preset] 수정 실패(읽기) {file}: {err}")
+            return ""
+        doc = presets.build(name, str(color or ""), d["source"], d["edits"],
+                            d["appVersion"] or APP_VERSION, d["createdAt"],
+                            str(description or ""))
+        try:
+            path = presets.write(self._presets_dir(), doc)
+        except Exception as exc:
+            print(f"[preset] 수정 실패(쓰기): {exc}")
+            return ""
+        old = Path(str(file))
+        if Path(path) != old and old.is_file():
+            try:
+                old.unlink()
+            except Exception as exc:
+                print(f"[preset] 이전 파일 삭제 실패(중복 남음): {exc}")
+        print(f"[preset] 수정: {path}")
+        return path
 
     @Slot(str, result=bool)
     def deletePreset(self, file: str) -> bool:  # noqa: N802 (QML 슬롯)
@@ -2008,7 +2039,8 @@ class Controller(QObject):
             print(f"[preset] 가져오기 거부 {src}: {err}")
             return ""
         doc = presets.build(d["name"], d["color"], d["source"], d["edits"],
-                            d["appVersion"] or APP_VERSION, d["createdAt"])
+                            d["appVersion"] or APP_VERSION, d["createdAt"],
+                            d.get("description", ""))
         try:
             path = presets.write(self._presets_dir(), doc)
         except Exception as exc:

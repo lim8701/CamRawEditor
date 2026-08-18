@@ -185,13 +185,14 @@ def validate_edits(edits, allowed) -> tuple:
 # ---------- 읽기/쓰기 ----------
 
 def build(name: str, color: str, source: dict, edits: dict, app_version: str,
-          created: str) -> dict:
-    """저장할 프리셋 dict. `color` 는 **메타데이터이지 룩 값이 아니다** — 루트에 두고
-    edits 에는 절대 넣지 않는다(넣으면 슬라이더로 흘러간다)."""
+          created: str, description: str = "") -> dict:
+    """저장할 프리셋 dict. `color`/`description` 은 **메타데이터이지 룩 값이 아니다** — 루트에
+    두고 edits 에는 절대 넣지 않는다(넣으면 슬라이더로 흘러간다)."""
     return {
         "kind": KIND,
         "v": SCHEMA_V,
         "name": str(name),
+        "description": str(description or "")[:280],   # 배지 툴팁/공유용 한두 줄
         "color": color if color in PALETTE else FALLBACK_COLOR,
         "createdAt": created,
         "appVersion": str(app_version),
@@ -218,6 +219,7 @@ def read(path: str, allowed) -> tuple:
     src = d.get("source")
     return {
         "name": str(d.get("name") or os.path.splitext(os.path.basename(path))[0]),
+        "description": str(d.get("description") or "")[:280],
         "color": d["color"] if d.get("color") in PALETTE else FALLBACK_COLOR,
         "createdAt": str(d.get("createdAt") or ""),
         "appVersion": str(d.get("appVersion") or ""),

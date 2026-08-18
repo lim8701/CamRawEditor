@@ -975,6 +975,11 @@ ApplicationWindow {
     property var presetItems: []          // controller.presetList() 캐시(배지 그리드 모델)
     property string _presetPendingDelete: ""   // 삭제 확인 대기 중인 파일
     property string _presetPendingName: ""
+    // 우클릭 컨텍스트 대상(수정/내보내기/삭제 공용)
+    property string _presetCtxFile: ""
+    property string _presetCtxName: ""
+    property string _presetCtxColor: ""
+    property string _presetCtxDesc: ""
     function refreshPresets() { win.presetItems = controller.presetList() }
 
     // 배너 문구. "" = 배너 없음. presetNoticeWarn=true 면 앰버 경고, false 면 회색 정보.
@@ -2876,14 +2881,42 @@ ApplicationWindow {
         wallpaperSaveDialog.selectedFile = win.withExt(wallpaperSaveDialog.selectedFile, exts[i])
     }
 
-    // ── 레시피 저장: 이름 + 구분색 ──
-    // 종료/후원 대화상자와 같은 컨셉(다크 + 상·하 필름 퍼포레이션 + 앰버 강조).
-    // 폭은 440 — 팔레트 12색을 한 줄에 담고 출처 문구가 덜 접히게(종료 380 보다 넓게).
+    // ── 레시피 우클릭 메뉴 ──
+    Menu {
+        id: presetCtxMenu
+        MenuItem {
+            text: "Edit\u2026"
+            onTriggered: presetSaveDialog.openForEdit(
+                win._presetCtxFile, win._presetCtxName, win._presetCtxColor, win._presetCtxDesc)
+        }
+        MenuItem {
+            text: "Export\u2026"
+            onTriggered: {
+                presetExportDialog.sourceFile = win._presetCtxFile
+                var u = controller.suggestedPresetShareUrl(win._presetCtxFile)
+                if (String(u) !== "") presetExportDialog.selectedFile = u
+                presetExportDialog.open()
+            }
+        }
+        MenuSeparator {}
+        MenuItem {
+            text: "Delete\u2026"
+            onTriggered: {
+                win._presetPendingDelete = win._presetCtxFile
+                win._presetPendingName = win._presetCtxName
+                presetDeleteDialog.open()
+            }
+        }
+    }
+
+    // ── 레시피 저장 / 수정 ──
+    // 종료·후원 대화상자와 같은 컨셉(다크 + 상·하 필름 퍼포레이션 + 앰버 강조).
+    // 폭 520: 구분색 12칸이 **한 줄**에 들어가야 한다(28px×12 + 8px 간격×11 = 424, 여백 48).
     Popup {
         id: presetSaveDialog
         modal: true
         dim: true
-        width: 440
+        width: 520
         padding: 0
         anchors.centerIn: Overlay.overlay
         closePolicy: Popup.CloseOnEscape
@@ -2894,22 +2927,43 @@ ApplicationWindow {
         }
         property string chosenColor: controller.presetPalette[0]
         property var src: ({})
+        property string editFile: ""       // "" = 새로 저장 / 경로 = 그 레시피 수정
+        readonly property bool editing: presetSaveDialog.editFile !== ""
         readonly property bool nameOk: presetNameInput.text.trim() !== ""
-        onOpened: {
+
+        // 새로 저장(현재 편집의 룩을 담는다)
+        function openForSave() {
+            presetSaveDialog.editFile = ""
             presetNameInput.text = ""
+            presetDescInput.text = ""
             presetSaveDialog.src = controller.presetSource()
             presetSaveDialog.chosenColor = controller.presetPalette[0]
-            presetNameInput.forceActiveFocus()
+            presetSaveDialog.open()
         }
+        // 수정(이름·색·설명만. 룩과 출처는 저장돼 있던 것을 그대로 유지한다)
+        function openForEdit(file, name, color, desc) {
+            presetSaveDialog.editFile = file
+            presetNameInput.text = name
+            presetDescInput.text = desc || ""
+            presetSaveDialog.chosenColor = color
+            presetSaveDialog.src = ({})     // 수정 모드에선 출처를 새로 기록하지 않는다
+            presetSaveDialog.open()
+        }
+        onOpened: presetNameInput.forceActiveFocus()
         onClosed: win._typing = false
-        function doSave() {
+
+        function commit() {
             if (!presetSaveDialog.nameOk) return
-            var f = controller.savePreset(presetNameInput.text.trim(),
-                                          presetSaveDialog.chosenColor, win.editParams())
+            var nm = presetNameInput.text.trim()
+            var ds = presetDescInput.text.trim()
+            var f = presetSaveDialog.editing
+                ? controller.editPreset(presetSaveDialog.editFile, nm,
+                                        presetSaveDialog.chosenColor, ds)
+                : controller.savePreset(nm, presetSaveDialog.chosenColor, ds, win.editParams())
             presetSaveDialog.close()
             if (f !== "") {
                 win.refreshPresets()
-                if (!win.secOpen[13]) win.toggleSec(13)   // 저장했으면 결과를 보여준다
+                if (!win.secOpen[13]) win.toggleSec(13)
             }
         }
 
@@ -2923,23 +2977,25 @@ ApplicationWindow {
             ColumnLayout {
                 Layout.fillWidth: true
                 Layout.margins: 24
-                spacing: 12
+                spacing: 10
 
                 Label {
-                    text: "Save as recipe"
+                    text: presetSaveDialog.editing ? "Edit recipe" : "Save as recipe"
                     color: "#f2f2f2"; font.pixelSize: 18; font.bold: true
                     Layout.alignment: Qt.AlignHCenter
                 }
                 Label {
                     Layout.fillWidth: true
-                    text: "A recipe stores the look only \u2014 not white balance, crop or masks."
+                    text: presetSaveDialog.editing
+                          ? "Name, colour and description only \u2014 the look and its origin stay as saved."
+                          : "A recipe stores the look only \u2014 not white balance, crop or masks."
                     color: "#9a9a9a"; font.pixelSize: 13
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WordWrap
                 }
 
-                // 이름 입력 — TextInput(코어) + Rectangle. 네이티브 스타일의 TextField 는
-                // 배경이 밝아 밝은 글자가 안 보인다(searchInput 과 같은 패턴으로 통일).
+                // 이름 — TextInput(코어)+Rectangle. 네이티브 TextField 는 배경이 밝아 밝은 글자가
+                // 묻힌다(캡션 검색창과 같은 패턴으로 통일).
                 Rectangle {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 34
@@ -2954,9 +3010,8 @@ ApplicationWindow {
                         verticalAlignment: TextInput.AlignVCenter
                         color: "#f2f2f2"; font.pixelSize: 14
                         clip: true; selectByMouse: true
-                        // 대화상자가 열려 있는 동안 알파벳 단축키(I/D/B/L…)가 입력을 먹지 않게
                         onActiveFocusChanged: win._typing = activeFocus
-                        onAccepted: presetSaveDialog.doSave()
+                        onAccepted: presetDescInput.forceActiveFocus()
                         Keys.onEscapePressed: presetSaveDialog.close()
                         HoverHandler { cursorShape: Qt.IBeamCursor }
                         Text {
@@ -2968,16 +3023,41 @@ ApplicationWindow {
                     }
                 }
 
-                // 구분색 — 지정 팔레트 12색. 자유 색 선택을 두지 않는다(참고 디자인의 통일감이
-                // 제한된 팔레트에서 나오고, 공유받은 레시피도 같은 팔레트가 된다).
-                Label {
-                    text: "Colour"
-                    color: "#9a9a9a"; font.pixelSize: 12
-                    Layout.topMargin: 4
-                }
-                Flow {
+                // 설명 — 이 레시피가 어떤 사진에 맞는지 등을 남기는 자리(공유 시 특히 유용).
+                Rectangle {
                     Layout.fillWidth: true
+                    Layout.preferredHeight: 62
+                    radius: 6; color: "#1b1b1c"
+                    border.color: presetDescInput.activeFocus ? "#E0A226" : "#55555a"
+                    border.width: 1
+                    TextEdit {
+                        id: presetDescInput
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        color: "#e6e6e6"; font.pixelSize: 12
+                        wrapMode: TextEdit.Wrap
+                        clip: true; selectByMouse: true
+                        onActiveFocusChanged: win._typing = activeFocus
+                        Keys.onEscapePressed: presetSaveDialog.close()
+                        HoverHandler { cursorShape: Qt.IBeamCursor }
+                        // 280자 상한(presets.build 와 같은 값) — 붙여넣기까지 막는다
+                        onTextChanged: if (length > 280) remove(280, length)
+                        Text {
+                            visible: presetDescInput.text === "" && !presetDescInput.activeFocus
+                            text: "Description (optional) \u2014 e.g. what light or subject it suits"
+                            color: "#6f6f6f"; font.pixelSize: 12
+                        }
+                    }
+                }
+
+                // 구분색 — 지정 팔레트 12색을 한 줄로. 자유 색 선택은 두지 않는다(참고 디자인의
+                // 통일감이 제한된 팔레트에서 나오고, 공유받은 레시피도 같은 팔레트가 된다).
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 2
                     spacing: 8
+                    Label { text: "Colour"; color: "#9a9a9a"; font.pixelSize: 12 }
+                    Item { Layout.fillWidth: true }
                     Repeater {
                         model: controller.presetPalette
                         delegate: Rectangle {
@@ -2995,11 +3075,13 @@ ApplicationWindow {
                     }
                 }
 
-                // 기록될 출처 미리보기 — 저장되는 내용을 숨기지 않는다. 스캔이면 스캐너 이름이
-                // 그대로 나오는데, 그것이 재현 불가라는 사실을 알려주는 것이 이 기능의 목적이다.
+                // 기록될 출처 미리보기(새로 저장할 때만) — 저장되는 내용을 숨기지 않는다.
+                // 스캔이면 스캐너 이름이 그대로 나오는데, 그것이 재현 불가라는 사실을 알려주는
+                // 것이 이 기능의 목적이다.
                 Rectangle {
                     Layout.fillWidth: true
                     Layout.topMargin: 4
+                    visible: !presetSaveDialog.editing
                     Layout.preferredHeight: srcLabel.implicitHeight + 16
                     radius: 6
                     color: "#1e1e20"
@@ -3012,10 +3094,8 @@ ApplicationWindow {
                         verticalAlignment: Text.AlignVCenter
                         wrapMode: Text.WordWrap
                         font.pixelSize: 12
-                        color: {
-                            var t = presetSaveDialog.src || {}
-                            return t.camera ? "#8a8a8a" : "#E0A226"
-                        }
+                        color: (presetSaveDialog.src && presetSaveDialog.src.camera)
+                               ? "#8a8a8a" : "#E0A226"
                         text: {
                             var t = presetSaveDialog.src || {}
                             var a = []
@@ -3031,9 +3111,9 @@ ApplicationWindow {
 
                 RowLayout {
                     Layout.fillWidth: true
-                    Layout.topMargin: 8
+                    Layout.topMargin: 6
                     spacing: 12
-                    Rectangle {        // Cancel
+                    Rectangle {
                         Layout.fillWidth: true; Layout.preferredWidth: 0
                         Layout.preferredHeight: 40; radius: 8
                         color: psCancelMA.containsMouse ? "#3a3a3d" : "#2e2e31"
@@ -3048,26 +3128,27 @@ ApplicationWindow {
                             onClicked: presetSaveDialog.close()
                         }
                     }
-                    Rectangle {        // Save (앰버 강조)
+                    Rectangle {
                         Layout.fillWidth: true; Layout.preferredWidth: 0
                         Layout.preferredHeight: 40; radius: 8
                         opacity: presetSaveDialog.nameOk ? 1.0 : 0.45
                         color: psOkMA.containsMouse && presetSaveDialog.nameOk
                                ? "#f0b945" : "#E0A226"
                         Label {
-                            anchors.centerIn: parent; text: "Save"
+                            anchors.centerIn: parent
+                            text: presetSaveDialog.editing ? "Update" : "Save"
                             color: "#1a1a1a"; font.pixelSize: 13; font.bold: true
                         }
                         MouseArea {
                             id: psOkMA; anchors.fill: parent; hoverEnabled: true
                             enabled: presetSaveDialog.nameOk
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: presetSaveDialog.doSave()
+                            onClicked: presetSaveDialog.commit()
                         }
                     }
                 }
             }
-            FilmStrip {           // 하단 — 상단과 대칭(필름 프레임)
+            FilmStrip {
                 Layout.fillWidth: true
                 Layout.leftMargin: 16; Layout.rightMargin: 16
                 Layout.preferredHeight: 26
@@ -5841,7 +5922,7 @@ ApplicationWindow {
                             MenuItem {
                                 text: "Save as recipe…"
                                 enabled: controller.imagePath !== ""
-                                onTriggered: presetSaveDialog.open()
+                                onTriggered: presetSaveDialog.openForSave()
                             }
                             MenuItem {
                                 text: "Import recipe…"
@@ -6070,13 +6151,19 @@ ApplicationWindow {
                     // \u26a0 Flow + 고정 배지 크기 \u2014 열 수를 하드코딩하지 않는다. 패널 300px(가용 \u2248274)
                     //   에서 지금은 3열로 참고 이미지 밀도와 같고, 패널 폭이 바뀌어도 자동 재배치된다.
                     Flow {
+                        id: badgeFlow
                         Layout.fillWidth: true
                         spacing: 6
+                        // ⚠️배지 폭을 고정하면 스크롤바 유무로 가용 폭이 몇 px 달라지는 순간
+                        //   3열이 2열로 접힌다(실제로 그랬다). 폭에서 역산해 3열을 보장한다.
+                        readonly property int cols: 3
+                        readonly property int cellW:
+                            Math.max(60, Math.floor((width - spacing * (cols - 1)) / cols))
                         Repeater {
                             model: win.presetItems
                             delegate: Rectangle {
                                 id: badge
-                                width: 86; height: 56
+                                width: badgeFlow.cellW; height: 56
                                 radius: 5
                                 color: "#1e1e1e"
                                 readonly property bool isOn: win.presetApplied === modelData.file
@@ -6097,6 +6184,7 @@ ApplicationWindow {
                                 }
                                 ToolTip.visible: bgHover.hovered
                                 ToolTip.text: modelData.name
+                                    + (modelData.description ? "\n" + modelData.description : "")
                                     + (badge.prov ? "\n" + badge.prov : "\nNo camera info recorded")
                                     + "\nCreated " + modelData.createdAt
                                     + (modelData.appVersion ? "  \u00b7  v" + modelData.appVersion : "")
@@ -6136,11 +6224,13 @@ ApplicationWindow {
                                     acceptedButtons: Qt.LeftButton | Qt.RightButton
                                     onClicked: function (mouse) {
                                         if (mouse.button === Qt.RightButton) {
-                                            // 공유용 내보내기 — 제안 파일명에만 출처를 넣는다(presets.py 주석)
-                                            presetExportDialog.sourceFile = modelData.file
-                                            var u = controller.suggestedPresetShareUrl(modelData.file)
-                                            if (String(u) !== "") presetExportDialog.selectedFile = u
-                                            presetExportDialog.open()
+                                            // 우클릭은 곧바로 실행하지 않는다 — 어느 동작인지
+                                            // 고를 수 있게 컨텍스트 메뉴를 띄운다.
+                                            win._presetCtxFile = modelData.file
+                                            win._presetCtxName = modelData.name
+                                            win._presetCtxColor = modelData.color
+                                            win._presetCtxDesc = modelData.description || ""
+                                            presetCtxMenu.popup()
                                         } else if (controller.imagePath !== "") {
                                             win.applyPresetFile(modelData.file, modelData.name)
                                         }
@@ -6174,7 +6264,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         visible: win.presetItems.length > 0
                         horizontalAlignment: Text.AlignRight
-                        text: "Click to apply  \u00b7  right-click to export  \u00b7  hover \u2715 to delete"
+                        text: "Click to apply  \u00b7  right-click for options"
                         color: "#6f6f6f"; font.pixelSize: 10
                     }
                 }
