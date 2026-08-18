@@ -254,6 +254,21 @@ def _fmt_ev(tag):
     return "0 EV" if abs(f) < 1e-6 else f"{f:+.2f} EV"
 
 
+def _camera_name(make, model):
+    """Make + Model -> 사람이 읽는 바디 이름. 없으면 None.
+
+    ⚠️단순 결합은 `"Canon Canon EOS 400D DIGITAL"`, `"NIKON CORPORATION NIKON D90"` 처럼
+    제조사가 두 번 들어간다(Model 에 이미 브랜드가 박힌 바디가 많다). Model 이 Make 의 첫 단어로
+    시작하면 Make 를 떼서 `"Canon EOS 400D DIGITAL"`, `"NIKON D90"` 로 만든다.
+    `"FUJIFILM" + "X100V"` 처럼 겹치지 않는 경우는 그대로 결합된다."""
+    make, model = (make or "").strip(), (model or "").strip()
+    if model and make:
+        first = make.split()[0]
+        if model.upper().startswith(first.upper()):
+            return model
+    return (make + " " + model).strip() or None
+
+
 def _fmt_date(tag):
     # "2026:04:20 18:16:23" -> "2026-04-20 18:16:23"
     if tag is None:
@@ -283,7 +298,12 @@ def read_shooting_info(path):
 
     make = str(t("Image Make") or "").strip()
     model = str(t("Image Model") or "").strip()
-    camera = (make + " " + model).strip() or None
+    camera = _camera_name(make, model)
+    # 렌즈: 표준 EXIF 2.3 태그만 본다. ⚠️대부분 비어 있는 게 정상 —
+    #   고정렌즈 바디(X100V)는 아예 안 쓰고, Canon/Nikon 등은 MakerNote 에만 쓰는 경우가 많은데
+    #   _exif_tags 는 details=False(MakerNote 미파싱)다. 없으면 없는 대로 두고 초점거리로 대체하지 않는다
+    #   (측정: 실사용 파일 8개 전부 렌즈 태그 없음).
+    lens = str(t("EXIF LensModel") or t("MakerNote LensModel") or "").strip() or None
 
     aperture = _fmt_aperture(t("EXIF FNumber")) if t("EXIF FNumber") else None
     shutter = _fmt_shutter(t("EXIF ExposureTime")) if t("EXIF ExposureTime") else None
@@ -299,6 +319,7 @@ def read_shooting_info(path):
 
     rows = [
         ("Camera", camera),
+        ("Lens", lens),
         ("Firmware", firmware),
         ("Aperture", aperture),
         ("Shutter", shutter),
