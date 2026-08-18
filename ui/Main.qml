@@ -973,13 +973,12 @@ ApplicationWindow {
 
     // ===== 레시피 프리셋 =====
     property var presetItems: []          // controller.presetList() 캐시(배지 그리드 모델)
-    property string _presetPendingDelete: ""   // 삭제 확인 대기 중인 파일
-    property string _presetPendingName: ""
     // 우클릭 컨텍스트 대상(수정/내보내기/삭제 공용)
     property string _presetCtxFile: ""
     property string _presetCtxName: ""
     property string _presetCtxColor: ""
     property string _presetCtxDesc: ""
+    property string _presetConfirmMode: ""     // "delete" | "update" — 확인 대화상자 공용
     function refreshPresets() { win.presetItems = controller.presetList() }
 
     // 배너 문구. "" = 배너 없음. presetNoticeWarn=true 면 앰버 경고, false 면 회색 정보.
@@ -2885,7 +2884,16 @@ ApplicationWindow {
     Menu {
         id: presetCtxMenu
         MenuItem {
-            text: "Edit\u2026"
+            // 현재 편집값으로 이 레시피의 룩을 덮어쓴다. 되돌릴 수 없어 확인을 받는다.
+            text: "Update look from current edits\u2026"
+            enabled: controller.imagePath !== ""
+            onTriggered: {
+                win._presetConfirmMode = "update"
+                presetConfirmDialog.open()
+            }
+        }
+        MenuItem {
+            text: "Edit name, colour, description\u2026"
             onTriggered: presetSaveDialog.openForEdit(
                 win._presetCtxFile, win._presetCtxName, win._presetCtxColor, win._presetCtxDesc)
         }
@@ -2902,9 +2910,8 @@ ApplicationWindow {
         MenuItem {
             text: "Delete\u2026"
             onTriggered: {
-                win._presetPendingDelete = win._presetCtxFile
-                win._presetPendingName = win._presetCtxName
-                presetDeleteDialog.open()
+                win._presetConfirmMode = "delete"
+                presetConfirmDialog.open()
             }
         }
     }
@@ -2930,6 +2937,16 @@ ApplicationWindow {
         property string editFile: ""       // "" = 새로 저장 / 경로 = 그 레시피 수정
         readonly property bool editing: presetSaveDialog.editFile !== ""
         readonly property bool nameOk: presetNameInput.text.trim() !== ""
+        // 같은 이름으로 저장하면 그 레시피를 덮어쓴다(파일명이 내부 name 에서 파생되므로).
+        // 조용히 덮어쓰면 데이터 손실이라 버튼 라벨과 안내로 드러낸다.
+        readonly property bool willOverwrite: {
+            if (presetSaveDialog.editing) return false
+            var n = presetNameInput.text.trim()
+            if (n === "") return false
+            for (var i = 0; i < win.presetItems.length; i++)
+                if (win.presetItems[i].name === n) return true
+            return false
+        }
 
         // 새로 저장(현재 편집의 룩을 담는다)
         function openForSave() {
@@ -2988,8 +3005,11 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     text: presetSaveDialog.editing
                           ? "Name, colour and description only \u2014 the look and its origin stay as saved."
-                          : "A recipe stores the look only \u2014 not white balance, crop or masks."
-                    color: "#9a9a9a"; font.pixelSize: 13
+                          : (presetSaveDialog.willOverwrite
+                             ? "A recipe with this name already exists \u2014 saving replaces its look and origin."
+                             : "A recipe stores the look only \u2014 not white balance, crop or masks.")
+                    color: presetSaveDialog.willOverwrite ? "#E0A226" : "#9a9a9a"
+                    font.pixelSize: 13
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WordWrap
                 }
@@ -3159,7 +3179,8 @@ ApplicationWindow {
                                ? "#f0b945" : "#E0A226"
                         Label {
                             anchors.centerIn: parent
-                            text: presetSaveDialog.editing ? "Update" : "Save"
+                            text: presetSaveDialog.editing ? "Update"
+                                  : (presetSaveDialog.willOverwrite ? "Overwrite" : "Save")
                             color: "#1a1a1a"; font.pixelSize: 13; font.bold: true
                         }
                         MouseArea {
@@ -3179,12 +3200,13 @@ ApplicationWindow {
         }
     }
 
-    // ── 레시피 삭제 확인 ── (종료 대화상자와 동일 컨셉)
+    // ── 레시피 확인 대화상자(삭제 / 룩 덮어쓰기 공용) ──
+    // 둘 다 되돌릴 수 없는 동작이라 같은 형태로 묻는다(종료 대화상자와 동일 컨셉).
     Popup {
-        id: presetDeleteDialog
+        id: presetConfirmDialog
         modal: true
         dim: true
-        width: 380
+        width: 400
         padding: 0
         anchors.centerIn: Overlay.overlay
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
@@ -3193,6 +3215,7 @@ ApplicationWindow {
             color: "#232325"; radius: 16
             border.color: "#3d3d40"; border.width: 1
         }
+        readonly property bool isDelete: win._presetConfirmMode === "delete"
         contentItem: ColumnLayout {
             spacing: 0
             FilmStrip {
@@ -3205,14 +3228,17 @@ ApplicationWindow {
                 Layout.margins: 24
                 spacing: 12
                 Label {
-                    text: "Delete recipe?"
+                    text: presetConfirmDialog.isDelete ? "Delete recipe?" : "Overwrite this recipe?"
                     color: "#f2f2f2"; font.pixelSize: 18; font.bold: true
                     Layout.alignment: Qt.AlignHCenter
                 }
                 Label {
                     Layout.fillWidth: true
-                    text: "\u201c" + win._presetPendingName + "\u201d will be removed. "
-                          + "Photos already edited with it keep their edits."
+                    text: presetConfirmDialog.isDelete
+                          ? "\u201c" + win._presetCtxName + "\u201d will be removed. "
+                            + "Photos already edited with it keep their edits."
+                          : "\u201c" + win._presetCtxName + "\u201d will store the look you have "
+                            + "now, and record this photo as its origin. The previous look is lost."
                     color: "#9a9a9a"; font.pixelSize: 13
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WordWrap
@@ -3224,35 +3250,40 @@ ApplicationWindow {
                     Rectangle {
                         Layout.fillWidth: true; Layout.preferredWidth: 0
                         Layout.preferredHeight: 40; radius: 8
-                        color: pdCancelMA.containsMouse ? "#3a3a3d" : "#2e2e31"
+                        color: pcCancelMA.containsMouse ? "#3a3a3d" : "#2e2e31"
                         border.color: "#55555a"; border.width: 1
                         Label {
                             anchors.centerIn: parent; text: "Cancel"
                             color: "#e6e6e6"; font.pixelSize: 13
                         }
                         MouseArea {
-                            id: pdCancelMA; anchors.fill: parent; hoverEnabled: true
+                            id: pcCancelMA; anchors.fill: parent; hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: presetDeleteDialog.close()
+                            onClicked: presetConfirmDialog.close()
                         }
                     }
                     Rectangle {
                         Layout.fillWidth: true; Layout.preferredWidth: 0
                         Layout.preferredHeight: 40; radius: 8
-                        color: pdOkMA.containsMouse ? "#f0b945" : "#E0A226"
+                        color: pcOkMA.containsMouse ? "#f0b945" : "#E0A226"
                         Label {
-                            anchors.centerIn: parent; text: "Delete"
+                            anchors.centerIn: parent
+                            text: presetConfirmDialog.isDelete ? "Delete" : "Overwrite"
                             color: "#1a1a1a"; font.pixelSize: 13; font.bold: true
                         }
                         MouseArea {
-                            id: pdOkMA; anchors.fill: parent; hoverEnabled: true
+                            id: pcOkMA; anchors.fill: parent; hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: {
-                                controller.deletePreset(win._presetPendingDelete)
-                                if (win.presetApplied === win._presetPendingDelete)
-                                    win.clearPresetNotice()
-                                win._presetPendingDelete = ""; win._presetPendingName = ""
-                                presetDeleteDialog.close()
+                                if (presetConfirmDialog.isDelete) {
+                                    controller.deletePreset(win._presetCtxFile)
+                                    if (win.presetApplied === win._presetCtxFile)
+                                        win.clearPresetNotice()
+                                } else {
+                                    controller.updatePresetLook(win._presetCtxFile,
+                                                               win.editParams())
+                                }
+                                presetConfirmDialog.close()
                                 win.refreshPresets()
                             }
                         }

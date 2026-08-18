@@ -1982,6 +1982,37 @@ class Controller(QObject):
         d["error"] = ""
         return d
 
+    @Slot(str, "QVariantMap", result=str)
+    def updatePresetLook(self, file: str, edits) -> str:  # noqa: N802 (QML 슬롯)
+        """기존 레시피의 **룩을 현재 편집값으로 덮어쓴다**. 이름·색·설명은 그대로.
+
+        ⚠️출처(`source`)·`appVersion`·`createdAt` 도 **함께 갱신**한다. 담긴 룩이 바뀌었으니
+          그 룩이 어느 장비·어느 버전에서 만들어졌는지도 바뀌는 것이 맞다 — 안 그러면 배너가
+          "이 레시피는 X100V 에서 만들어졌다"고 **거짓을 말하게 된다**(이 기능 전체가 그 정직함에
+          기대고 있다). 같은 이유로 `createdAt` 은 '지금 담긴 룩'의 날짜로 둔다(그레인 계수처럼
+          버전에 따라 결과가 달라지므로 appVersion 과 짝이 맞아야 한다)."""
+        import datetime
+        import presets
+        d, err = presets.read(str(file), self._PRESET_KEYS)
+        if err:
+            print(f"[preset] 룩 갱신 실패(읽기) {file}: {err}")
+            return ""
+        raw = {k: edits[k] for k in edits}
+        keep, err = presets.validate_edits(raw, self._PRESET_KEYS)
+        if err:
+            print(f"[preset] 룩 갱신 거부: {err}")
+            return ""
+        doc = presets.build(d["name"], d["color"], self.presetSource(), keep,
+                            APP_VERSION, datetime.date.today().isoformat(),
+                            d.get("description", ""))
+        try:
+            path = presets.write(self._presets_dir(), doc)
+        except Exception as exc:
+            print(f"[preset] 룩 갱신 실패(쓰기): {exc}")
+            return ""
+        print(f"[preset] 룩 갱신: {path}")
+        return path
+
     @Slot(str, str, str, str, result=str)
     def editPreset(self, file: str, name: str, color: str, description: str) -> str:  # noqa: N802
         """이름/구분색/설명만 수정. **룩과 출처는 그대로 유지**한다 — 룩을 바꾸려면 같은 이름으로
