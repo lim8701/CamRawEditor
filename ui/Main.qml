@@ -1494,6 +1494,15 @@ ApplicationWindow {
         return o
     }
 
+    // URL/경로의 확장자를 ext 로 바꿔서 돌려준다(확장자가 없으면 붙인다). Export 대화상자에서
+    // name filter 와 파일명을 같은 형식으로 묶는 데 쓴다.
+    function withExt(u, ext) {
+        var s = String(u)
+        var slash = Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"))
+        var dot = s.lastIndexOf(".")
+        return (dot > slash ? s.substring(0, dot) : s) + "." + ext
+    }
+
     // 렌더 엔진 = Export 패널의 Render 콤보(0=CPU, 1=GPU). 16bit 는 GPU grab 이 8bit 라 항상 CPU.
     // 단일/배치가 같은 규칙을 쓰도록 여기 한 곳에만 둔다.
     readonly property bool useGpuExport: renderModeCombo.currentIndex === 1 && !bitDepth16Check.checked
@@ -2720,14 +2729,44 @@ ApplicationWindow {
         }
     }
 
+    // Export 대화상자에서 name filter 를 바꾸면 파일명 확장자도 따라가게 한다.
+    // ⚠️`saveDialog.onSelectedNameFilterChanged` 는 쓸 수 없다 — QML 타입 정의상 그 프로퍼티는
+    //   isPropertyConstant 라 변경 시그널이 아예 없다(핸들러가 조용히 죽는다). 실제로 발화하는
+    //   것은 QQuickFileNameFilter.indexChanged 이므로 index 를 프로퍼티로 끌어와 감시한다.
+    readonly property int exportFilterIndex: saveDialog.selectedNameFilter.index
+    onExportFilterIndexChanged: {
+        if (!saveDialog.visible) return          // 열기 전 프로그램적 설정은 이름을 이미 맞춰 둔 상태
+        var i = win.exportFilterIndex
+        if (i < 0 || i >= saveDialog.filterExts.length) return
+        var e = saveDialog.filterExts[i]
+        controller.setExportExt(e)
+        saveDialog.selectedFile = win.withExt(saveDialog.selectedFile, e)
+    }
+
     FileDialog {
         id: saveDialog
         title: "Export (Full Resolution)"
         fileMode: FileDialog.SaveFile
         nameFilters: ["PNG (*.png)", "JPEG (*.jpg)", "TIFF (*.tif)"]
-        defaultSuffix: "png"
+        // ⚠️저장 포맷은 pipeline.save_image 가 **파일명 확장자**로 정한다. 그래서 필터·파일명·
+        //   defaultSuffix 가 어긋나면 '필터는 JPEG 인데 PNG 로 저장' 이 된다(실제 사용자 보고).
+        //   controller.exportExt(마지막 사용 형식, 영구 저장)를 단일 출처로 세 곳을 묶는다.
+        readonly property var filterExts: ["png", "jpg", "tif"]
+        defaultSuffix: controller.exportExt
         // 렌더 모드: 0=CPU(render_full), 1=GPU(프리뷰 셰이더로 풀해상도 렌더 → 프리뷰=Export)
         onAccepted: win.startExport(selectedFile, win.exportParams())   // 엔진 선택은 win.startExport
+    }
+
+    // 배경화면 저장도 같은 결함을 가진다 — 제안 이름은 항상 .jpg 인데 필터를 PNG 로 바꿔도
+    // 이름이 그대로라 jpg 로 저장된다(포맷은 확장자가 결정). 여기선 세션 내 일치만 맞춘다
+    // (Export 와 달리 형식을 기억할 필요는 없어 QSettings 는 쓰지 않는다).
+    readonly property int wallFilterIndex: wallpaperSaveDialog.selectedNameFilter.index
+    onWallFilterIndexChanged: {
+        if (!wallpaperSaveDialog.visible) return
+        var exts = ["jpg", "png"]                     // wallpaperSaveDialog.nameFilters 순서와 일치
+        var i = win.wallFilterIndex
+        if (i < 0 || i >= exts.length) return
+        wallpaperSaveDialog.selectedFile = win.withExt(wallpaperSaveDialog.selectedFile, exts[i])
     }
 
     FileDialog {
@@ -5390,9 +5429,14 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         enabled: controller.imagePath !== "" && !controller.exporting
                         onClicked: {
-                            // 기본 파일명 = '<원본이름>_exported.png' (원본과 같은 폴더)
+                            // 기본 파일명 = '<원본이름>_exported.<마지막 사용 형식>' (원본과 같은 폴더)
                             var u = controller.suggestedExportUrl()
                             if (u != "") saveDialog.selectedFile = u
+                            // 필터도 같은 형식으로 맞춘다 — 안 맞추면 대화상자에 이전 필터가
+                            // 남아 '필터 JPEG / 이름 .png' 같은 모순 상태로 열린다.
+                            var k = saveDialog.filterExts.indexOf(controller.exportExt)
+                            if (k >= 0 && saveDialog.selectedNameFilter.index !== k)
+                                saveDialog.selectedNameFilter.index = k
                             saveDialog.open()
                         }
                     }

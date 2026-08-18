@@ -210,6 +210,13 @@ RAW_EXTS = {
 }
 
 
+# Export 로 저장 가능한 확장자(FileDialog name filter 와 1:1). 저장 포맷은 pipeline.save_image 가
+# **파일명 확장자**로 결정하므로, 이 목록이 곧 유효한 형식 목록이다.
+# jpeg/tiff 도 받는다 — 사용자가 이름을 직접 타이핑하는 경우가 있고 Qt·save_image 가
+# 둘 다 처리한다(JPEG_EXTS 참조). 대화상자 필터는 png/jpg/tif 3종만 노출.
+_EXPORT_EXTS = ("png", "jpg", "jpeg", "tif", "tiff")
+
+
 def _pair_flags(folder: str, names: list) -> list:
     """파일명 리스트 → 탐색기 항목 + **RAW/JPEG 페어 표식**.
 
@@ -926,6 +933,7 @@ class Controller(QObject):
     # 검출만 끝난 걸 '마스크 준비 완료'로 오해해 마스크 없이 저장되는 사고가 난다.
     _facesReady = Signal(object)
     _exportProgressSig = Signal(float)  # (내부) export 워커 -> 메인 스레드 진행률(0..1)
+    exportExtChanged = Signal()
     _keepAwakeSig = Signal(bool)  # (내부) export 워커 -> 메인 스레드 슬립 방지 해제(스레드 귀속 API)
     _hazeReady = Signal(object)  # (내부) 디헤이즈 추정 워커 -> 메인 스레드 (seq, (t, A, conf))
     _nrReady = Signal(object)    # (내부) NR 베이스 워커 -> 메인 스레드 (seq, 디노이즈드 luma)
@@ -1153,6 +1161,10 @@ class Controller(QObject):
         self._rescan_timer.timeout.connect(self._do_auto_rescan)
         # 마지막 탐색 폴더 영구 저장(재시작 시 복원 + 폴더 대화상자 시작 위치)
         self._settings = QSettings("FilmRawstery", "FilmRawstery")
+        # 마지막으로 저장에 쓴 export 확장자(png/jpg/tif). 제안 파일명·defaultSuffix·
+        # name filter 가 모두 이 값을 따라 서로 어긋나지 않게 한다.
+        _ext = str(self._settings.value("export/lastExt", "png") or "png").lower()
+        self._export_ext = _ext if _ext in _EXPORT_EXTS else "png"
         # 배경화면 설정은 레지스트리가 아니라 사용자 데이터 폴더의 JSON(_wall_prefs).
         self._wall_prefs_cache = None
         self._wall_prefs_timer = QTimer(self)
@@ -1910,11 +1922,34 @@ class Controller(QObject):
 
     @Slot(result=QUrl)
     def suggestedExportUrl(self) -> QUrl:  # noqa: N802 (QML 슬롯)
-        """Export 기본 파일명: 원본과 같은 폴더의 '<원본이름>_exported.png'."""
+        """Export 기본 파일명: 원본과 같은 폴더의 '<원본이름>_exported.<마지막 사용 형식>'.
+
+        ⚠️확장자를 png 로 고정하면 안 된다 — 저장 포맷은 `pipeline.save_image` 가 **파일명
+        확장자**로 결정하는데, FileDialog 는 같은 객체라 이전에 고른 name filter(예: JPEG)를
+        기억한다. 그래서 이름만 png 로 되돌리면 '필터는 JPEG 인데 파일은 PNG' 가 된다
+        (사용자 보고: jpg 로 저장한 뒤 다른 사진을 저장하니 png 로 나옴)."""
         if not self._path:
             return QUrl()
         p = Path(self._path)
-        return QUrl.fromLocalFile(str(p.with_name(p.stem + "_exported.png")))
+        return QUrl.fromLocalFile(str(p.with_name(f"{p.stem}_exported.{self._export_ext}")))
+
+    # ---------- 마지막 사용 export 형식(확장자) — 이름/필터/defaultSuffix 의 단일 출처 ----------
+    def _get_export_ext(self) -> str:
+        return self._export_ext
+
+    @Slot(str)
+    def setExportExt(self, ext: str) -> None:  # noqa: N802 (QML 슬롯)
+        """QML 이 name filter 를 바꿨을 때 호출. 영구 저장해 다음 실행에서도 유지."""
+        e = str(ext or "").lstrip(".").lower()
+        if e not in _EXPORT_EXTS or e == self._export_ext:
+            return
+        self._export_ext = e
+        self._settings.setValue("export/lastExt", e)
+        self.exportExtChanged.emit()
+
+    def _remember_export_ext(self, path: str) -> None:
+        """실제 저장 경로에서 확장자를 기억 — 사용자가 이름을 직접 타이핑한 경우까지 포함."""
+        self.setExportExt(os.path.splitext(path)[1])
 
     # ---------- 슬립 방지: export/배치 중 Windows 시스템 슬립으로 작업이 멈추는 것 방지 ----------
     def _update_keep_awake(self) -> None:
@@ -1942,6 +1977,7 @@ class Controller(QObject):
         if not self._path or self._exporting:
             return
         path = file_url.toLocalFile()
+        self._remember_export_ext(path)   # 다음 export 의 제안 이름/필터가 이 형식을 따라간다
         pdict = {k: params[k] for k in params}     # QVariantMap -> 평범한 dict
         pdict["proxyEdge"] = max(self._proxy_w, self._proxy_h)   # 공간 반경 스케일 기준(스냅샷)
         # 요청 시점 스냅샷 — export 중 마스크 변경/이미지 전환과 분리.
@@ -2269,6 +2305,7 @@ class Controller(QObject):
         if not self._path or self._exporting or self._full_provider is None:
             return
         self._gpu_path = file_url.toLocalFile()
+        self._remember_export_ext(self._gpu_path)   # CPU 경로와 동일(exportImage 참조)
         self._gpu_params = {k: params[k] for k in params}
         self._exporting = True
         self._apply_keep_awake(True)
@@ -4314,6 +4351,7 @@ class Controller(QObject):
         return bool(self._path) and image_loader is not None \
             and image_loader.is_display_image(self._path)
 
+    exportExt = Property(str, _get_export_ext, notify=exportExtChanged)
     imageUrl = Property(str, _get_url, notify=imageChanged)
     imagePath = Property(str, _get_path, notify=imageChanged)
     isDisplayImage = Property(bool, _get_is_display_image, notify=imageChanged)
