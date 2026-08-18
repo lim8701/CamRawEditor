@@ -1890,6 +1890,157 @@ class Controller(QObject):
             self._edit_rev += 1
             self.editsChanged.emit()
 
+    # ---------- 레시피 프리셋(.frpreset) — 룩만 저장/공유 + 출처 기록 ----------
+    # 프리셋이 담는 키의 **단일 진실원**. 저장 필터·로드 필터·QML 의 '기본값으로 되돌릴 키' 목록이
+    # 모두 이 하나를 본다(셋으로 갈라지면 반드시 어긋난다).
+    # ⚠️여기 없는 것은 의도적으로 뺀 것이다 — 각각 이유가 다르다:
+    #   · temp/tint — WB 는 장면 조명에 따라 사진마다 달라, 남의 레시피가 가져오면 대개 이상해진다
+    #   · 크롭/기하/회전/플립, stampText, dateStamp — 사진별(복사/붙여넣기의 _copyExclude 와 동일)
+    #   · maskLayers — 마스크 선택(세그 클래스)과 브러시 획은 그 사진의 구도에 묶여 있다.
+    #     숫자 파라미터만 싣는 것은 **더 나쁘다**: 마스크가 없으면 레이어 기여가 0으로 게이팅돼
+    #     "슬라이더는 0이 아닌데 효과가 0인" 설명 불가한 상태가 된다
+    #   · aiNr — 값이 아니라 부작용이다(수신자 기계에서 117MB 모델 다운로드·모달·ONNX 세션)
+    #   · lensCorrection — 그 렌즈·그 샷의 성질이고 끄면 풀 재디코드를 유발한다
+    #   · lumaNR/colorNR — 적정량이 그 사진의 ISO·노이즈에 묶여 있다.
+    #     ⚠️복사/붙여넣기는 이 둘을 **싣는다**(_copyExclude 에 없음) — 프리셋과 의도적으로 다르다
+    #   · simIndex/v — 위치 의존 폴백과 사이드카 스키마 마커
+    _PRESET_KEYS = (
+        "exposure", "contrast", "highlights", "shadows", "whites", "blacks",
+        "simKey", "simStrength",
+        "texture", "clarity", "dehaze", "vibrance", "saturation",
+        "hslH", "hslS", "hslL",
+        "cgShadowHue", "cgShadowSat", "cgMidHue", "cgMidSat",
+        "cgHighHue", "cgHighSat", "cgBalance",
+        "vignette",
+        "grainAmt", "grainSize", "grainRough", "grainColor", "grainShape",
+        "sharpenAmt", "sharpenRadius", "sharpenDetail", "sharpenMask",
+        "curves",
+        "stampStyle", "stampSize", "stampMargin")
+
+    def _get_preset_keys(self) -> list:
+        return list(self._PRESET_KEYS)
+
+    def _get_preset_palette(self) -> list:
+        import presets
+        return list(presets.PALETTE)
+
+    presetKeys = Property("QStringList", _get_preset_keys, constant=True)
+    presetPalette = Property("QStringList", _get_preset_palette, constant=True)
+
+    def _presets_dir(self) -> str:
+        """프리셋 폴더. ⚠️app_dirs.user_data_path 는 **최상위 디렉터리만** 만든다."""
+        import app_dirs
+        d = app_dirs.user_data_path("presets")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    @Slot(result="QVariantList")
+    def presetList(self):  # noqa: N802 (QML 슬롯)
+        """저장된 프리셋 목록(이름순). 배지 그리드용 — **edits 는 담지 않는다**(적용할 때만
+        loadPreset 으로 읽는다). 읽을 수 없는 파일은 건너뛴다."""
+        import presets
+        out = []
+        for d in presets.listdir(self._presets_dir(), self._PRESET_KEYS):
+            out.append({k: d[k] for k in ("name", "color", "createdAt", "appVersion",
+                                          "source", "file")})
+        return out
+
+    @Slot(str, str, "QVariantMap", result=str)
+    def savePreset(self, name: str, color: str, edits) -> str:  # noqa: N802 (QML 슬롯)
+        """현재 편집의 '룩'만 프리셋으로 저장. 성공 시 파일 경로, 실패 시 "".
+        edits 는 QML 이 넘긴 전체 편집값 — 허용 목록으로 걸러서 사진별 값이 새지 않게 한다."""
+        import datetime
+        import presets
+        name = str(name or "").strip()
+        if not name:
+            return ""
+        raw = {k: edits[k] for k in edits}
+        keep, err = presets.validate_edits(raw, self._PRESET_KEYS)
+        if err:
+            print(f"[preset] 저장 거부: {err}")
+            return ""
+        doc = presets.build(name, str(color or ""), self.presetSource(), keep,
+                            APP_VERSION, datetime.date.today().isoformat())
+        try:
+            path = presets.write(self._presets_dir(), doc)
+        except Exception as exc:
+            print(f"[preset] 저장 실패: {exc}")
+            return ""
+        print(f"[preset] 저장: {path}")
+        return path
+
+    @Slot(str, result="QVariantMap")
+    def loadPreset(self, file: str):  # noqa: N802 (QML 슬롯)
+        """프리셋 1개를 읽어 반환. 실패 시 {"error": 문구} — QML 이 배너로 보여준다.
+        ⚠️적용 전에 여기서 검증이 끝나야 한다(QML applyEdits 안에서 던지면 자동저장/undo 가 죽는다)."""
+        import presets
+        d, err = presets.read(str(file), self._PRESET_KEYS)
+        if err:
+            print(f"[preset] 읽기 실패 {file}: {err}")
+            return {"error": err}
+        d["error"] = ""
+        return d
+
+    @Slot(str, result=bool)
+    def deletePreset(self, file: str) -> bool:  # noqa: N802 (QML 슬롯)
+        """⚠️프리셋 폴더 안의 파일만 지운다 — QML 이 넘긴 경로를 그대로 믿지 않는다."""
+        try:
+            f = Path(str(file)).resolve()
+            if f.parent != Path(self._presets_dir()).resolve() or f.suffix.lower() != ".frpreset":
+                print(f"[preset] 삭제 거부(폴더 밖): {file}")
+                return False
+            f.unlink()
+            print(f"[preset] 삭제: {f}")
+            return True
+        except Exception as exc:
+            print(f"[preset] 삭제 실패: {exc}")
+            return False
+
+    @Slot(QUrl, result=str)
+    def importPreset(self, url: QUrl) -> str:  # noqa: N802 (QML 슬롯)
+        """공유받은 .frpreset 을 검증한 뒤 프리셋 폴더에 복사. 성공 시 새 경로, 실패 시 "".
+        ⚠️파일명은 **검증된 내부 name 에서 다시 파생**한다 — 들어온 파일명을 쓰면
+          `name: "../../foo"` 같은 값이 경로 탈출 쓰기가 된다(presets.write 가 담당)."""
+        import presets
+        src = url.toLocalFile()
+        d, err = presets.read(src, self._PRESET_KEYS)
+        if err:
+            print(f"[preset] 가져오기 거부 {src}: {err}")
+            return ""
+        doc = presets.build(d["name"], d["color"], d["source"], d["edits"],
+                            d["appVersion"] or APP_VERSION, d["createdAt"])
+        try:
+            path = presets.write(self._presets_dir(), doc)
+        except Exception as exc:
+            print(f"[preset] 가져오기 실패: {exc}")
+            return ""
+        print(f"[preset] 가져옴: {path}")
+        return path
+
+    @Slot(str, QUrl, result=bool)
+    def exportPreset(self, file: str, url: QUrl) -> bool:  # noqa: N802 (QML 슬롯)
+        """프리셋을 사용자가 고른 위치로 내보낸다(공유용). 내용은 그대로 복사."""
+        import shutil
+        dst = url.toLocalFile()
+        try:
+            shutil.copyfile(str(file), dst)
+            print(f"[preset] 내보냄: {dst}")
+            return True
+        except Exception as exc:
+            print(f"[preset] 내보내기 실패: {exc}")
+            return False
+
+    @Slot(str, result=QUrl)
+    def suggestedPresetShareUrl(self, file: str) -> QUrl:  # noqa: N802 (QML 슬롯)
+        """Export 대화상자의 제안 파일명 — **공유본에만** 출처를 파일명에 넣는다(presets 주석)."""
+        import presets
+        d, err = presets.read(str(file), self._PRESET_KEYS)
+        if err:
+            return QUrl()
+        folder = self._folder or str(Path(self._path).parent) if self._path else ""
+        fn = presets.share_filename(d["name"], d["source"], d["createdAt"])
+        return QUrl.fromLocalFile(str(Path(folder or self._presets_dir()) / fn))
+
     @Slot(str, str, str, result=str)
     def batchExportUrl(self, folder_url: str, src_path: str, ext: str) -> str:  # noqa: N802
         """배치 export 대상 파일 URL: <선택 폴더>/<원본이름>_exported.<ext>.
