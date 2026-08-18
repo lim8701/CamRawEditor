@@ -5838,6 +5838,48 @@ ApplicationWindow {
                     text: controller.loadError
                 }
 
+                // ── 레시피 출처 배너 ──
+                // 이 기능의 목적이 "레시피는 장비에 묶여 있다"를 알리는 것이므로, 기록만 하지 않고
+                // 적용 시점에 여기서 보여준다. 고정 헤더에 두어 패널 스크롤과 무관하게 남고,
+                // 숨을 때는 Layout 이 invisible 항목을 무시해 높이를 전혀 먹지 않는다.
+                // ⚠️앰버(다른 기종)와 회색(비교 불가)의 **시각 비중을 반드시 다르게** 한다 —
+                //   똑같이 보이면 사용자가 둘 다 읽지 않게 되고, 그러면 배너가 무의미해진다.
+                Rectangle {
+                    Layout.fillWidth: true
+                    visible: win.presetNotice !== ""
+                    Layout.preferredHeight: presetNoticeRow.implicitHeight + 12
+                    radius: 4
+                    color: win.presetNoticeWarn ? "#3a2f1e" : "#2a2a2c"
+                    border.color: win.presetNoticeWarn ? "#E0A226" : "#4a4a4c"
+                    border.width: 1
+                    RowLayout {
+                        id: presetNoticeRow
+                        anchors.fill: parent
+                        anchors.margins: 6
+                        spacing: 6
+                        Label {
+                            text: win.presetNoticeWarn ? "\u26a0" : "\u2139"
+                            color: win.presetNoticeWarn ? "#E0A226" : "#8a8a8a"
+                            font.pixelSize: 12
+                            Layout.alignment: Qt.AlignTop
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: win.presetNotice
+                            color: win.presetNoticeWarn ? "#e8d5b0" : "#9a9a9a"
+                            font.pixelSize: 10
+                            wrapMode: Text.WordWrap
+                        }
+                        Label {              // 닫기
+                            text: "\u2715"
+                            color: "#7f7f7f"
+                            font.pixelSize: 10
+                            Layout.alignment: Qt.AlignTop
+                            TapHandler { onTapped: win.clearPresetNotice() }
+                        }
+                    }
+                }
+
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
                 }   // end panelHeader
 
