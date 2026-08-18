@@ -3493,37 +3493,68 @@ class Controller(QObject):
         """앱 시작 수 초 후 1회 호출(main 의 QTimer). 백그라운드라 UI 무영향."""
         threading.Thread(target=self._update_check_worker, daemon=True).start()
 
-    def _update_check_worker(self) -> None:
-        """릴리스 목록에서 `v메이저.마이너.패치` **정확 일치** 태그만 골라 최신 버전 판단.
-        - 자산 릴리스(models-v1)·postfix 태그(v1.2.0_deprecated)·2파트(v1.0)는 정규식으로 제외
-        - prerelease/draft 제외
-        - 목록 순서(생성일)는 신뢰하지 않고 파싱 후 max 비교(태그 이동/재게시에 안전)
-        - 실패(오프라인/한도 초과)는 조용히 무시 — 알림은 최선 노력 기능"""
+    # 조회 실패 시 재시도 간격(초). 확인은 실행당 1회뿐이라, 그 순간의 일시 장애가 세션 전체를
+    # 놓치게 만든다 — 한 번만 더 시도해 흔한 blip 을 흡수한다(계속 두드리지는 않는다).
+    _UPDATE_RETRY_SEC = 60
+
+    def _release_candidates(self, url: str) -> list:
+        """릴리스 JSON(목록 또는 단일 객체)에서 유효 후보만 파싱.
+
+        `v메이저.마이너.패치` **정확 일치** 태그만 채택 — 자산 릴리스(models-v1)·postfix 태그
+        (v1.2.0_deprecated)·2파트(v1.0)는 정규식으로 걸러진다. prerelease/draft 제외.
+        반환 [] 은 '조회 실패' 와 '해당 릴리스 없음' 을 구분하지 않는다(호출측이 폴백으로 처리)."""
         import json as _json
         import re
         import urllib.request
         try:
-            req = urllib.request.Request(_RELEASES_API, headers={
+            req = urllib.request.Request(url, headers={
                 "Accept": "application/vnd.github+json",
                 "User-Agent": f"FilmRawstery/{APP_VERSION}",   # GitHub API 는 UA 필수
             })
             with urllib.request.urlopen(req, timeout=6) as r:
-                rels = _json.load(r)
-            best = None   # ((maj,min,pat), "vX.Y.Z", html_url)
-            for rel in rels:
-                if rel.get("prerelease") or rel.get("draft"):
-                    continue
-                m = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", str(rel.get("tag_name", "")))
-                if not m:
-                    continue
-                ver = tuple(int(g) for g in m.groups())
-                if best is None or ver > best[0]:
-                    best = (ver, m.group(0), str(rel.get("html_url", "")))
-            cur = tuple(int(x) for x in APP_VERSION.split("."))
-            if best is not None and best[0] > cur:
-                self._updateSig.emit((best[1], best[2]))
+                data = _json.load(r)
         except Exception:
-            pass
+            return []                       # 오프라인·타임아웃·5xx·한도초과 전부 여기로
+        rels = data if isinstance(data, list) else [data]
+        out = []                            # [((maj,min,pat), "vX.Y.Z", html_url), ...]
+        for rel in rels:
+            if not isinstance(rel, dict) or rel.get("prerelease") or rel.get("draft"):
+                continue
+            m = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", str(rel.get("tag_name", "")))
+            if m:
+                out.append((tuple(int(g) for g in m.groups()), m.group(0),
+                            str(rel.get("html_url", ""))))
+        return out
+
+    def _latest_release(self):
+        """게시된 릴리스 중 semver 최대 → ((maj,min,pat), tag, url), 조회 불가면 None.
+
+        ⚠️목록(/releases)을 먼저 쓴다 — 전체에서 max 를 취하므로 생성 순서에 의존하지 않는다
+          (태그 이동/재게시에 안전). 목록이 비면 /releases/latest 로 폴백한다:
+          **GitHub 장애 시 목록이 `200 + []` 를 돌려주는 것을 실측**했고(504 와 번갈아 발생),
+          그건 예외가 아니라 '릴리스 없음' 처럼 보여서 알림이 조용히 사라졌다.
+          폴백의 한계: /releases/latest 는 **생성 시각** 기준이라 구버전 계열 핫픽스를 나중에
+          올리면 semver 최대보다 낮게 나올 수 있다(과대 보고는 아래 `>` 비교가 막는다).
+        ⚠️/tags 는 폴백으로 쓰지 않는다 — 릴리즈 절차가 태그를 먼저 push 하고 릴리스를 나중에
+          만들므로, 그 사이엔 '태그는 있는데 받을 게 없는' 상태를 새 버전으로 알리게 된다."""
+        cands = self._release_candidates(_RELEASES_API)
+        if not cands:
+            cands = self._release_candidates(_RELEASES_API + "/latest")
+        return max(cands) if cands else None
+
+    def _update_check_worker(self) -> None:
+        """새 버전이 있으면 _updateSig 로 알린다. 실패는 조용히 무시 — 최선 노력 기능."""
+        import time
+        for attempt in range(2):
+            if attempt:
+                time.sleep(self._UPDATE_RETRY_SEC)
+            best = self._latest_release()
+            if best is None:
+                continue                    # 조회 자체가 실패 → 한 번 더
+            cur = tuple(int(x) for x in APP_VERSION.split("."))
+            if best[0] > cur:
+                self._updateSig.emit((best[1], best[2]))
+            return                          # 조회 성공(최신이어도) → 재시도 없음
 
     @Slot(object)
     def _on_update_found(self, payload) -> None:
