@@ -2885,7 +2885,7 @@ ApplicationWindow {
         id: presetCtxMenu
         MenuItem {
             // 현재 편집값으로 이 레시피의 룩을 덮어쓴다. 되돌릴 수 없어 확인을 받는다.
-            text: "Update look from current edits\u2026"
+            text: "Update look\u2026"
             enabled: controller.imagePath !== ""
             onTriggered: {
                 win._presetConfirmMode = "update"
@@ -2893,7 +2893,7 @@ ApplicationWindow {
             }
         }
         MenuItem {
-            text: "Edit name, colour, description\u2026"
+            text: "Edit properties\u2026"
             onTriggered: presetSaveDialog.openForEdit(
                 win._presetCtxFile, win._presetCtxName, win._presetCtxColor, win._presetCtxDesc)
         }
