@@ -2876,12 +2876,14 @@ ApplicationWindow {
         wallpaperSaveDialog.selectedFile = win.withExt(wallpaperSaveDialog.selectedFile, exts[i])
     }
 
-    // ── 레시피 저장: 이름 + 구분색. 저장 시점의 출처를 여기서 미리 보여준다(가장 값싼 교육 지점) ──
-    Dialog {
+    // ── 레시피 저장: 이름 + 구분색 ──
+    // 종료/후원 대화상자와 같은 컨셉(다크 + 상·하 필름 퍼포레이션 + 앰버 강조).
+    // 폭은 440 — 팔레트 12색을 한 줄에 담고 출처 문구가 덜 접히게(종료 380 보다 넓게).
+    Popup {
         id: presetSaveDialog
         modal: true
         dim: true
-        width: 380
+        width: 440
         padding: 0
         anchors.centerIn: Overlay.overlay
         closePolicy: Popup.CloseOnEscape
@@ -2892,11 +2894,200 @@ ApplicationWindow {
         }
         property string chosenColor: controller.presetPalette[0]
         property var src: ({})
+        readonly property bool nameOk: presetNameInput.text.trim() !== ""
         onOpened: {
-            presetNameField.text = ""
+            presetNameInput.text = ""
             presetSaveDialog.src = controller.presetSource()
             presetSaveDialog.chosenColor = controller.presetPalette[0]
-            presetNameField.forceActiveFocus()
+            presetNameInput.forceActiveFocus()
+        }
+        onClosed: win._typing = false
+        function doSave() {
+            if (!presetSaveDialog.nameOk) return
+            var f = controller.savePreset(presetNameInput.text.trim(),
+                                          presetSaveDialog.chosenColor, win.editParams())
+            presetSaveDialog.close()
+            if (f !== "") {
+                win.refreshPresets()
+                if (!win.secOpen[13]) win.toggleSec(13)   // 저장했으면 결과를 보여준다
+            }
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 0
+            FilmStrip {
+                Layout.fillWidth: true
+                Layout.leftMargin: 16; Layout.rightMargin: 16
+                Layout.preferredHeight: 26
+            }
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.margins: 24
+                spacing: 12
+
+                Label {
+                    text: "Save as recipe"
+                    color: "#f2f2f2"; font.pixelSize: 18; font.bold: true
+                    Layout.alignment: Qt.AlignHCenter
+                }
+                Label {
+                    Layout.fillWidth: true
+                    text: "A recipe stores the look only \u2014 not white balance, crop or masks."
+                    color: "#9a9a9a"; font.pixelSize: 13
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
+                }
+
+                // 이름 입력 — TextInput(코어) + Rectangle. 네이티브 스타일의 TextField 는
+                // 배경이 밝아 밝은 글자가 안 보인다(searchInput 과 같은 패턴으로 통일).
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 34
+                    Layout.topMargin: 4
+                    radius: 6; color: "#1b1b1c"
+                    border.color: presetNameInput.activeFocus ? "#E0A226" : "#55555a"
+                    border.width: 1
+                    TextInput {
+                        id: presetNameInput
+                        anchors.fill: parent
+                        anchors.leftMargin: 10; anchors.rightMargin: 10
+                        verticalAlignment: TextInput.AlignVCenter
+                        color: "#f2f2f2"; font.pixelSize: 14
+                        clip: true; selectByMouse: true
+                        // 대화상자가 열려 있는 동안 알파벳 단축키(I/D/B/L…)가 입력을 먹지 않게
+                        onActiveFocusChanged: win._typing = activeFocus
+                        onAccepted: presetSaveDialog.doSave()
+                        Keys.onEscapePressed: presetSaveDialog.close()
+                        HoverHandler { cursorShape: Qt.IBeamCursor }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: presetNameInput.text === "" && !presetNameInput.activeFocus
+                            text: "Recipe name"
+                            color: "#6f6f6f"; font.pixelSize: 14
+                        }
+                    }
+                }
+
+                // 구분색 — 지정 팔레트 12색. 자유 색 선택을 두지 않는다(참고 디자인의 통일감이
+                // 제한된 팔레트에서 나오고, 공유받은 레시피도 같은 팔레트가 된다).
+                Label {
+                    text: "Colour"
+                    color: "#9a9a9a"; font.pixelSize: 12
+                    Layout.topMargin: 4
+                }
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Repeater {
+                        model: controller.presetPalette
+                        delegate: Rectangle {
+                            width: 28; height: 28; radius: 6
+                            color: modelData
+                            border.color: presetSaveDialog.chosenColor === modelData
+                                          ? "#ffffff" : "#00000000"
+                            border.width: 2
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: presetSaveDialog.chosenColor = modelData
+                            }
+                        }
+                    }
+                }
+
+                // 기록될 출처 미리보기 — 저장되는 내용을 숨기지 않는다. 스캔이면 스캐너 이름이
+                // 그대로 나오는데, 그것이 재현 불가라는 사실을 알려주는 것이 이 기능의 목적이다.
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 4
+                    Layout.preferredHeight: srcLabel.implicitHeight + 16
+                    radius: 6
+                    color: "#1e1e20"
+                    border.color: "#3d3d40"; border.width: 1
+                    Label {
+                        id: srcLabel
+                        anchors.fill: parent
+                        anchors.margins: 8
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: 12
+                        color: {
+                            var t = presetSaveDialog.src || {}
+                            return t.camera ? "#8a8a8a" : "#E0A226"
+                        }
+                        text: {
+                            var t = presetSaveDialog.src || {}
+                            var a = []
+                            if (t.camera) a.push(t.camera)
+                            if (t.lens) a.push(t.lens)
+                            else if (t.focalLength) a.push(t.focalLength)
+                            return a.length > 0
+                                ? "Recording:  " + a.join("   \u00b7   ")
+                                : "This photo has no camera info, so this recipe will record none."
+                        }
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 8
+                    spacing: 12
+                    Rectangle {        // Cancel
+                        Layout.fillWidth: true; Layout.preferredWidth: 0
+                        Layout.preferredHeight: 40; radius: 8
+                        color: psCancelMA.containsMouse ? "#3a3a3d" : "#2e2e31"
+                        border.color: "#55555a"; border.width: 1
+                        Label {
+                            anchors.centerIn: parent; text: "Cancel"
+                            color: "#e6e6e6"; font.pixelSize: 13
+                        }
+                        MouseArea {
+                            id: psCancelMA; anchors.fill: parent; hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: presetSaveDialog.close()
+                        }
+                    }
+                    Rectangle {        // Save (앰버 강조)
+                        Layout.fillWidth: true; Layout.preferredWidth: 0
+                        Layout.preferredHeight: 40; radius: 8
+                        opacity: presetSaveDialog.nameOk ? 1.0 : 0.45
+                        color: psOkMA.containsMouse && presetSaveDialog.nameOk
+                               ? "#f0b945" : "#E0A226"
+                        Label {
+                            anchors.centerIn: parent; text: "Save"
+                            color: "#1a1a1a"; font.pixelSize: 13; font.bold: true
+                        }
+                        MouseArea {
+                            id: psOkMA; anchors.fill: parent; hoverEnabled: true
+                            enabled: presetSaveDialog.nameOk
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: presetSaveDialog.doSave()
+                        }
+                    }
+                }
+            }
+            FilmStrip {           // 하단 — 상단과 대칭(필름 프레임)
+                Layout.fillWidth: true
+                Layout.leftMargin: 16; Layout.rightMargin: 16
+                Layout.preferredHeight: 26
+            }
+        }
+    }
+
+    // ── 레시피 삭제 확인 ── (종료 대화상자와 동일 컨셉)
+    Popup {
+        id: presetDeleteDialog
+        modal: true
+        dim: true
+        width: 380
+        padding: 0
+        anchors.centerIn: Overlay.overlay
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Overlay.modal: Rectangle { color: "#000000"; opacity: 0.55 }
+        background: Rectangle {
+            color: "#232325"; radius: 16
+            border.color: "#3d3d40"; border.width: 1
         }
         contentItem: ColumnLayout {
             spacing: 0
@@ -2910,131 +3101,64 @@ ApplicationWindow {
                 Layout.margins: 24
                 spacing: 12
                 Label {
-                    text: "Save as recipe"
+                    text: "Delete recipe?"
                     color: "#f2f2f2"; font.pixelSize: 18; font.bold: true
                     Layout.alignment: Qt.AlignHCenter
                 }
-                TextField {
-                    id: presetNameField
-                    Layout.fillWidth: true
-                    placeholderText: "Recipe name"
-                    color: "#e6e6e6"
-                    onAccepted: if (text.trim() !== "") presetSaveDialog.doSave()
-                }
                 Label {
-                    text: "Colour"
-                    color: "#9a9a9a"; font.pixelSize: 11
-                }
-                // 지정 팔레트 12색 — 자유 색 선택을 두지 않는다(어두운 배경에서 구분되는 값으로
-                // 고정해야 배지 그리드의 통일감이 유지되고, 공유받은 프리셋도 같은 팔레트가 된다).
-                Flow {
                     Layout.fillWidth: true
-                    spacing: 6
-                    Repeater {
-                        model: controller.presetPalette
-                        delegate: Rectangle {
-                            width: 24; height: 24; radius: 4
-                            color: modelData
-                            border.color: presetSaveDialog.chosenColor === modelData
-                                          ? "#ffffff" : "#00000000"
-                            border.width: 2
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: presetSaveDialog.chosenColor = modelData
+                    text: "\u201c" + win._presetPendingName + "\u201d will be removed. "
+                          + "Photos already edited with it keep their edits."
+                    color: "#9a9a9a"; font.pixelSize: 13
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 8
+                    spacing: 12
+                    Rectangle {
+                        Layout.fillWidth: true; Layout.preferredWidth: 0
+                        Layout.preferredHeight: 40; radius: 8
+                        color: pdCancelMA.containsMouse ? "#3a3a3d" : "#2e2e31"
+                        border.color: "#55555a"; border.width: 1
+                        Label {
+                            anchors.centerIn: parent; text: "Cancel"
+                            color: "#e6e6e6"; font.pixelSize: 13
+                        }
+                        MouseArea {
+                            id: pdCancelMA; anchors.fill: parent; hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: presetDeleteDialog.close()
+                        }
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true; Layout.preferredWidth: 0
+                        Layout.preferredHeight: 40; radius: 8
+                        color: pdOkMA.containsMouse ? "#f0b945" : "#E0A226"
+                        Label {
+                            anchors.centerIn: parent; text: "Delete"
+                            color: "#1a1a1a"; font.pixelSize: 13; font.bold: true
+                        }
+                        MouseArea {
+                            id: pdOkMA; anchors.fill: parent; hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                controller.deletePreset(win._presetPendingDelete)
+                                if (win.presetApplied === win._presetPendingDelete)
+                                    win.clearPresetNotice()
+                                win._presetPendingDelete = ""; win._presetPendingName = ""
+                                presetDeleteDialog.close()
+                                win.refreshPresets()
                             }
                         }
                     }
                 }
-                // 출처 미리보기 — 저장되는 내용을 숨기지 않고 보여준다. 스캔이면 스캐너 이름이
-                // 그대로 나오는데, 그것이 재현 불가라는 사실을 알려주는 것이 바로 이 기능의 목적이다.
-                Label {
-                    Layout.fillWidth: true
-                    text: {
-                        var a = []
-                        if (presetSaveDialog.src.camera) a.push(presetSaveDialog.src.camera)
-                        if (presetSaveDialog.src.lens) a.push(presetSaveDialog.src.lens)
-                        else if (presetSaveDialog.src.focalLength) a.push(presetSaveDialog.src.focalLength)
-                        return a.length > 0
-                            ? "Recording: " + a.join("  \u00b7  ")
-                            : "This photo has no camera info, so the recipe will record none."
-                    }
-                    color: "#8a8a8a"; font.pixelSize: 11; wrapMode: Text.WordWrap
-                }
-                Label {
-                    Layout.fillWidth: true
-                    text: "A recipe stores the look only \u2014 not white balance, crop or masks."
-                    color: "#6f6f6f"; font.pixelSize: 10; wrapMode: Text.WordWrap
-                }
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 8
-                    Item { Layout.fillWidth: true }
-                    Button {
-                        text: "Cancel"
-                        onClicked: presetSaveDialog.close()
-                    }
-                    Button {
-                        text: "Save"
-                        enabled: presetNameField.text.trim() !== ""
-                        onClicked: presetSaveDialog.doSave()
-                    }
-                }
             }
-        }
-        function doSave() {
-            var f = controller.savePreset(presetNameField.text.trim(),
-                                          presetSaveDialog.chosenColor, win.editParams())
-            presetSaveDialog.close()
-            if (f !== "") {
-                win.refreshPresets()
-                if (!win.secOpen[13]) win.toggleSec(13)   // 저장했으면 결과를 보여준다
-            }
-        }
-    }
-
-    // ── 레시피 삭제 확인 ──
-    Dialog {
-        id: presetDeleteDialog
-        modal: true
-        dim: true
-        width: 320
-        padding: 0
-        anchors.centerIn: Overlay.overlay
-        closePolicy: Popup.CloseOnEscape
-        Overlay.modal: Rectangle { color: "#000000"; opacity: 0.55 }
-        background: Rectangle {
-            color: "#232325"; radius: 16
-            border.color: "#3d3d40"; border.width: 1
-        }
-        contentItem: ColumnLayout {
-            Layout.fillWidth: true
-            spacing: 12
-            Label {
+            FilmStrip {
                 Layout.fillWidth: true
-                Layout.margins: 20
-                Layout.bottomMargin: 0
-                text: "Delete recipe \u201c" + win._presetPendingName + "\u201d?"
-                color: "#f2f2f2"; font.pixelSize: 14
-                wrapMode: Text.WordWrap
-            }
-            RowLayout {
-                Layout.fillWidth: true
-                Layout.margins: 20
-                Layout.topMargin: 0
-                spacing: 8
-                Item { Layout.fillWidth: true }
-                Button { text: "Cancel"; onClicked: presetDeleteDialog.close() }
-                Button {
-                    text: "Delete"
-                    onClicked: {
-                        controller.deletePreset(win._presetPendingDelete)
-                        if (win.presetApplied === win._presetPendingDelete) win.clearPresetNotice()
-                        win._presetPendingDelete = ""; win._presetPendingName = ""
-                        presetDeleteDialog.close()
-                        win.refreshPresets()
-                    }
-                }
+                Layout.leftMargin: 16; Layout.rightMargin: 16
+                Layout.preferredHeight: 26
             }
         }
     }
@@ -5986,6 +6110,7 @@ ApplicationWindow {
                                         text: badge.prov
                                         color: "#8a8a8a"; font.pixelSize: 8
                                         elide: Text.ElideRight
+                                        horizontalAlignment: Text.AlignHCenter
                                     }
                                     Rectangle {
                                         Layout.fillWidth: true
@@ -6002,6 +6127,7 @@ ApplicationWindow {
                                         wrapMode: Text.WordWrap
                                         maximumLineCount: 2
                                         verticalAlignment: Text.AlignVCenter
+                                        horizontalAlignment: Text.AlignHCenter
                                     }
                                 }
                                 MouseArea {
