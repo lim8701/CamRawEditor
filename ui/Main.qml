@@ -970,6 +970,101 @@ ApplicationWindow {
         win.histPush(JSON.stringify(win.editParams()))   // undo 스텝 기록(붙여넣기 되돌리기 가능)
     }
 
+    // ===== 레시피 프리셋 =====
+    // 배너 문구. "" = 배너 없음. presetNoticeWarn=true 면 앰버 경고, false 면 회색 정보.
+    // ⚠️'비교 불가(회색)'와 '다른 기종(앰버)'이 똑같이 보이면 둘 다 안 읽힌다 → 시각 비중을 나눈다.
+    property string presetNotice: ""
+    property bool presetNoticeWarn: false
+    property string presetApplied: ""     // 방금 적용한 프리셋 파일(배지 선택 표시용)
+    function clearPresetNotice() {
+        win.presetNotice = ""; win.presetNoticeWarn = false; win.presetApplied = ""
+    }
+
+    // 프리셋의 출처와 현재 사진을 비교해 배너 문구를 만든다.
+    // ⚠️초점거리는 **비교하지 않는다** — 줌 렌즈면 같은 바디·같은 렌즈의 두 컷도 초점거리가 달라
+    //   매번 불일치 배너가 뜨고, 그러면 아무도 배너를 읽지 않는다. 표시용 문맥으로만 쓴다.
+    //   렌즈는 **양쪽에 다 있을 때만** 비교한다(대개 비어 있다 — exif_info 주석 참조).
+    function presetMessage(d, missingSim) {
+        var src = d.source || {}
+        var cur = controller.presetSource()
+        function ident(o) {
+            var a = []
+            if (o.camera) a.push(o.camera)
+            if (o.lens) a.push(o.lens)
+            else if (o.focalLength) a.push(o.focalLength)
+            return a.join(" · ")
+        }
+        var made = ident(src), mine = ident(cur)
+        var extra = missingSim !== ""
+            ? " Film simulation '" + missingSim + "' isn't installed — not applied." : ""
+        if (!src.camera || !cur.camera) {
+            // 한쪽에 촬영정보가 없으면 **불일치라고 단정하지 않는다.** 우리가 export 한 파일은
+            // EXIF 가 아예 없어(Qt 가 안 씀) 이 경로가 정상 흐름에서 자주 걸린다.
+            var head = !cur.camera
+                ? "This photo has no camera info (exported or edited files usually lose EXIF), so it can't be checked against this recipe."
+                : "This recipe has no camera info recorded, so it can't be checked against this photo."
+            return { warn: false, text: head + (made ? " The recipe was made on " + made + "." : "") + extra }
+        }
+        var lensDiff = src.lens && cur.lens && src.lens !== cur.lens
+        if (src.camera !== cur.camera || lensDiff) {
+            return { warn: true, text: "Made on " + made
+                + (d.appVersion ? " · v" + d.appVersion : "")
+                + ". This photo: " + mine
+                + ". Colour response, noise and lens rendering differ — treat this as a starting point, not a copy."
+                + extra }
+        }
+        return { warn: missingSim !== "", text: extra.replace(/^ /, "") }
+    }
+
+    // 프리셋 파일 1개를 읽어 적용. 검증은 Python(loadPreset)에서 이미 끝나 있다.
+    function applyPresetFile(file, label) {
+        if (controller.imagePath === "") return
+        var d = controller.loadPreset(file)
+        if (d.error !== "") {
+            win.presetNotice = "This preset could not be loaded: " + d.error
+            win.presetNoticeWarn = true
+            return
+        }
+        // ⚠️없는 필름시뮬은 applyEdits 가 **조용히** None 으로 떨어뜨린다(:796) — 배포본에서 ARR
+        //   흑백 LUT 을 뺐으므로 실제로 발생하고, 그러면 룩의 대부분을 잃는다. 적용 전에 잡아 알린다.
+        var sk = d.edits["simKey"]
+        var missing = (sk !== undefined && sk !== "" && win.simKeys.indexOf(sk) < 0) ? sk : ""
+        win.applyPresetEdits(d.edits)
+        var msg = win.presetMessage(d, missing)
+        win.presetNotice = msg.text
+        win.presetNoticeWarn = msg.warn
+        win.presetApplied = file      // 배지 선택 표시(5단계). 일치 시엔 이게 유일한 피드백이다
+    }
+
+    // 프리셋의 '룩'을 현재 사진에 적용. 붙여넣기(pasteEdits)와 같은 커밋 경로를 쓰되 **3단**이다.
+    // ⚠️① 프리셋 dict 를 applyEdits 에 그대로 넘기면 안 된다 — applyEdits 는 무조건
+    //    applySkyEdits 를 부르고 maskLayers 가 없으면 모든 레이어를 clearLayer 한다.
+    //    즉 대상 사진의 **마스크가 삭제**되고, temp/tint 누락은 as-shot 리셋, 크롭·기하·스탬프
+    //    텍스트도 초기화된다. 그래서 현재 편집값 위에 병합해야 '건드리지 않음'이 된다.
+    // ⚠️② 그런데 병합만 하면 **이전 프리셋의 룩이 남는다**(A 적용 후 B 적용 시 B 에 없는 키는
+    //    A 값 유지). 붙여넣기는 클립보드가 항상 전체 룩을 담아 괜찮았을 뿐이다. → 프리셋이
+    //    소유하는 키를 먼저 지워 기본값으로 되돌린 뒤 덮어쓴다. 지우는 목록은 **정확히
+    //    presetKeys 여야 한다** — 프리셋이 소유하지 않은 키를 지우면 그 키가 기본값으로 강제된다
+    //    (예: lensCorrection 은 기본이 true 라 조용히 켜지면서 풀 재디코드까지 유발).
+    function applyPresetEdits(edits) {
+        if (controller.imagePath === "") return
+        var p = win.editParams()                       // ① 대상 사진의 현재 전체 상태
+        var K = controller.presetKeys
+        for (var i = 0; i < K.length; i++) delete p[K[i]]   // ② 프리셋 소유 키 → 기본값
+        delete p["simIndex"]                           // ★ 안 지우면 이전 필름시뮬이 부활(:796)
+        for (var k in edits) p[k] = edits[k]           // ③ 프리셋 값
+        win._applying = true
+        // ⚠️try/finally 필수 — 예외가 나면 _applying 이 영구 true 로 남아 그 세션의 자동저장과
+        //   undo 가 조용히 죽는다(scheduleSave/commitEditSnapshot 이 early-return).
+        //   프리셋은 applyEdits 에 들어오는 첫 '앱 외부에서 편집·공유되는' 입력이다.
+        try { win.applyEdits(p) } finally { win._applying = false }
+        controller.setWb(tempSlider.value, tintSlider.value)   // _applying 중 막힌 커밋 직접 반영
+        controller.setCurve(curveEditor.allLuts())
+        controller.saveEdits(win.editParams())
+        win.refreshHistogram()
+        win.histPush(JSON.stringify(win.editParams()))   // undo 스텝 1개(프리셋 적용 되돌리기)
+    }
+
     // ===== 배치 export (탐색기 체크박스로 선택한 파일들, 순차) =====
     // 기존 단일 흐름을 파일마다 그대로 재사용: loadPath(사이드카 WB 선설정·디코딩)
     // → editsReady(편집 복원 or 기본값·마스크 재생성) → exportParams() → exportImage(CPU).
@@ -1351,6 +1446,9 @@ ApplicationWindow {
     // 스냅샷 적용(undo/redo 공통) — paste 와 동일 경로: _applying 가드로 자동저장/WB 재디코딩
     // 억제 후 WB·커브 직접 반영 + 사이드카 저장 + 히스토그램 갱신.
     function applySnapshot(snapStr) {
+        // ⚠️프리셋 배너를 지운다 — Ctrl+Z 로 되돌린 뒤에도 배너가 남아 있으면 "다른 기종의
+        //   레시피가 적용된 상태"라고 거짓말을 한다. 정직함이 전부인 기능이라 치명적이다.
+        win.clearPresetNotice()
         var p = JSON.parse(snapStr)
         win._applying = true
         win.applyEdits(p, true)          // undo/redo = 획 tail-diff 즉각 경로 허용
@@ -6736,6 +6834,7 @@ ApplicationWindow {
                     function onEditsReady() {
                         // 새 파일 *디코딩 완료* 후: 저장된 편집이 있으면 복원, 없으면 기본값으로 초기화.
                         // (디코딩 전 트리거 금지 — 이전 이미지에 새 편집이 잘못 반영되는 것 방지)
+                        win.clearPresetNotice()   // 사진이 바뀌면 이전 사진의 프리셋 배너는 무효
                         win._applying = true
                         var e = controller.editsForCurrent()
                         if (e && e.v !== undefined) {
