@@ -3030,22 +3030,45 @@ ApplicationWindow {
                     radius: 6; color: "#1b1b1c"
                     border.color: presetDescInput.activeFocus ? "#E0A226" : "#55555a"
                     border.width: 1
-                    TextEdit {
-                        id: presetDescInput
+                    // 줄이 길어지면 스크롤. TextEdit 은 스크롤을 스스로 못 하므로 Flickable 로
+                    // 감싼다(ScrollView+TextArea 는 네이티브 스타일 커스터마이즈 경고가 난다).
+                    Flickable {
+                        id: descFlick
                         anchors.fill: parent
-                        anchors.margins: 10
-                        color: "#e6e6e6"; font.pixelSize: 12
-                        wrapMode: TextEdit.Wrap
-                        clip: true; selectByMouse: true
-                        onActiveFocusChanged: win._typing = activeFocus
-                        Keys.onEscapePressed: presetSaveDialog.close()
-                        HoverHandler { cursorShape: Qt.IBeamCursor }
-                        // 280자 상한(presets.build 와 같은 값) — 붙여넣기까지 막는다
-                        onTextChanged: if (length > 280) remove(280, length)
-                        Text {
-                            visible: presetDescInput.text === "" && !presetDescInput.activeFocus
-                            text: "Description (optional) \u2014 e.g. what light or subject it suits"
-                            color: "#6f6f6f"; font.pixelSize: 12
+                        anchors.margins: 8
+                        anchors.rightMargin: 14        // 스크롤바 자리
+                        clip: true
+                        contentWidth: width
+                        contentHeight: presetDescInput.implicitHeight
+                        boundsBehavior: Flickable.StopAtBounds
+                        ScrollBar.vertical: ScrollBar {
+                            policy: descFlick.contentHeight > descFlick.height
+                                    ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+                        }
+                        // 커서가 보이는 영역 밖으로 나가면 따라 스크롤(타이핑 중 커서 유실 방지)
+                        function ensureCursorVisible(r) {
+                            if (r.y < contentY) contentY = r.y
+                            else if (r.y + r.height > contentY + height)
+                                contentY = r.y + r.height - height
+                        }
+                        TextEdit {
+                            id: presetDescInput
+                            width: descFlick.width
+                            color: "#e6e6e6"; font.pixelSize: 12
+                            wrapMode: TextEdit.Wrap
+                            selectByMouse: true
+                            onActiveFocusChanged: win._typing = activeFocus
+                            Keys.onEscapePressed: presetSaveDialog.close()
+                            HoverHandler { cursorShape: Qt.IBeamCursor }
+                            // 280자 상한(presets.build 와 같은 값) — 붙여넣기까지 막는다
+                            onTextChanged: if (length > 280) remove(280, length)
+                            onCursorRectangleChanged: descFlick.ensureCursorVisible(cursorRectangle)
+                            Text {
+                                visible: presetDescInput.text === ""
+                                         && !presetDescInput.activeFocus
+                                text: "Description (optional) \u2014 e.g. what light or subject it suits"
+                                color: "#6f6f6f"; font.pixelSize: 12
+                            }
                         }
                     }
                 }
@@ -6233,27 +6256,6 @@ ApplicationWindow {
                                             presetCtxMenu.popup()
                                         } else if (controller.imagePath !== "") {
                                             win.applyPresetFile(modelData.file, modelData.name)
-                                        }
-                                    }
-                                }
-                                Rectangle {
-                                    visible: bgHover.hovered
-                                    anchors.right: parent.right; anchors.top: parent.top
-                                    anchors.margins: 2
-                                    width: 14; height: 14; radius: 7
-                                    color: delHover.hovered ? "#8a3a3a" : "#cc1e1e1e"
-                                    Text {
-                                        anchors.centerIn: parent; text: "\u2715"
-                                        color: "#d0d0d0"; font.pixelSize: 8
-                                    }
-                                    HoverHandler { id: delHover }
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: {
-                                            win._presetPendingDelete = modelData.file
-                                            win._presetPendingName = modelData.name
-                                            presetDeleteDialog.open()
                                         }
                                     }
                                 }
