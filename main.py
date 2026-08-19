@@ -20,7 +20,7 @@ from pathlib import Path
 
 from PySide6.QtCore import (Property, QBuffer, QEvent, QFileSystemWatcher, QObject,
                             QPointF, QSettings, QSize, Qt, QTimer, Signal, Slot, QUrl)
-from PySide6.QtGui import (QDesktopServices, QGuiApplication, QIcon, QImage,
+from PySide6.QtGui import (QColor, QDesktopServices, QGuiApplication, QIcon, QImage,
                            QImageReader, QTransform)
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickImageProvider, QQuickItem
@@ -121,6 +121,15 @@ def wallpaper_prefs_path() -> str:
     app_dirs 는 파일 상단 규약대로 지연 임포트."""
     import app_dirs
     return app_dirs.user_data_path("wallpaper.json")
+
+def stamp_prefs_path() -> str:
+    """날짜 스탬프 '내 기본값'(폰트·크기·여백·켜짐) 저장 파일 — 사용자 데이터 폴더.
+    사진 여러 장을 연속 작업할 때 매번 다시 설정하지 않도록 마지막 사용값을 남긴다
+    (피드백 발단). ⚠️사진별 값은 여전히 사이드카가 진실원이고, 이 파일은 **사이드카가
+    없는 새 사진의 출발점**일 뿐이다."""
+    import app_dirs
+    return app_dirs.user_data_path("stamp.json")
+
 
 # 업데이트 확인: GitHub 릴리스 목록(공개 repo, 무인증 60회/시간 — 시작 시 1회면 충분)
 _RELEASES_API = "https://api.github.com/repos/lim8701/FilmRawstery/releases"
@@ -889,6 +898,8 @@ class Controller(QObject):
     exportProgressChanged = Signal()   # CPU export 진행률(0..1) 갱신 알림(필름 카운터 오버레이용)
     exifChanged = Signal()      # 촬영정보(EXIF) 갱신 알림
     stampChanged = Signal()     # 날짜 스탬프 오버레이 갱신 알림
+    stampDefaultsChanged = Signal()   # 스탬프 '내 기본값' 갱신 알림
+    stampFontsChanged = Signal()      # 폰트 목록(사용자 추가/삭제) 갱신 알림
     editsReady = Signal()       # 새 파일 디코딩 완료 -> QML 이 저장 편집 복원(또는 기본값 리셋)
     histogramChanged = Signal()  # 톤커브 배경 히스토그램 갱신 알림
     lensChanged = Signal()       # 렌즈 보정 on/off 변경 알림
@@ -1090,6 +1101,10 @@ class Controller(QObject):
         self._stamp_font = "7c_bold"   # 데이트백 폰트 방식(date_stamp.STYLES 키)
         self._stamp_size = 0.032       # 데이트백 크기 = 숫자높이/짧은변 비율(슬라이더, date_stamp.DEFAULT_SIZE_FRAC)
         self._stamp_margin = 0.05      # 데이트백 여백 = 코너 안쪽 여백/짧은변 비율 — 슬라이더(date_stamp.MARGIN_FRAC)
+        self._stamp_color = "#FF8A29"  # 각인 색(date_stamp.DEFAULT_COLOR — 중성=흑백 사진용)
+        self._stamp_glow = 1.0         # 글로우 밝기(헤일로 가중 배율)
+        self._stamp_spread = 1.0       # 글로우 영역(헤일로 반경 배율)
+        self._stamp_prefs_cache = None  # 스탬프 '내 기본값' 캐시(_stamp_prefs)
         self._stamp_grain_src = 0.0    # 스탬프 그레인 소스 = 전체 grainAmt(QML 이 push) — 스탬프는 사진 필름 그레인에 연동
         self._proxy_w = 0           # 마지막 프록시 크기(스탬프 레이어 재렌더용)
         self._proxy_h = 0
@@ -1915,7 +1930,7 @@ class Controller(QObject):
         "grainAmt", "grainSize", "grainRough", "grainColor", "grainShape",
         "sharpenAmt", "sharpenRadius", "sharpenDetail", "sharpenMask",
         "curves",
-        "stampStyle", "stampSize", "stampMargin")
+        "stampStyle", "stampSize", "stampMargin", "stampColor", "stampGlow", "stampSpread")
 
     def _get_preset_keys(self) -> list:
         return list(self._PRESET_KEYS)
@@ -2647,6 +2662,9 @@ class Controller(QObject):
                     style=str(params.get("stampStyle", "7c_bold")),
                     size_frac=float(params.get("stampSize", 0.032)),
                     margin_frac=float(params.get("stampMargin", 0.05)),
+                    color=str(params.get("stampColor", date_stamp.DEFAULT_COLOR)),
+                    glow=float(params.get("stampGlow", 1.0)),
+                    spread=float(params.get("stampSpread", 1.0)),
                     grain_amt=float(params.get("grainAmt", 0.0)))
             # 해상도 프리셋 — pipeFull 이 이제 프리셋 크기로 직접 렌더하므로(그레인이 출력
             # 해상도에서 계산돼 CPU 경로와 정합) 보통 여긴 no-op. 혹시 grab 이 더 크게 온
@@ -2857,7 +2875,161 @@ class Controller(QObject):
     stampCorner = Property(str, _get_stamp_corner, notify=stampChanged)  # 데이트백 코너(프리뷰 배치)
     stampFont = Property(str, _get_stamp_font, notify=stampChanged)       # 폰트 방식(STYLES 키)
     stampSize = Property(float, _get_stamp_size, notify=stampChanged)     # 크기(숫자높이/짧은변 비율)
+    def _get_stamp_color(self) -> str:
+        return self._stamp_color
+
+    def _get_stamp_glow(self) -> float:
+        return self._stamp_glow
+
+    def _get_stamp_spread(self) -> float:
+        return self._stamp_spread
+
+    def _get_stamp_bleed(self) -> float:
+        """글로우 영역 변화분(짧은 변 대비 비율) — QML 오버레이가 마진에서 빼서 글자 위치를
+        고정한다. export(stamp_export)가 쓰는 date_stamp.bleed_frac 과 **같은 값**이라야
+        프리뷰=export 가 유지된다."""
+        import date_stamp
+        return date_stamp.bleed_frac(self._stamp_size, self._stamp_spread)
+
+    def _get_stamp_fonts(self) -> list:
+        """폰트 콤보 모델: 번들 + 사용자 추가. 각 항목 {key, label, user}.
+        ⚠️키(=사이드카에 저장되는 값)와 표시명을 **한 곳에서** 만든다 — QML 에 라벨 배열과
+        키 배열을 따로 두면 순서가 어긋나 다른 폰트가 저장되던 과거 방식의 재발을 막는다."""
+        import date_stamp
+        out = [{"key": k, "label": v, "user": False}
+               for k, v in self._STAMP_FONT_LABELS.items() if k in date_stamp.STYLES]
+        for st in date_stamp.user_font_styles():
+            out.append({"key": st, "label": st[len(date_stamp.USER_PREFIX):], "user": True})
+        return out
+
+    def _get_stamp_font_missing(self) -> bool:
+        """현재 폰트 파일이 없는가 — 남의 사용자 폰트로 만든 사이드카/레시피를 열면 발생한다.
+        QML 이 이때 안내를 띄우고, 렌더는 기본 데이트백 폰트로 폴백한다."""
+        import date_stamp
+        return not date_stamp.has_font(self._stamp_font)
+
+    def _get_stamp_colors(self) -> list:
+        """각인 색 팔레트(QML 스와치). 기본 앰버 = 쿼츠 데이트백, 중성 백색 = 흑백 사진용."""
+        import date_stamp
+        return list(date_stamp.COLORS)
+
     stampMargin = Property(float, _get_stamp_margin, notify=stampChanged) # 코너 여백/짧은변 비율(프리뷰 배치용)
+    stampColor = Property(str, _get_stamp_color, notify=stampChanged)     # 각인 색(hex)
+    stampGlow = Property(float, _get_stamp_glow, notify=stampChanged)     # 글로우 밝기 배율
+    stampSpread = Property(float, _get_stamp_spread, notify=stampChanged) # 글로우 영역 배율
+    stampBleed = Property(float, _get_stamp_bleed, notify=stampChanged)   # 글로우 여유 변화분/짧은변
+    stampColors = Property(list, _get_stamp_colors, constant=True)        # 색 팔레트
+    stampFonts = Property(list, _get_stamp_fonts, notify=stampFontsChanged)   # 폰트 목록(번들+사용자)
+    stampFontMissing = Property(bool, _get_stamp_font_missing, notify=stampChanged)
+
+    # 폰트 표시명(키 = date_stamp.STYLES 키). 사용자 폰트는 파일명을 그대로 쓴다.
+    _STAMP_FONT_LABELS = {
+        "7c_reg": "7-seg Classic Regular", "7c_reg_it": "7-seg Classic Regular Italic",
+        "7c_bold": "7-seg Classic Bold", "7c_bold_it": "7-seg Classic Bold Italic",
+        "14c_reg": "14-seg Classic Regular", "14c_reg_it": "14-seg Classic Regular Italic",
+        "14c_bold": "14-seg Classic Bold", "14c_bold_it": "14-seg Classic Bold Italic",
+        "dotmatrix": "Dot-matrix", "typewriter": "Typewriter (Courier Prime)",
+        "terminal": "Terminal (VT323)", "condensed": "Condensed (Oswald)",
+    }
+
+    @Slot(QUrl, result=bool)
+    def addStampFont(self, url: QUrl) -> bool:  # noqa: N802 (QML 슬롯)
+        """사용자가 고른 .ttf/.otf 를 사용자 폰트 폴더로 복사하고 곧바로 선택한다.
+        윈도우 폰트를 골라도 같은 경로다(복사하므로 원본과 무관해진다)."""
+        import date_stamp
+        style = date_stamp.add_user_font(url.toLocalFile() if url.isLocalFile() else str(url))
+        if not style:
+            return False
+        self.stampFontsChanged.emit()
+        self.setStampFont(style)
+        return True
+
+    @Slot(str, result=bool)
+    def removeStampFont(self, style: str) -> bool:  # noqa: N802 (QML 슬롯)
+        """추가한 사용자 폰트를 지운다. 그 폰트를 쓰던 사진은 기본 폰트로 폴백해 열린다."""
+        import date_stamp
+        if not date_stamp.remove_user_font(style):
+            return False
+        if self._stamp_font == style:
+            self.setStampFont(date_stamp.DEFAULT_STYLE)
+        self.stampFontsChanged.emit()
+        return True
+
+    # ---------- 스탬프 '내 기본값'(사용자 데이터 폴더 JSON) ----------
+    # 사진 여러 장을 연속 작업할 때 폰트·크기·여백을 매번 다시 잡는 것이 힘들다는 피드백에서
+    # 나왔다. ⚠️우선순위는 **사이드카 > 이 기본값 > 공장 기본값** — 사이드카가 있는 사진의
+    # 룩은 절대 바뀌지 않고, 이 값은 '사이드카가 없는 새 사진의 출발점'만 정한다.
+    # ⚠️QML 은 이 값을 `_ev` 폴백과 `resetAllEdits` **양쪽에서 같이** 봐야 한다 — 한쪽만
+    # 보면 "적용 기본값 = 리셋 값" 불변식이 깨져 레시피 적용이 조용히 어긋난다
+    # (CLAUDE.md '레시피 프리셋' 절의 삭제 목록 규약).
+    _STAMP_PREF_DEFAULTS = {"stampOn": False, "stampStyle": "7c_bold",
+                            "stampSize": 0.032, "stampMargin": 0.05,
+                            "stampColor": "#FF8A29", "stampGlow": 1.0, "stampSpread": 1.0}
+
+    def _stamp_prefs(self) -> dict:
+        if self._stamp_prefs_cache is None:
+            d = dict(self._STAMP_PREF_DEFAULTS)
+            try:
+                p = Path(stamp_prefs_path())
+                if p.is_file():
+                    with open(p, encoding="utf-8") as f:
+                        raw = json.load(f)
+                    if isinstance(raw, dict):
+                        d.update(self._sane_stamp_prefs(raw))
+            except Exception:
+                pass                      # 손상 시 공장 기본값(다음 저장에 덮어씀)
+            self._stamp_prefs_cache = d
+        return self._stamp_prefs_cache
+
+    def _sane_stamp_prefs(self, raw: dict) -> dict:
+        """저장 파일은 사용자가 손댈 수 있다 — 타입·범위를 통과한 키만 받는다.
+        (범위를 벗어난 값이 슬라이더/스프라이트로 들어가면 클램프 위치가 UI 와 어긋난다.)"""
+        import date_stamp
+        out = {}
+        if "stampOn" in raw:
+            out["stampOn"] = bool(raw["stampOn"])
+        st = str(raw.get("stampStyle", ""))
+        # 사용자 추가 폰트(user:<파일명>)도 받는다 — 안 받으면 추가한 폰트를 '내 기본값'으로
+        # 기억할 수 없다. 파일이 사라진 경우는 font_family 가 기본 폰트로 폴백하고 QML 이 알린다.
+        if st in date_stamp.STYLES or (st.startswith(date_stamp.USER_PREFIX)
+                                       and len(st) > len(date_stamp.USER_PREFIX)):
+            out["stampStyle"] = st
+        if "stampColor" in raw:
+            c = QColor(str(raw["stampColor"]))
+            if c.isValid():
+                out["stampColor"] = c.name()      # #rrggbb 로 정규화(알파·표기 흔들림 제거)
+        for key, lo, hi in (("stampSize", date_stamp.SIZE_FRAC_MIN, date_stamp.SIZE_FRAC_MAX),
+                            ("stampMargin", 0.0, 0.10),
+                            ("stampGlow", date_stamp.GLOW_MIN, date_stamp.GLOW_MAX),
+                            ("stampSpread", date_stamp.SPREAD_MIN, date_stamp.SPREAD_MAX)):
+            try:
+                v = float(raw[key])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if lo <= v <= hi:
+                out[key] = v
+        return out
+
+    def _get_stamp_defaults(self) -> dict:
+        return dict(self._stamp_prefs())
+
+    stampDefaults = Property("QVariantMap", _get_stamp_defaults, notify=stampDefaultsChanged)
+
+    @Slot("QVariantMap")
+    def rememberStampPrefs(self, prefs: dict) -> None:  # noqa: N802 (QML 슬롯)
+        """사용자가 스탬프 컨트롤을 **직접** 바꿨을 때만 호출된다(QML 이 _applying 중에는 호출
+        하지 않는다). ⚠️로드/리셋의 프로그램 대입까지 저장하면 사이드카가 있는 옛 사진을
+        열기만 해도 '내 기본값'이 그 사진 값으로 덮여, 기능의 목적이 무너진다."""
+        cur = self._stamp_prefs()
+        new = self._sane_stamp_prefs(dict(prefs or {}))
+        if not new or all(cur.get(k) == v for k, v in new.items()):
+            return                        # 변화 없음 — 디스크에 쓰지 않는다
+        cur.update(new)
+        try:
+            _atomic_write_json(stamp_prefs_path(), cur)
+        except Exception as exc:
+            print(f"[stamp] 기본값 저장 실패: {exc}")
+        self.stampDefaultsChanged.emit()
 
     def _compute_histogram(self, img: QImage) -> None:
         """프록시 QImage → 히스토그램용 축소본 캐시 + 기준(입력) 히스토그램.
@@ -3208,6 +3380,34 @@ class Controller(QObject):
         self._stamp_margin = v
         self.stampChanged.emit()
 
+    @Slot(str)
+    def setStampColor(self, color: str) -> None:  # noqa: N802 (QML 슬롯)
+        """각인 색. ⚠️형제 슬롯들과 같은 동일값 가드 — _update_stamp_layer 가 GUI 스레드에서
+        스프라이트를 동기 재렌더하므로, 로드 1회에 여러 번 같은 값이 들어오는 것을 접는다."""
+        color = str(color or "")
+        if color == self._stamp_color:
+            return
+        self._stamp_color = color
+        self._update_stamp_layer()
+
+    @Slot(float)
+    def setStampGlow(self, v: float) -> None:  # noqa: N802 (QML 슬롯)
+        import date_stamp
+        v = min(date_stamp.GLOW_MAX, max(date_stamp.GLOW_MIN, float(v)))
+        if v == self._stamp_glow:
+            return
+        self._stamp_glow = v
+        self._update_stamp_layer()
+
+    @Slot(float)
+    def setStampSpread(self, v: float) -> None:  # noqa: N802 (QML 슬롯)
+        import date_stamp
+        v = min(date_stamp.SPREAD_MAX, max(date_stamp.SPREAD_MIN, float(v)))
+        if v == self._stamp_spread:
+            return
+        self._stamp_spread = v
+        self._update_stamp_layer()
+
     @Slot(float)
     def setStampGrainSrc(self, grain_amt: float) -> None:  # noqa: N802 (QML 슬롯)
         """전체 필름 그레인(grainAmt)을 스탬프 프리뷰에 반영 — 스탬프 그레인은 사진 그레인에 연동."""
@@ -3231,7 +3431,8 @@ class Controller(QObject):
             layer, wr, hr = date_stamp.sprite_layer(
                 self._stamp_text, rot=self._stamp_rot,
                 style=self._stamp_font, size_frac=self._stamp_size,
-                grain_amt=self._stamp_grain_src)
+                grain_amt=self._stamp_grain_src, color=self._stamp_color,
+                glow=self._stamp_glow, spread=self._stamp_spread)
             self._stamp_wr, self._stamp_hr = wr, hr
             # 프리뷰 스탬프도 사진과 동일한 디스플레이 색관리(광색역 보정)를 거치게 한다 —
             # 안 하면 사진만 보정되고 스탬프는 raw sRGB 라 프리뷰에서 스탬프 색감이 어긋난다.

@@ -82,12 +82,28 @@ Components and licenses
     SIL Open Font License 1.1 — Copyright (c) The Doto Project Authors
     https://github.com/oliverlalan/Doto  ·  see THIRD_PARTY_LICENSES/Doto-OFL.txt
 
+13. Courier Prime  (fonts/CourierPrime-Regular.ttf) — 스탬프 타자기체
+    SIL Open Font License 1.1 — Copyright 2015 The Courier Prime Project Authors
+    https://github.com/quoteunquoteapps/CourierPrime
+    see THIRD_PARTY_LICENSES/CourierPrime-OFL.txt
+
+14. VT323  (fonts/VT323-Regular.ttf) — 스탬프 구형 LED/터미널체
+    SIL Open Font License 1.1 — Copyright 2011 The VT323 Project Authors
+    https://github.com/phoikoi/VT323
+    see THIRD_PARTY_LICENSES/VT323-OFL.txt
+
+15. Oswald  (fonts/Oswald-Variable.ttf) — 스탬프 콘덴스드 산세리프
+    SIL Open Font License 1.1 — Copyright 2016 The Oswald Project Authors
+    https://github.com/googlefonts/OswaldFont
+    see THIRD_PARTY_LICENSES/Oswald-OFL.txt
+
 The canonical license texts are bundled in THIRD_PARTY_LICENSES/:
   - LGPLv3.txt   (Qt/PySide6)        — GNU LGPL v3
   - OFL.txt      (DSEG7 font)        — SIL Open Font License 1.1
   - LibRaw-LGPL-2.1.txt, rawpy-LICENSE.txt, numpy-LICENSE.txt,
     scipy-LICENSE.txt, onnxruntime-LICENSE.txt (+ ThirdPartyNotices),
     exifread-LICENSE.txt, opencv-LICENSE.txt (+ opencv-ThirdPartyNotices.txt)
+  - Doto-OFL.txt, CourierPrime-OFL.txt, VT323-OFL.txt, Oswald-OFL.txt (스탬프 폰트)
 
 Summary: share NON-COMMERCIALLY, keep this NOTICE and the license files with
 the package, and credit the sources above.

@@ -46,7 +46,32 @@ ApplicationWindow {
 
     // 날짜 스탬프(필름 데이트백) 표시 여부 (D 키로 토글). 기본 off.
     property bool dateStamp: false
-    Shortcut { sequence: "D"; enabled: !win._typing; onActivated: win.dateStamp = !win.dateStamp }
+    // 스탬프 '내 기본값' — 사진 여러 장을 연속 작업할 때 폰트·크기·여백을 매번 다시 잡지
+    // 않도록 마지막 사용값을 기억한다(controller 가 사용자 데이터 폴더 JSON 으로 보존).
+    // ⚠️`_ev` 폴백과 `resetAllEdits` 가 **반드시 같은 이 함수**를 봐야 한다 — 한쪽만 보면
+    //   "적용 기본값 = 리셋 값" 불변식이 깨져 레시피 적용이 조용히 어긋난다.
+    function stampDef(key) {
+        var d = controller.stampDefaults
+        return (d && d[key] !== undefined) ? d[key]
+             : ({ stampOn: false, stampStyle: "7c_bold", stampSize: 0.032, stampMargin: 0.05,
+                  stampColor: "#FF8A29", stampGlow: 1.0, stampSpread: 1.0 })[key]
+    }
+    // 사용자가 스탬프 컨트롤을 **직접** 바꿨을 때만 기억한다. 로드/리셋의 프로그램 대입까지
+    // 저장하면 옛 사진을 열기만 해도 내 기본값이 그 사진 값으로 덮인다.
+    function rememberStamp() {
+        if (win._applying) return
+        // 값은 슬라이더가 아니라 **controller** 에서 읽는다 — editParams()/사이드카가 보는
+        // 것과 같은 하나의 진실원이라, 슬라이더와 controller 가 어긋나도 기억값이 안 튄다.
+        controller.rememberStampPrefs({ "stampOn": win.dateStamp,
+                                        "stampStyle": controller.stampFont,
+                                        "stampSize": controller.stampSize,
+                                        "stampMargin": controller.stampMargin,
+                                        "stampColor": controller.stampColor,
+                                        "stampGlow": controller.stampGlow,
+                                        "stampSpread": controller.stampSpread })
+    }
+    Shortcut { sequence: "D"; enabled: !win._typing
+               onActivated: { win.dateStamp = !win.dateStamp; win.rememberStamp() } }
 
     // AI 캡션 오버레이 표시 여부 (C 키로 토글). 끄면 로드 시 자동 생성도 중단(연산 낭비 방지).
     property bool captionOverlay: true
@@ -80,7 +105,8 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+1"; onActivated: win.activePanel = 0 }
     Shortcut { sequence: "Ctrl+2"; onActivated: win.activePanel = 1 }
     Shortcut { sequence: "Ctrl+3"; onActivated: win.activePanel = 2 }
-    Shortcut { sequence: "Ctrl+4"; enabled: controller.wallpaperEnabled; onActivated: win.activePanel = 3 }
+    Shortcut { sequence: "Ctrl+4"; onActivated: win.activePanel = 3 }
+    Shortcut { sequence: "Ctrl+5"; enabled: controller.wallpaperEnabled; onActivated: win.activePanel = 4 }
 
     // 디스플레이 색관리(프리뷰 전용 sRGB→모니터 색역 보정) 토글.
     Shortcut { sequence: "Ctrl+Shift+M"; onActivated: win.displayCM = !win.displayCM }
@@ -768,7 +794,9 @@ ApplicationWindow {
             "lumaNR": lumaNrSlider.value, "colorNR": colorNrSlider.value, "aiNr": aiNrCheck.checked,
             "lensCorrection": lensCheck.checked, "dateStamp": win.dateStamp, "stampText": stampField.text,
             "stampStyle": controller.stampFont, "stampSize": controller.stampSize,
-            "stampMargin": controller.stampMargin,
+            "stampMargin": controller.stampMargin, "stampColor": controller.stampColor,
+            "stampGlow": controller.stampGlow, "stampSpread": controller.stampSpread, "stampColor": controller.stampColor,
+            "stampGlow": controller.stampGlow, "stampSpread": controller.stampSpread,
             "curves": curveEditor.channelPoints,
             "quarterTurns": win.quarterTurns, "rotateAngle": rotAngleSlider.value,
             "flipH": flipHBtn.checked, "flipV": flipVBtn.checked,
@@ -830,6 +858,9 @@ ApplicationWindow {
         aiNrCheck.checked = _ev(p, "aiNr", false)
         if (aiNrCheck.checked) win.requestAiNr(false)
         else controller.setAiNr(false)
+        // ⚠️폴백은 **공장 기본값** — 사이드카가 있는 사진(=이 경로)의 룩은 내 기본값에
+        //   영향받아선 안 된다. 아주 옛 사이드카(스탬프 키가 없던 시절)를 열었을 때
+        //   스탬프가 켜지거나 폰트가 바뀌면 기존 사진의 룩이 변한다.
         win.dateStamp = _ev(p, "dateStamp", false)
         stampField.text = _ev(p, "stampText", controller.stampText)
         // 프로그램으로 text 를 바꾸면 onTextEdited 가 안 불리므로 직접 push(스탬프 렌더 갱신).
@@ -839,7 +870,13 @@ ApplicationWindow {
         if (typeof _sz === "string") _sz = ({S: 0.024, M: 0.032, L: 0.044})[_sz] || 0.032  // 구 사이드카 호환
         stampSizeSlider.value = _sz
         controller.setStampSize(_sz)
-        var _mg = _ev(p, "stampMargin", 0.05);    stampMarginSlider.value = _mg; controller.setStampMargin(_mg)
+        var _mg = _ev(p, "stampMargin", 0.05)
+        stampMarginSlider.value = _mg; controller.setStampMargin(_mg)
+        // 색/글로우도 공장 기본값 폴백 — 이 키가 없던 시절 사이드카가 예전 앰버 룩 그대로
+        // 열려야 한다(date_stamp 가 기본 색·기본 영역에서 예전과 비트 동일하게 렌더한다).
+        controller.setStampColor(_ev(p, "stampColor", "#FF8A29"))
+        var _gl = _ev(p, "stampGlow", 1.0);   stampGlowSlider.value = _gl; controller.setStampGlow(_gl)
+        var _sp = _ev(p, "stampSpread", 1.0); stampSpreadSlider.value = _sp; controller.setStampSpread(_sp)
         // 체크박스도 명시 대입(aiNrCheck 동일) — 사용자가 한 번이라도 클릭하면
         // `checked: controller.lensCorrection` 바인딩이 파괴되어, 이후 사이드카 복원이
         // 박스에 반영되지 않고 낡은 값이 자동저장으로 역전파되던 버그 방지.
@@ -911,13 +948,23 @@ ApplicationWindow {
         simCombo.currentIndex = 0; simStrengthSlider.value = 1.0
         // 날짜 스탬프/렌즈 보정도 초기화 — 누락 시 이전 사진의 상태가 무편집 사진으로
         // 누수되고(editParams 는 저장하는데 reset 은 안 지움), Reset 버튼으로도 안 지워졌음.
-        win.dateStamp = false
+        // 스탬프는 '내 기본값'으로 되돌린다(공장 기본값 아님). ⚠️이 함수는 Reset 버튼과
+        // **사이드카 없는 새 사진의 로드 경로**(onEditsReady 의 else)를 겸하는데, 후자가
+        // 이 기능의 목적 그 자체다. 그래서 여기만 내 기본값이고, 슬라이더 더블클릭과
+        // applyEdits 폴백은 공장 기본값이다(각각 그쪽 주석 참조 — 의도된 비대칭).
+        win.dateStamp = win.stampDef("stampOn")
         stampField.text = controller.stampText
         controller.setStampText(stampField.text)
-        controller.setStampFont("7c_bold")
-        stampSizeSlider.value = 0.032
-        controller.setStampSize(0.032)
-        stampMarginSlider.value = 0.05; controller.setStampMargin(0.05)
+        controller.setStampFont(win.stampDef("stampStyle"))
+        stampSizeSlider.value = win.stampDef("stampSize")
+        controller.setStampSize(stampSizeSlider.value)
+        stampMarginSlider.value = win.stampDef("stampMargin")
+        controller.setStampMargin(stampMarginSlider.value)
+        controller.setStampColor(win.stampDef("stampColor"))
+        stampGlowSlider.value = win.stampDef("stampGlow")
+        controller.setStampGlow(stampGlowSlider.value)
+        stampSpreadSlider.value = win.stampDef("stampSpread")
+        controller.setStampSpread(stampSpreadSlider.value)
         lensCheck.checked = true
         controller.setLensCorrection(true)
         curveEditor.resetAll()
@@ -1545,6 +1592,7 @@ ApplicationWindow {
         || skyContrastSlider.pressed
         || depthNearSlider.pressed || depthFarSlider.pressed || depthFeatherSlider.pressed
         || stampSizeSlider.pressed || stampMarginSlider.pressed
+        || stampGlowSlider.pressed || stampSpreadSlider.pressed
         || curveEditor.dragging || cropOverlay.dragging
     readonly property bool editDragActive: globalPress.active || editSliderDragActive
     // 릴리즈 순간(어떤 소스든 드래그 종료) 보류 중 커밋이 있으면 즉시 실행 — 릴리즈 = undo 스텝.
@@ -1580,6 +1628,7 @@ ApplicationWindow {
         lumaNrSlider.value, colorNrSlider.value, aiNrCheck.checked,
         lensCheck.checked, win.dateStamp, stampField.text,
         controller.stampFont, controller.stampSize, controller.stampMargin,
+        controller.stampColor, controller.stampGlow, controller.stampSpread,
         curveEditor.channelPoints,
         win.quarterTurns, rotAngleSlider.value, flipHBtn.checked, flipVBtn.checked,
         aspectCombo.currentIndex, cropLandscapeBtn.checked,
@@ -4968,7 +5017,11 @@ ApplicationWindow {
                             width: controller.stampWRatio * shortEdge
                             height: controller.stampHRatio * shortEdge
                             property string corner: controller.stampCorner   // br/bl/tl/tr
-                            property real margin: controller.stampMargin * shortEdge
+                            // 글로우 여유(pad)가 스프라이트 사방에 붙으므로, 영역을 키우면
+                            // 그만큼 마진에서 빼야 **글자가 제자리에 남는다**(export 의
+                            // date_stamp.bleed_frac 과 같은 값 — 이 둘이 어긋나면 프리뷰≠export).
+                            property real margin: (controller.stampMargin - controller.stampBleed)
+                                                  * shortEdge
                             x: (corner === "br" || corner === "tr") ? parent.width - width - margin : margin
                             y: (corner === "br" || corner === "bl") ? parent.height - height - margin : margin
                         }
@@ -7360,144 +7413,8 @@ ApplicationWindow {
 
                 }
 
-                Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    Label {
-                        Layout.fillWidth: true
-                        text: (win.secOpen[10] ? "▾  " : "▸  ") + "Date Stamp"
-                        color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
-                        font.capitalization: Font.AllUppercase
-                    }
-                    TapHandler { onTapped: win.toggleSec(10) }
-                }
-                ColumnLayout {
-                    visible: win.secOpen[10]
-                    Layout.fillWidth: true
-                    spacing: 12
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 6
-                    CheckBox {
-                        id: stampCheck
-                        enabled: controller.imagePath !== ""
-                        onToggled: win.dateStamp = checked
-                    }
-                    // 인라인 checked: 바인딩은 첫 클릭 시 컨트롤 내부 write 로 파괴돼
-                    // 이후 D 단축키/로드/리셋의 win.dateStamp 변경이 박스에 반영 안 됨.
-                    // 독립 Binding 은 win.dateStamp 변경마다 재푸시하므로 desync 없음.
-                    Binding { target: stampCheck; property: "checked"; value: win.dateStamp }
-                    Label {
-                        Layout.fillWidth: true
-                        text: "Film date stamp  (D)"
-                        color: stampCheck.enabled ? "white" : "#777"
-                        font.pixelSize: 12
-                        verticalAlignment: Text.AlignVCenter
-                    }
-                }
-                // 날짜 직접 입력(기본값=EXIF). 변경 시 디바운스 후 프리뷰 재렌더.
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 6
-                    Label { text: "Date"; color: "white"; font.pixelSize: 12 }
-                    TextField {
-                        id: stampField
-                        objectName: "stampField"   // 앱 레벨 포커스아웃 필터(main.py)가 탐색
-                        Layout.fillWidth: true
-                        enabled: win.dateStamp && controller.imagePath !== ""
-                        placeholderText: "'YY MM DD  (e.g. '24 05 12)"
-                        onTextEdited: stampDebounce.restart()
-                        // 포커스가 잡히면 알파벳 단축키(I/D/B/L 등)를 입력으로 먹으므로,
-                        // Enter=확정/Esc=취소 시 포커스를 풀어 단축키가 다시 동작하게 함.
-                        onAccepted: { stampDebounce.stop(); controller.setStampText(text); focus = false }
-                        Keys.onEscapePressed: focus = false
-                        // hover 시 텍스트(I-beam) 커서. HoverHandler 는 hover 만 관찰하므로
-                        // 클릭/드래그 선택/편집에 일절 관여하지 않음(MouseArea 는 드래그를 가로챔).
-                        HoverHandler {
-                            enabled: stampField.enabled
-                            cursorShape: Qt.IBeamCursor
-                        }
-                    }
-                }
-                // 폰트 방식(필름 데이트백 대표 8종, 모두 DSEG OFL). 저장은 이미지별.
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 6
-                    Label { text: "Style"; color: win.dateStamp ? "white" : "#777"; font.pixelSize: 12 }
-                    ComboBox {
-                        id: stampFontCombo
-                        Layout.fillWidth: true
-                        enabled: win.dateStamp && controller.imagePath !== ""
-                        model: ["7-seg Classic Regular", "7-seg Classic Regular Italic",
-                                "7-seg Classic Bold", "7-seg Classic Bold Italic",
-                                "14-seg Classic Regular", "14-seg Classic Regular Italic",
-                                "14-seg Classic Bold", "14-seg Classic Bold Italic", "Dot-matrix"]
-                        readonly property var keys: ["7c_reg", "7c_reg_it", "7c_bold", "7c_bold_it",
-                                "14c_reg", "14c_reg_it", "14c_bold", "14c_bold_it", "dotmatrix"]
-                        onActivated: controller.setStampFont(keys[currentIndex])
-                        // 드롭다운 닫힘 → 포커스 해제(단축키 복귀 — captionLevelCombo 와 동일)
-                        Connections {
-                            target: stampFontCombo.popup
-                            function onClosed() { viewport.forceActiveFocus() }
-                        }
-                    }
-                    // 인라인 currentIndex 바인딩은 첫 선택 시 파괴되므로 독립 Binding 으로
-                    // 로드/리셋 시 controller 값 재푸시(stampCheck 와 동일 desync 방지).
-                    Binding {
-                        target: stampFontCombo; property: "currentIndex"
-                        value: Math.max(0, stampFontCombo.keys.indexOf(controller.stampFont))
-                    }
-                }
-                // 크기 = 숫자높이/짧은변 비율 직접 지정(슬라이더). 더블클릭=기본 3.2% 리셋.
-                Label {
-                    text: "Stamp size:  " + (stampSizeSlider.value * 100).toFixed(1) + "%"
-                    color: win.dateStamp ? "white" : "#777"; font.pixelSize: 12
-                }
-                Slider {
-                    id: stampSizeSlider
-                    Layout.fillWidth: true
-                    enabled: win.dateStamp && controller.imagePath !== ""
-                    from: 0.012; to: 0.050; value: 0.032
-                    property real defaultValue: 0.032
-                    property real _lastPressMs: 0     // isDblPress 가 읽고 씀(없으면 더블클릭 리셋 무동작)
-                    property bool _pendingReset: false
-                    // ⚠️여기에 디바운스를 넣지 말 것 — 한 번 넣었다가 철회했다. 스프라이트 재렌더는
-                    // 21.3ms(기본 3.2%, 실측)라 그대로 두면 약 47fps 로 **실시간으로 따라온다**.
-                    // 150ms Timer 를 끼우면 초당 6~7회로 떨어져 오히려 뚝뚝 끊긴다(사용자 확인).
-                    // Grain 슬라이더가 디바운스인 것은 거기가 장면 그레인(GPU 라이브)과 스탬프
-                    // 스프라이트(CPU)를 동시에 물고 있어서지, 스프라이트 비용 자체 때문이 아니다.
-                    // 드래그(user)만 controller 로 push — 프로그램 대입(로드/리셋)은 onMoved 안 불림.
-                    onMoved: controller.setStampSize(value)
-                    onPressedChanged: {
-                        if (pressed) _pendingReset = win.isDblPress(stampSizeSlider)
-                        else if (_pendingReset) { value = defaultValue; controller.setStampSize(defaultValue); _pendingReset = false }
-                    }
-                }
-                // 여백 = 코너 안쪽 여백/짧은변 비율. 더블클릭=기본 5.0% 리셋.
-                Label {
-                    text: "Margin:  " + (stampMarginSlider.value * 100).toFixed(1) + "%"
-                    color: win.dateStamp ? "white" : "#777"; font.pixelSize: 12
-                }
-                Slider {
-                    id: stampMarginSlider
-                    Layout.fillWidth: true
-                    enabled: win.dateStamp && controller.imagePath !== ""
-                    from: 0.0; to: 0.10; value: 0.05
-                    property real defaultValue: 0.05
-                    property real _lastPressMs: 0
-                    property bool _pendingReset: false
-                    onMoved: controller.setStampMargin(value)
-                    onPressedChanged: {
-                        if (pressed) _pendingReset = win.isDblPress(stampMarginSlider)
-                        else if (_pendingReset) { value = defaultValue; controller.setStampMargin(defaultValue); _pendingReset = false }
-                    }
-                }
-                Timer {
-                    id: stampDebounce
-                    interval: 200
-                    onTriggered: controller.setStampText(stampField.text)
-                }
+                // 날짜 스탬프 컨트롤은 좌측 **독립 탭**(Ctrl+4)으로 옮겼다 — 컨트롤이 8개로
+                // 늘어 Edit 목록을 밀어냈기 때문. 아래 로드 핸들러는 스탬프와 무관해 여기 남는다.
                 Connections {
                     target: controller
                     // 새 파일 디코딩 완료 후 편집 복원/초기화(controller 가 fresh-load 1회만 발화).
@@ -7525,7 +7442,6 @@ ApplicationWindow {
                         win.refreshLookHash()
                     }
                 }
-                }   // end Date Stamp section
 
                         }   // end panelCol
                     }       // end Flickable (Edit 페이지)
@@ -8221,7 +8137,332 @@ ApplicationWindow {
                         }
                     }
 
-                    // ===== index 3: Wallpaper (3분할 트립틱 배경화면 합성) =====
+                    // ===== index 3: Date Stamp (필름 데이트백 — 각인 텍스트·폰트·위치·색·글로우) =====
+                    // Edit 안 접이식 섹션에서 독립 탭으로 분리(컨트롤 8개가 Edit 목록을 밀어냈다).
+                    Flickable {
+                        id: stampScroll
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        contentWidth: width
+                        contentHeight: stampCol.height + 32
+                        boundsBehavior: Flickable.StopAtBounds
+                        ScrollBar.vertical: B.ScrollBar {
+                            id: stampBar
+                            width: 12
+                            policy: ScrollBar.AlwaysOn
+                            contentItem: Rectangle { implicitWidth: 8; radius: 4; color: stampBar.pressed ? "#cfcfcf" : "#9a9a9a" }
+                            background: Rectangle { radius: 4; color: "#3a3a3a" }
+                        }
+                        ColumnLayout {
+                            id: stampCol
+                            x: 16; y: 16
+                            width: stampScroll.width - 32
+                            spacing: 12
+                            Label {
+                                Layout.fillWidth: true
+                                text: "DATE STAMP"
+                                color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                CheckBox {
+                                    id: stampCheck
+                                    enabled: controller.imagePath !== ""
+                                    onToggled: { win.dateStamp = checked; win.rememberStamp() }
+                                }
+                                // 인라인 checked: 바인딩은 첫 클릭 시 컨트롤 내부 write 로 파괴돼
+                                // 이후 D 단축키/로드/리셋의 win.dateStamp 변경이 박스에 반영 안 됨.
+                                // 독립 Binding 은 win.dateStamp 변경마다 재푸시하므로 desync 없음.
+                                Binding { target: stampCheck; property: "checked"; value: win.dateStamp }
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: "Film date stamp  (D)"
+                                    color: stampCheck.enabled ? "white" : "#777"
+                                    font.pixelSize: 12
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+                            }
+                            // 날짜 직접 입력(기본값=EXIF). 변경 시 디바운스 후 프리뷰 재렌더.
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                Label { text: "Date"; color: "white"; font.pixelSize: 12 }
+                                TextField {
+                                    id: stampField
+                                    objectName: "stampField"   // 앱 레벨 포커스아웃 필터(main.py)가 탐색
+                                    Layout.fillWidth: true
+                                    enabled: win.dateStamp && controller.imagePath !== ""
+                                    placeholderText: "'YY MM DD  (e.g. '24 05 12)"
+                                    onTextEdited: stampDebounce.restart()
+                                    // 포커스가 잡히면 알파벳 단축키(I/D/B/L 등)를 입력으로 먹으므로,
+                                    // Enter=확정/Esc=취소 시 포커스를 풀어 단축키가 다시 동작하게 함.
+                                    onAccepted: { stampDebounce.stop(); controller.setStampText(text); focus = false }
+                                    Keys.onEscapePressed: focus = false
+                                    // hover 시 텍스트(I-beam) 커서. HoverHandler 는 hover 만 관찰하므로
+                                    // 클릭/드래그 선택/편집에 일절 관여하지 않음(MouseArea 는 드래그를 가로챔).
+                                    HoverHandler {
+                                        enabled: stampField.enabled
+                                        cursorShape: Qt.IBeamCursor
+                                    }
+                                }
+                            }
+                            // 폰트 방식. 번들(세그먼트 8종 + 타자기/터미널/콘덴스드, 모두 OFL) + 사용자 추가.
+                            // ⚠️표시명과 키는 controller.stampFonts 한 곳에서 온다 — QML 에 라벨/키 배열을
+                            //   따로 두면 순서가 어긋나 다른 폰트가 저장된다.
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                Label { text: "Style"; color: win.dateStamp ? "white" : "#777"; font.pixelSize: 12 }
+                                ComboBox {
+                                    id: stampFontCombo
+                                    Layout.fillWidth: true
+                                    enabled: win.dateStamp && controller.imagePath !== ""
+                                    model: controller.stampFonts
+                                    textRole: "label"
+                                    readonly property var keys: {
+                                        var a = [], m = controller.stampFonts
+                                        for (var i = 0; i < m.length; i++) a.push(m[i].key)
+                                        return a
+                                    }
+                                    onActivated: { controller.setStampFont(keys[currentIndex]); win.rememberStamp() }
+                                    // 드롭다운 닫힘 → 포커스 해제(단축키 복귀 — captionLevelCombo 와 동일)
+                                    Connections {
+                                        target: stampFontCombo.popup
+                                        function onClosed() { viewport.forceActiveFocus() }
+                                    }
+                                }
+                                // 인라인 currentIndex 바인딩은 첫 선택 시 파괴되므로 독립 Binding 으로
+                                // 로드/리셋 시 controller 값 재푸시(stampCheck 와 동일 desync 방지).
+                                Binding {
+                                    target: stampFontCombo; property: "currentIndex"
+                                    value: Math.max(0, stampFontCombo.keys.indexOf(controller.stampFont))
+                                }
+                            }
+                            // 원하는 폰트가 없을 때를 위한 추가 경로(사용자 요청). 대화상자가 윈도우 폰트
+                            // 폴더에서 열리므로 '윈도우 폰트 가져오기'와 '내 폰트 추가'를 하나로 덮는다.
+                            // 고른 파일은 사용자 데이터 폴더로 **복사**한다 — 원본이 없어져도 사이드카가 열려야 한다.
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                Button {
+                                    text: "Add font…"
+                                    font.pixelSize: 11
+                                    enabled: win.dateStamp
+                                    onClicked: stampFontDialog.open()
+                                }
+                                Button {
+                                    text: "Remove"
+                                    font.pixelSize: 11
+                                    // 번들 폰트는 지울 수 없다(설치 자산) — 추가한 폰트에만 활성.
+                                    enabled: win.dateStamp && controller.stampFont.indexOf("user:") === 0
+                                    onClicked: controller.removeStampFont(controller.stampFont)
+                                }
+                                Item { Layout.fillWidth: true }
+                            }
+                            // 남의 사용자 폰트로 만든 사이드카/레시피를 열면 그 파일이 없는 것이 정상이다.
+                            // 조용히 다른 모습으로 렌더되지 않도록 알린다(렌더는 기본 데이트백 폰트로 폴백).
+                            Label {
+                                Layout.fillWidth: true
+                                visible: win.dateStamp && controller.stampFontMissing
+                                text: "⚠ This photo uses an added font that isn't on this machine "
+                                      + "— drawn with the default date-back font. Add the file to restore it."
+                                color: "#e8d5b0"; font.pixelSize: 10; wrapMode: Text.WordWrap
+                            }
+                            FileDialog {
+                                id: stampFontDialog
+                                title: "Add a stamp font"
+                                nameFilters: ["Font files (*.ttf *.otf)"]
+                                currentFolder: "file:///C:/Windows/Fonts"
+                                onAccepted: {
+                                    if (controller.addStampFont(selectedFile)) win.rememberStamp()
+                                }
+                            }
+                            // 크기 = 숫자높이/짧은변 비율 직접 지정(슬라이더). 더블클릭=기본 3.2% 리셋.
+                            Label {
+                                text: "Stamp size:  " + (stampSizeSlider.value * 100).toFixed(1) + "%"
+                                color: win.dateStamp ? "white" : "#777"; font.pixelSize: 12
+                            }
+                            Slider {
+                                id: stampSizeSlider
+                                Layout.fillWidth: true
+                                enabled: win.dateStamp && controller.imagePath !== ""
+                                from: 0.012; to: 0.050; value: 0.032
+                                // ⚠️더블클릭은 **공장 기본값**으로 되돌린다(앱 전체 슬라이더 관습).
+                                //   내 기본값으로 되돌리게 했다가 철회했다 — 슬라이더를 놓을 때마다 그 값이
+                                //   내 기본값으로 기억되므로 '기본값 == 현재값'이 되어 더블클릭이 무동작이 된다.
+                                property real defaultValue: 0.032
+                                property real _lastPressMs: 0     // isDblPress 가 읽고 씀(없으면 더블클릭 리셋 무동작)
+                                property bool _pendingReset: false
+                                // ⚠️여기에 디바운스를 넣지 말 것 — 한 번 넣었다가 철회했다. 스프라이트 재렌더는
+                                // 21.3ms(기본 3.2%, 실측)라 그대로 두면 약 47fps 로 **실시간으로 따라온다**.
+                                // 150ms Timer 를 끼우면 초당 6~7회로 떨어져 오히려 뚝뚝 끊긴다(사용자 확인).
+                                // Grain 슬라이더가 디바운스인 것은 거기가 장면 그레인(GPU 라이브)과 스탬프
+                                // 스프라이트(CPU)를 동시에 물고 있어서지, 스프라이트 비용 자체 때문이 아니다.
+                                // 드래그(user)만 controller 로 push — 프로그램 대입(로드/리셋)은 onMoved 안 불림.
+                                onMoved: controller.setStampSize(value)
+                                onPressedChanged: {
+                                    if (pressed) _pendingReset = win.isDblPress(stampSizeSlider)
+                                    var _wasReset = false
+                                    if (!pressed && _pendingReset) {
+                                        value = defaultValue; controller.setStampSize(defaultValue)
+                                        _pendingReset = false; _wasReset = true
+                                    }
+                                    // 드래그 중이 아니라 **릴리즈 때** 기억(매 프레임 디스크 쓰기 방지).
+                                    // ⚠️더블클릭 리셋은 제외 — 공장 기본값을 잠깐 보려던 것이 내 기본값을
+                                    //   조용히 덮으면, 다음 사진부터 설정이 사라진 것처럼 보인다.
+                                    if (!pressed && !_wasReset) win.rememberStamp()
+                                }
+                            }
+                            // 여백 = 코너 안쪽 여백/짧은변 비율. 더블클릭=기본 5.0% 리셋.
+                            Label {
+                                text: "Margin:  " + (stampMarginSlider.value * 100).toFixed(1) + "%"
+                                color: win.dateStamp ? "white" : "#777"; font.pixelSize: 12
+                            }
+                            Slider {
+                                id: stampMarginSlider
+                                Layout.fillWidth: true
+                                enabled: win.dateStamp && controller.imagePath !== ""
+                                from: 0.0; to: 0.10; value: 0.05
+                                property real defaultValue: 0.05      // 더블클릭=공장 기본값(위 주석 참조)
+                                property real _lastPressMs: 0
+                                property bool _pendingReset: false
+                                onMoved: controller.setStampMargin(value)
+                                onPressedChanged: {
+                                    if (pressed) _pendingReset = win.isDblPress(stampMarginSlider)
+                                    var _wasReset = false
+                                    if (!pressed && _pendingReset) {
+                                        value = defaultValue; controller.setStampMargin(defaultValue)
+                                        _pendingReset = false; _wasReset = true
+                                    }
+                                    if (!pressed && !_wasReset) win.rememberStamp()
+                                }
+                            }
+                            // 각인 색 — 흑백 사진에서 앰버가 튀는 것을 피할 수 있게(피드백). 중성색을 고르면
+                            // 핫코어→중간→헤일로 램프가 통째로 무채색이 되어 백색 각인이 된다.
+                            Label {
+                                text: "Colour"
+                                color: win.dateStamp ? "white" : "#777"; font.pixelSize: 12
+                            }
+                            Flow {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                Repeater {
+                                    model: controller.stampColors
+                                    delegate: Rectangle {
+                                        width: 26; height: 22; radius: 4
+                                        color: modelData
+                                        opacity: win.dateStamp ? 1.0 : 0.45
+                                        readonly property bool sel: controller.stampColor.toLowerCase()
+                                                                    === String(modelData).toLowerCase()
+                                        border.color: sel ? "#8ab4f8" : "#555"
+                                        border.width: sel ? 2 : 1
+                                        TapHandler {
+                                            enabled: win.dateStamp && controller.imagePath !== ""
+                                            onTapped: { controller.setStampColor(modelData); win.rememberStamp() }
+                                        }
+                                    }
+                                }
+                                // 팔레트에 없는 색: 표준 색 선택 대화상자. 현재 색이 팔레트 밖이면 여기에 보인다.
+                                Rectangle {
+                                    width: 26; height: 22; radius: 4
+                                    color: stampColorDialog.customShown ? controller.stampColor : "#2b2b2b"
+                                    opacity: win.dateStamp ? 1.0 : 0.45
+                                    border.color: stampColorDialog.customShown ? "#8ab4f8" : "#555"
+                                    border.width: stampColorDialog.customShown ? 2 : 1
+                                    Label {
+                                        anchors.centerIn: parent
+                                        visible: !stampColorDialog.customShown
+                                        text: "+"; color: "#cfcfcf"; font.pixelSize: 13
+                                    }
+                                    TapHandler {
+                                        enabled: win.dateStamp && controller.imagePath !== ""
+                                        onTapped: {
+                                            stampColorDialog.selectedColor = controller.stampColor
+                                            stampColorDialog.open()
+                                        }
+                                    }
+                                }
+                            }
+                            // 글로우 밝기 = 헤일로 가중 배율(0 이면 번짐 없는 또렷한 각인).
+                            Label {
+                                text: "Glow:  " + stampGlowSlider.value.toFixed(2) + "×"
+                                color: win.dateStamp ? "white" : "#777"; font.pixelSize: 12
+                            }
+                            Slider {
+                                id: stampGlowSlider
+                                Layout.fillWidth: true
+                                enabled: win.dateStamp && controller.imagePath !== ""
+                                from: 0.0; to: 2.0; value: 1.0
+                                property real defaultValue: 1.0
+                                property real _lastPressMs: 0
+                                property bool _pendingReset: false
+                                onMoved: controller.setStampGlow(value)
+                                onPressedChanged: {
+                                    if (pressed) _pendingReset = win.isDblPress(stampGlowSlider)
+                                    var _wasReset = false
+                                    if (!pressed && _pendingReset) {
+                                        value = defaultValue; controller.setStampGlow(defaultValue)
+                                        _pendingReset = false; _wasReset = true
+                                    }
+                                    if (!pressed && !_wasReset) win.rememberStamp()
+                                }
+                            }
+                            // 글로우 영역 = 헤일로 반경 배율. ⚠️키우면 스프라이트 캔버스가 함께 커져
+                            // 재렌더가 무거워진다(실측: 최대 크기·최대 영역에서 기본의 약 2.3배).
+                            // 기본값 이하는 예전과 **비트 동일**한 정확 경로로 렌더한다(date_stamp 주석 참조).
+                            Label {
+                                text: "Glow area:  " + stampSpreadSlider.value.toFixed(2) + "×"
+                                color: win.dateStamp ? "white" : "#777"; font.pixelSize: 12
+                            }
+                            Slider {
+                                id: stampSpreadSlider
+                                Layout.fillWidth: true
+                                enabled: win.dateStamp && controller.imagePath !== ""
+                                from: 0.4; to: 2.0; value: 1.0
+                                property real defaultValue: 1.0
+                                property real _lastPressMs: 0
+                                property bool _pendingReset: false
+                                onMoved: controller.setStampSpread(value)
+                                onPressedChanged: {
+                                    if (pressed) _pendingReset = win.isDblPress(stampSpreadSlider)
+                                    var _wasReset = false
+                                    if (!pressed && _pendingReset) {
+                                        value = defaultValue; controller.setStampSpread(defaultValue)
+                                        _pendingReset = false; _wasReset = true
+                                    }
+                                    if (!pressed && !_wasReset) win.rememberStamp()
+                                }
+                            }
+                            ColorDialog {
+                                id: stampColorDialog
+                                title: "Stamp colour"
+                                // 팔레트 밖의 색이 선택돼 있으면 'Custom' 스와치에 그 색을 보여준다.
+                                readonly property bool customShown: {
+                                    var cs = controller.stampColors, c = controller.stampColor.toLowerCase()
+                                    for (var i = 0; i < cs.length; i++)
+                                        if (String(cs[i]).toLowerCase() === c) return false
+                                    return true
+                                }
+                                onAccepted: {
+                                    // ColorDialog 는 #AARRGGBB 를 줄 수 있다 — 알파를 버리고 #RRGGBB 로 넘긴다
+                                    // (스프라이트 알파는 글로우 세기가 정하므로 색의 알파는 의미가 없다).
+                                    var h = selectedColor.toString()
+                                    if (h.length === 9) h = "#" + h.substring(3)
+                                    controller.setStampColor(h)
+                                    win.rememberStamp()
+                                }
+                            }
+                            Timer {
+                                id: stampDebounce
+                                interval: 200
+                                onTriggered: controller.setStampText(stampField.text)
+                            }
+                        }
+                    }
+
+                    // ===== index 4: Wallpaper (3분할 트립틱 배경화면 합성) =====
                     Flickable {
                         id: wallScroll
                         Layout.fillWidth: true
@@ -8915,10 +9156,11 @@ ApplicationWindow {
                         var m = [
                             { icon: "edit", tip: "Edit", key: "Ctrl+1" },
                             { icon: "crop", tip: "Crop / Rotate / Geometry", key: "Ctrl+2" },
-                            { icon: "mask", tip: "Masking", key: "Ctrl+3" }
+                            { icon: "mask", tip: "Masking", key: "Ctrl+3" },
+                            { icon: "stamp", tip: "Date Stamp", key: "Ctrl+4" }
                         ]
                         if (controller.wallpaperEnabled)
-                            m.push({ icon: "wall", tip: "Wallpaper", key: "Ctrl+4" })
+                            m.push({ icon: "wall", tip: "Wallpaper", key: "Ctrl+5" })
                         return m
                     }
                     delegate: Rectangle {
@@ -8958,6 +9200,14 @@ ApplicationWindow {
                                     function seg(a, b) { ctx.beginPath(); ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]); ctx.stroke() }
                                     seg(P(7,2), P(7,17));  seg(P(7,17), P(22,17))
                                     seg(P(2,7), P(17,7));  seg(P(17,7), P(17,22))
+                                } else if (ic === "stamp") {
+                                    // 데이트백: 프레임 + 우하단 각인 자리(짧은 획 3개)
+                                    ctx.strokeRect(o + 3, o + 5, 18, 14)
+                                    ctx.lineWidth = 2
+                                    for (var s3 = 0; s3 < 3; s3++) {
+                                        var sx = o + 10 + s3 * 3.4
+                                        ctx.beginPath(); ctx.moveTo(sx, o + 13); ctx.lineTo(sx, o + 17); ctx.stroke()
+                                    }
                                 } else if (ic === "wall") {
                                     // 배경화면: 세로 패널 3개(트립틱)
                                     ctx.fillRect(o + 3, o + 4, 5, 16)
