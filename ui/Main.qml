@@ -46,6 +46,7 @@ ApplicationWindow {
 
     // 날짜 스탬프(필름 데이트백) 표시 여부 (D 키로 토글). 기본 off.
     property bool dateStamp: false
+    property string stampFontError: ""    // 폰트 추가 실패 안내(빈 문자열=숨김)
     // 스탬프 '내 기본값' — 사진 여러 장을 연속 작업할 때 폰트·크기·여백을 매번 다시 잡지
     // 않도록 마지막 사용값을 기억한다(controller 가 사용자 데이터 폴더 JSON 으로 보존).
     // ⚠️`_ev` 폴백과 `resetAllEdits` 가 **반드시 같은 이 함수**를 봐야 한다 — 한쪽만 보면
@@ -54,7 +55,7 @@ ApplicationWindow {
         var d = controller.stampDefaults
         return (d && d[key] !== undefined) ? d[key]
              : ({ stampOn: false, stampStyle: "7c_bold", stampSize: 0.032, stampMargin: 0.05,
-                  stampColor: "#FF8A29", stampGlow: 1.0, stampSpread: 1.0 })[key]
+                  stampColor: "#ff8a29", stampGlow: 1.0, stampSpread: 1.0 })[key]
     }
     // 사용자가 스탬프 컨트롤을 **직접** 바꿨을 때만 기억한다. 로드/리셋의 프로그램 대입까지
     // 저장하면 옛 사진을 열기만 해도 내 기본값이 그 사진 값으로 덮인다.
@@ -795,7 +796,6 @@ ApplicationWindow {
             "lensCorrection": lensCheck.checked, "dateStamp": win.dateStamp, "stampText": stampField.text,
             "stampStyle": controller.stampFont, "stampSize": controller.stampSize,
             "stampMargin": controller.stampMargin, "stampColor": controller.stampColor,
-            "stampGlow": controller.stampGlow, "stampSpread": controller.stampSpread, "stampColor": controller.stampColor,
             "stampGlow": controller.stampGlow, "stampSpread": controller.stampSpread,
             "curves": curveEditor.channelPoints,
             "quarterTurns": win.quarterTurns, "rotateAngle": rotAngleSlider.value,
@@ -874,7 +874,7 @@ ApplicationWindow {
         stampMarginSlider.value = _mg; controller.setStampMargin(_mg)
         // 색/글로우도 공장 기본값 폴백 — 이 키가 없던 시절 사이드카가 예전 앰버 룩 그대로
         // 열려야 한다(date_stamp 가 기본 색·기본 영역에서 예전과 비트 동일하게 렌더한다).
-        controller.setStampColor(_ev(p, "stampColor", "#FF8A29"))
+        controller.setStampColor(_ev(p, "stampColor", "#ff8a29"))
         var _gl = _ev(p, "stampGlow", 1.0);   stampGlowSlider.value = _gl; controller.setStampGlow(_gl)
         var _sp = _ev(p, "stampSpread", 1.0); stampSpreadSlider.value = _sp; controller.setStampSpread(_sp)
         // 체크박스도 명시 대입(aiNrCheck 동일) — 사용자가 한 번이라도 클릭하면
@@ -1670,7 +1670,8 @@ ApplicationWindow {
             "lutStrength": simStrengthSlider.value, "curves": curveEditor.allLuts(),
             "dateStamp": win.dateStamp, "stampText": stampField.text, "stampRot": controller.stampRot,
             "stampStyle": controller.stampFont, "stampSize": controller.stampSize,
-            "stampMargin": controller.stampMargin,
+            "stampMargin": controller.stampMargin, "stampColor": controller.stampColor,
+            "stampGlow": controller.stampGlow, "stampSpread": controller.stampSpread,
             "outEdge": win.exportEdges[resCombo.currentIndex], "lensCorrection": lensCheck.checked,
             "bitDepth": bitDepth16Check.checked ? 16 : 8,   // 16=TIFF/PNG 16bit(CPU 전용)
             // 지오메트리(현상 뒤 적용): 플립 -> 90° -> 스트레이튼(회전+채움줌) -> 종횡비 중앙크롭
@@ -5003,6 +5004,32 @@ ApplicationWindow {
                         //   - 트레이드오프: 밝은 배경에서 export(screen 70%+over 30%)보다 아주 약간 더 또렷
                         //     (프리뷰 전용 — date_stamp.stamp_export = 최종 결과물은 그대로 정확).
                         //   - wRatio/hRatio=스프라이트(W,H)/짧은변, 마진=stampMargin. 크롭편집·비교 중 숨김.
+                        // 날짜 스탬프(필름 데이트백) — cropClip(=최종 크롭 프레임) 코너에 배치.
+                        // ⚠️합성은 **export 와 같은 식**(screen 70% + source-over 30%)이어야 한다. 예전엔
+                        //   평범한 source-over Image 였는데, 실측하면 밝은 배경에서 프리뷰가 export 보다
+                        //   최대 105코드(41%) 진하다 — 어두운 배경에선 2코드라 오래 눈에 안 띈 것이다.
+                        //   그래서 shaders/stamp.frag(배경을 읽어 screen 혼합)을 배선한다.
+                        // ⚠️예전 배선이 철회된 원인은 **전체 배경 재캡처**였다(줌/레이어에서 배경이 밀리고
+                        //   가장자리 검정선). 여기서는 배경을 스탬프 사각형만 sourceRect 로 캡처하고,
+                        //   스탬프를 canvasHolder 의 **형제**로 두어 캡처에 자기 자신이 들어가지 않게 한다
+                        //   (피드백 없음). 소스 사각형 = 스탬프 사각형이므로 bgMap 은 항등이다.
+                        // 날짜 스탬프(필름 데이트백) 오버레이 — cropClip(=최종 크롭 프레임) 코너에 배치.
+                        // 스프라이트(image://stamp)에 '검정 위 글로우 하이브리드'가 이미 베이크돼 있어
+                        // (date_stamp.render_sprite), 배경 재캡처 없이 QML 기본 source-over 합성만으로 데이트백
+                        // 룩이 난다.
+                        // ⚠️**export 와 합성식이 다르다** — export 는 screen 70% + source-over 30%
+                        //   (date_stamp.SCREEN_MIX), 프리뷰는 순수 source-over 다. 실측 차이(각인 화소 최대,
+                        //   8bit 코드): 배경 0.02 → 2 / 0.5 → 58 / 0.9 → 105. **어두운 배경에선 사실상 같고
+                        //   밝은 배경(하늘·구름)에선 프리뷰가 더 진하다.** 글로우를 키우면 커진다(배경 0.6 에서
+                        //   글로우 0 → 13, 글로우 2 → 73). 산출물(export)이 정확한 쪽이다.
+                        // ⚠️**배경을 읽어 screen 으로 정합시키는 배선(shaders/stamp.frag)은 두 번 시도해 두 번
+                        //   철회했다 — 재시도 금지.** 1차는 canvasHolder 전체 재캡처였고, 2차는 스탬프 사각형만
+                        //   sourceRect 로 캡처 + bgMap 항등 + ClampToEdge + 형제 배치(피드백 없음) + 줌 시 캡처
+                        //   해상도 상향까지 갖췄는데도 **같은 증상이 재발**했다(사용자 확인). 수식 자체는 정합이
+                        //   확인됐으므로(numpy 재현 결과 전 배경에서 0.000코드) 문제는 수식이 아니라 **라이브
+                        //   재캡처를 프리뷰 트리에 끼우는 구조**다. 다시 하려면 다른 구조(예: 스탬프를 파이프라인
+                        //   안에서 크롭 후 좌표로 굽기)를 먼저 설계할 것 — 같은 형태의 재캡처는 답이 아니다.
+                        //   - wRatio/hRatio=스프라이트(W,H)/짧은변, 마진=stampMargin. 크롭편집·비교 중 숨김.
                         Image {
                             id: stampOverlay
                             source: controller.stampUrl
@@ -5017,11 +5044,10 @@ ApplicationWindow {
                             width: controller.stampWRatio * shortEdge
                             height: controller.stampHRatio * shortEdge
                             property string corner: controller.stampCorner   // br/bl/tl/tr
-                            // 글로우 여유(pad)가 스프라이트 사방에 붙으므로, 영역을 키우면
-                            // 그만큼 마진에서 빼야 **글자가 제자리에 남는다**(export 의
-                            // date_stamp.bleed_frac 과 같은 값 — 이 둘이 어긋나면 프리뷰≠export).
-                            property real margin: (controller.stampMargin - controller.stampBleed)
-                                                  * shortEdge
+                            // 글로우 여유(pad)가 스프라이트 사방에 붙으므로, 영역을 키우면 그만큼 마진에서
+                            // 빼야 **글자가 제자리에 남는다**(export 의 date_stamp.bleed_frac 과 같은 값 —
+                            // 이 둘이 어긋나면 글자 위치가 프리뷰≠export).
+                            property real margin: (controller.stampMargin - controller.stampBleed) * shortEdge
                             x: (corner === "br" || corner === "tr") ? parent.width - width - margin : margin
                             y: (corner === "br" || corner === "bl") ? parent.height - height - margin : margin
                         }
@@ -8237,7 +8263,13 @@ ApplicationWindow {
                                 // 로드/리셋 시 controller 값 재푸시(stampCheck 와 동일 desync 방지).
                                 Binding {
                                     target: stampFontCombo; property: "currentIndex"
-                                    value: Math.max(0, stampFontCombo.keys.indexOf(controller.stampFont))
+                                    // 누락 폰트(-1)면 **실제 렌더에 쓰이는** 기본 데이트백 폰트를 가리킨다.
+                                    // 0 으로 접으면 Regular 를 보여주면서 Bold 로 그려져 콤보가 거짓을 말한다
+                                    // (사이드카에 저장된 값은 그대로 user:… 이고, 배너가 그 사실을 알린다).
+                                    value: {
+                                        var i = stampFontCombo.keys.indexOf(controller.stampFont)
+                                        return i >= 0 ? i : Math.max(0, stampFontCombo.keys.indexOf("7c_bold"))
+                                    }
                                 }
                             }
                             // 원하는 폰트가 없을 때를 위한 추가 경로(사용자 요청). 대화상자가 윈도우 폰트
@@ -8265,6 +8297,12 @@ ApplicationWindow {
                             // 조용히 다른 모습으로 렌더되지 않도록 알린다(렌더는 기본 데이트백 폰트로 폴백).
                             Label {
                                 Layout.fillWidth: true
+                                visible: win.stampFontError !== ""
+                                text: "⚠ " + win.stampFontError
+                                color: "#e08a8a"; font.pixelSize: 10; wrapMode: Text.WordWrap
+                            }
+                            Label {
+                                Layout.fillWidth: true
                                 visible: win.dateStamp && controller.stampFontMissing
                                 text: "⚠ This photo uses an added font that isn't on this machine "
                                       + "— drawn with the default date-back font. Add the file to restore it."
@@ -8276,7 +8314,14 @@ ApplicationWindow {
                                 nameFilters: ["Font files (*.ttf *.otf)"]
                                 currentFolder: "file:///C:/Windows/Fonts"
                                 onAccepted: {
-                                    if (controller.addStampFont(selectedFile)) win.rememberStamp()
+                                    // 실패(폰트로 읽히지 않는 파일)를 조용히 넘기지 않는다 — 손상 폰트를
+                                    // 거부하게 된 뒤로는 실제로 일어나는 경로다.
+                                    if (controller.addStampFont(selectedFile)) {
+                                        win.stampFontError = ""
+                                        win.rememberStamp()
+                                    } else {
+                                        win.stampFontError = "Couldn't read that file as a font."
+                                    }
                                 }
                             }
                             // 크기 = 숫자높이/짧은변 비율 직접 지정(슬라이더). 더블클릭=기본 3.2% 리셋.
@@ -8344,6 +8389,12 @@ ApplicationWindow {
                             Label {
                                 text: "Colour"
                                 color: win.dateStamp ? "white" : "#777"; font.pixelSize: 12
+                                ToolTip.visible: stampColLblHover.hovered
+                                ToolTip.delay: 600
+                                ToolTip.text: "White or grey gives a colourless imprint — good for black-and-white."
+                                    + "\n\nStrong colours can look a little stronger on screen than in the"
+                                    + "\nsaved file, over bright areas. The saved file is the accurate one."
+                                HoverHandler { id: stampColLblHover }
                             }
                             Flow {
                                 Layout.fillWidth: true

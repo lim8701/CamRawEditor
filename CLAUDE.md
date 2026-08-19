@@ -191,6 +191,40 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   ⚠️표시명과 키는 `Controller.stampFonts` **한 곳**에서 만든다 — QML 에 라벨 배열과 키 배열을
   따로 두면 순서가 어긋나 다른 폰트가 저장된다(예전 하드코딩 방식의 위험).
   ⚠️'내 기본값' 검증기도 `user:` 키를 받아야 한다(안 받으면 추가한 폰트를 기본값으로 기억 못 함).
+- ⚠️**프리뷰와 export 의 스탬프 합성식이 다르다**: export 는 screen 70%+source-over 30%
+  (`SCREEN_MIX`), 프리뷰는 순수 source-over. 실측 차이(각인 화소 최대, 8bit): 배경 0.02 → 2 /
+  0.5 → 58 / 0.9 → **105**. 어두운 배경에선 사실상 같아 오래 눈에 안 띄었고, 코드 주석이
+  '아주 약간'이라 적어 과소평가돼 있었다. 글로우를 키우면 커진다(배경 0.6: 글로우 0 → 13,
+  2 → 73). **산출물(export)이 정확한 쪽이다.**
+  ⚠️**배경을 읽어 정합시키는 배선(`shaders/stamp.frag`)은 두 번 시도해 두 번 철회 — 재시도
+  금지.** 1차=canvasHolder 전체 재캡처, 2차=스탬프 사각형만 `sourceRect` 캡처 + bgMap 항등 +
+  ClampToEdge + 형제 배치(피드백 없음) + 줌 시 캡처 해상도 상향까지 갖췄으나 **같은 증상
+  재발**(사용자 확인). 수식은 무죄다 — numpy 재현으로 전 배경에서 export 와 0.000코드 일치를
+  확인했다. 문제는 **라이브 재캡처를 프리뷰 트리에 끼우는 구조** 자체다. 재검토하려면 다른
+  구조(스탬프를 파이프라인 안에서 크롭 후 좌표로 굽기 등)를 먼저 설계할 것.
+- ⚠️**스탬프 파라미터를 늘리면 '보내는 쪽'도 함께 볼 것**: QML `editParams()`(사이드카·레시피)
+  **와 export 파라미터 dict 는 별개**다. 읽는 쪽만 고쳤다가 export dict 에 키가 없어
+  **내보낸 파일에만 새 룩이 빠지는** 버그가 있었다(코드 검토에서 걸렸다). 같은 실수로
+  `editParams()` 에 키가 중복되기도 했다 — QML JS 는 비엄격이라 조용히 last-wins 로 넘어간다.
+- ⚠️**스탬프 파라미터를 늘리면 호출부 3곳을 함께 볼 것**: `pipeline.render_full`(CPU export) ·
+  `main._finish_gpu_export`(GPU export) · `main._update_stamp_layer`(프리뷰). 색/글로우/영역을
+  추가할 때 **CPU export 만 빠뜨려** 프리뷰·GPU 와 다른 룩으로 찍혔다(코드 검토에서 걸렸다).
+  테스트가 `date_stamp.stamp_export` 를 직접 부르면 이 누락을 못 잡는다 — **export 경로를
+  통과시키거나 호출부 인자 집합을 대조**해야 한다.
+- ⚠️`date_stamp._glow_pad_px` 는 `render_sprite` 의 `max(6.0, text_h_px)` **하한까지 같아야**
+  한다 — 안 그러면 짧은 변 500px 미만 + 최소 크기에서 상쇄가 과보정돼 글자가 2px 움직인다.
+- ⚠️사용자 폰트 추가는 **Qt 등록 결과로 판정**한다(`fid >= 0 and applicationFontFamilies(fid)`).
+  `font_family(style) != "monospace"` 로 보던 검사는 font_family 가 기본 폰트 폴백을 갖게
+  되면서 **죽은 코드**가 됐고, 폰트가 아닌 파일이 '성공'으로 목록에 남았다(파일은 존재하니
+  누락 배너도 안 뜨고 각인만 조용히 기본 폰트로 그려졌다). 거부 시 복사본도 지운다.
+- ⚠️`user_fonts_dir(create=False)` — 읽기 경로(`has_font`)는 `stampChanged` 마다, 즉 슬라이더
+  드래그 중 **매 프레임** 불린다. 거기서 mkdir 를 돌리면 프레임마다 디스크를 건드리고
+  사용자가 폴더를 지워도 즉시 되살아난다. 생성은 `add_user_font` 에서만.
+- ⚠️'내 기본값'의 `stampStyle` 이 **없는 사용자 폰트**를 가리키면 읽는 시점에 기본 폰트로
+  되돌린다 — 안 그러면 그 폰트를 참조하는 사진이 없는데도 **새 사진마다 누락 배너**가 뜬다.
+- ⚠️`stampColor` 는 `setStampColor` 가 **소문자 `#rrggbb` 로 정규화**한다. 같은 색이 다른
+  문자열(`#FF8A29` vs `#ff8a29`)로 `editParams()` 에 실리면 **레시피 룩 지문이 갈려** 배지가
+  켜지지 않는다. 기본값 상수·QML 폴백도 같은 표기로 둔다.
 - **스탬프 슬롯 4형제(`setStampText`/`Font`/`Size`/`GrainSrc`)는 전부 동일값 조기반환 가드를
   가진다** — `_update_stamp_layer` 가 GUI 스레드에서 스프라이트를 동기 재렌더하기 때문.
   사진 1장을 여는 동안 `_on_render_ready` 1회 + QML `applyEdits` 의 4회 push 가 같은 함수를

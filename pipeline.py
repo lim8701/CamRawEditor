@@ -547,6 +547,9 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     stamp_style = str(p.get("stampStyle", "7c_bold"))   # 폰트 방식(STYLES 키)
     stamp_size = float(p.get("stampSize", 0.032))       # 크기(숫자높이/짧은변 비율)
     stamp_margin = float(p.get("stampMargin", 0.05))    # 코너 여백/짧은변 비율
+    stamp_color = str(p.get("stampColor", "#FF8A29"))   # 각인 색(중성=흑백 사진용 백색 각인)
+    stamp_glow = float(p.get("stampGlow", 1.0))         # 글로우 밝기(헤일로 가중 배율)
+    stamp_spread = float(p.get("stampSpread", 1.0))     # 글로우 영역(헤일로 반경 배율)
     # --- 전역/공간 단계 (전체 배열). 노출/하이라이트는 filmic 프론트엔드에서 이미 처리됨 ---
     # 프리뷰 블러(shaders/blur.frag)는 오프셋 1·2·3·4 탭의 9-tap 가우시안 → 패스당
     # 실제 σ = √(2·(w1+4w2+9w3+16w4)) = √2.854 ≈ 1.69 탭(가중치 0.1946/0.1216/0.0541/0.0162).
@@ -768,8 +771,12 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     #   → 위치·크기가 최종(크롭) 사이즈 기준이 됨. (크롭 전 원본 코너 기준이면 크롭 시 어긋남)
     #   비네팅 뒤(LED는 렌즈를 거치지 않음). 프리뷰는 cropClip 위 오버레이로 동일 위치/합성.
     if do_stamp:
+        # ⚠️인자를 하나 빠뜨리면 **CPU export 만** 기본 룩으로 찍힌다(프리뷰·GPU export 와
+        #   불일치). 실제로 색/글로우/영역을 추가할 때 이 호출을 빠뜨려 걸렸다 — 스탬프
+        #   파라미터를 늘리면 여기·main._finish_gpu_export·_update_stamp_layer 세 곳을 함께 볼 것.
         date_stamp.stamp_export(out, stamp_text, rot=stamp_rot,   # dtype 자동, 회전·코너 in-place
                                 style=stamp_style, size_frac=stamp_size, margin_frac=stamp_margin,
+                                color=stamp_color, glow=stamp_glow, spread=stamp_spread,
                                 grain_amt=float(p.get("grainAmt", 0.0)))   # 스탬프 그레인=사진 그레인 연동
 
     return out

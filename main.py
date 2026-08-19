@@ -1101,7 +1101,10 @@ class Controller(QObject):
         self._stamp_font = "7c_bold"   # 데이트백 폰트 방식(date_stamp.STYLES 키)
         self._stamp_size = 0.032       # 데이트백 크기 = 숫자높이/짧은변 비율(슬라이더, date_stamp.DEFAULT_SIZE_FRAC)
         self._stamp_margin = 0.05      # 데이트백 여백 = 코너 안쪽 여백/짧은변 비율 — 슬라이더(date_stamp.MARGIN_FRAC)
-        self._stamp_color = "#FF8A29"  # 각인 색(date_stamp.DEFAULT_COLOR — 중성=흑백 사진용)
+        # 각인 색(= date_stamp.DEFAULT_COLOR). ⚠️**소문자 #rrggbb 표준 표기**로 둔다 —
+        # setStampColor 가 정규화하므로, 초기값만 표기가 다르면 '손대지 않은 사진'과
+        # '기본값으로 리셋한 사진'의 editParams 문자열이 달라져 레시피 룩 지문이 갈린다.
+        self._stamp_color = "#ff8a29"
         self._stamp_glow = 1.0         # 글로우 밝기(헤일로 가중 배율)
         self._stamp_spread = 1.0       # 글로우 영역(헤일로 반경 배율)
         self._stamp_prefs_cache = None  # 스탬프 '내 기본값' 캐시(_stamp_prefs)
@@ -2950,6 +2953,8 @@ class Controller(QObject):
         import date_stamp
         if not date_stamp.remove_user_font(style):
             return False
+        self._stamp_prefs_cache = None      # 내 기본값이 이 폰트를 가리켰다면 위 검증으로 되돌린다
+        self.stampDefaultsChanged.emit()
         if self._stamp_font == style:
             self.setStampFont(date_stamp.DEFAULT_STYLE)
         self.stampFontsChanged.emit()
@@ -2959,15 +2964,18 @@ class Controller(QObject):
     # 사진 여러 장을 연속 작업할 때 폰트·크기·여백을 매번 다시 잡는 것이 힘들다는 피드백에서
     # 나왔다. ⚠️우선순위는 **사이드카 > 이 기본값 > 공장 기본값** — 사이드카가 있는 사진의
     # 룩은 절대 바뀌지 않고, 이 값은 '사이드카가 없는 새 사진의 출발점'만 정한다.
-    # ⚠️QML 은 이 값을 `_ev` 폴백과 `resetAllEdits` **양쪽에서 같이** 봐야 한다 — 한쪽만
-    # 보면 "적용 기본값 = 리셋 값" 불변식이 깨져 레시피 적용이 조용히 어긋난다
-    # (CLAUDE.md '레시피 프리셋' 절의 삭제 목록 규약).
+    # ⚠️QML 은 이 값을 **`resetAllEdits` 에서만** 본다(= Reset 버튼 + 사이드카 없는 새 사진).
+    # `applyEdits` 의 `_ev` 폴백과 슬라이더 더블클릭은 **공장 기본값**이다 — 의도된 비대칭이고
+    # 근거는 CLAUDE.md UI 규칙 절에 있다(폴백을 내 기본값으로 두면 스탬프 키가 없던 시절의
+    # 옛 사이드카를 열 때 없던 각인이 켜지고, 더블클릭을 내 기본값으로 두면 무동작이 된다).
     _STAMP_PREF_DEFAULTS = {"stampOn": False, "stampStyle": "7c_bold",
                             "stampSize": 0.032, "stampMargin": 0.05,
-                            "stampColor": "#FF8A29", "stampGlow": 1.0, "stampSpread": 1.0}
+                            "stampColor": "#ff8a29", "stampGlow": 1.0, "stampSpread": 1.0}
 
     def _stamp_prefs(self) -> dict:
         if self._stamp_prefs_cache is None:
+            import date_stamp
+            USER_PREFIX_, _has_font = date_stamp.USER_PREFIX, date_stamp.has_font
             d = dict(self._STAMP_PREF_DEFAULTS)
             try:
                 p = Path(stamp_prefs_path())
@@ -2978,6 +2986,12 @@ class Controller(QObject):
                         d.update(self._sane_stamp_prefs(raw))
             except Exception:
                 pass                      # 손상 시 공장 기본값(다음 저장에 덮어씀)
+            # ⚠️사용자 폰트가 사라진 경우(Remove 로 지웠거나 폴더에서 직접 지웠거나) 그 키를
+            #   기본값에 남겨두면 **사이드카 없는 새 사진마다** 누락 배너가 뜬다 — 정작 그
+            #   폰트를 참조하는 사진은 없는데도. 읽는 시점에 걸러 기본 폰트로 되돌린다.
+            st = str(d.get("stampStyle", ""))
+            if st.startswith(USER_PREFIX_) and not _has_font(st):
+                d["stampStyle"] = self._STAMP_PREF_DEFAULTS["stampStyle"]
             self._stamp_prefs_cache = d
         return self._stamp_prefs_cache
 
@@ -3383,8 +3397,15 @@ class Controller(QObject):
     @Slot(str)
     def setStampColor(self, color: str) -> None:  # noqa: N802 (QML 슬롯)
         """각인 색. ⚠️형제 슬롯들과 같은 동일값 가드 — _update_stamp_layer 가 GUI 스레드에서
-        스프라이트를 동기 재렌더하므로, 로드 1회에 여러 번 같은 값이 들어오는 것을 접는다."""
-        color = str(color or "")
+        스프라이트를 동기 재렌더하므로, 로드 1회에 여러 번 같은 값이 들어오는 것을 접는다.
+        ⚠️표기를 **정규화**한다(`#RRGGBB`/`#rrggbb`/이름 → 소문자 `#rrggbb`) — 그러지 않으면
+        같은 색이 다른 문자열로 editParams 에 실려 **레시피 룩 지문이 갈리고** 배지가 켜지지
+        않는다. 잘못된 색은 기본 앰버로 되돌린다(이전 사진 색이 남는 것보다 예측 가능하다)."""
+        import date_stamp
+        qc = QColor(str(color or ""))
+        if not qc.isValid():
+            qc = QColor(date_stamp.DEFAULT_COLOR)
+        color = qc.name()          # 항상 소문자 #rrggbb
         if color == self._stamp_color:
             return
         self._stamp_color = color

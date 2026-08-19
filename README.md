@@ -158,10 +158,12 @@ Reproduces a film **quartz date-back** — not text pasted on top, but a simulat
 - **Additive (screen) blend** — the imprint adds light the way the LED exposes film: it glows over dark areas and washes out over bright highlights, instead of sitting on top like a sticker (mixed with a touch of source-over so highlights don't erase it entirely)
 - **Same-emulsion grain** — the stamp carries the photo's film grain (linked to the Grain amount), so it's never cleanly digital
 - **Halation** — hot-core → amber → red-orange bloom, the way bright light scatters in the emulsion
-- **Segment / dot fonts** — DSEG seven-/fourteen-segment (Regular / Bold, upright / italic) plus a round-dot matrix (Doto) — all SIL OFL
+- **Segment / dot / text fonts** — DSEG seven-/fourteen-segment (Regular / Bold, upright / italic), a round-dot matrix (Doto), plus typewriter (Courier Prime), terminal (VT323) and condensed (Oswald) — all SIL OFL. **Add your own** `.ttf`/`.otf` from anywhere, including the Windows font folder; the file is copied into your user data folder so the recipe keeps working if the original moves.
+- **Colour, glow brightness and glow area** — one colour drives the whole hot-core → halo ramp, so a neutral colour gives a white imprint that suits black-and-white frames. Glow brightness dials the bloom from crisp to heavy; glow area widens it without moving the digits.
 - **Frame-relative placement** — imprinted in the sensor's bottom-right corner via EXIF orientation, so portrait shots rotate it into the matching corner
-- Style / size / margin adjust and persist per-image; the date defaults to the EXIF capture date and is editable. Toggle with `D`.
-- The final **export** uses the screen/source-over blend above; the live **preview** uses a lightweight source-over overlay, so on very bright highlights the previewed stamp reads a touch more solid than the exported file — a deliberate simplicity trade-off (they match on normal/dark backgrounds)
+- **Your settings are remembered** — font, size, margin, colour, glow and the on/off state carry over to the next photo that has no saved edits, so a whole roll doesn't need setting up again. Photos you already edited still open exactly as you saved them. Its own panel tab (`Ctrl+4`); toggle the stamp with `D`.
+- The date defaults to the EXIF capture date and is editable.
+- **Preview vs saved file** — over bright areas, a strongly coloured imprint looks a little stronger on screen than in the saved file. **The saved file is the accurate one**; white or grey looks identical in both. (Why: the imprint is light, and light washes out over highlights — the live preview can't reproduce that exactly. Numbers and the reason it can't be fixed without changing the export: [`docs/date_stamp.md`](docs/date_stamp.md).)
 
 See [`docs/date_stamp.md`](docs/date_stamp.md) for the physical model and implementation.
 

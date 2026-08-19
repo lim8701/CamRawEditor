@@ -140,8 +140,12 @@ _WIDE_K_MAX = 8
 
 
 def _glow_pad_px(text_h_px, spread=DEFAULT_SPREAD):
-    """스프라이트 사방에 붙는 글로우 여유(px). render_sprite 와 **같은 식**이어야 한다."""
-    return int(round(float(text_h_px) * 1.6 * float(spread)))
+    """스프라이트 사방에 붙는 글로우 여유(px). render_sprite 와 **같은 식**이어야 한다.
+    ⚠️`max(6.0, ...)` 하한까지 같아야 한다 — render_sprite 는 하한을 걸고 pad 를 구하는데
+    여기서 안 걸면 아주 작은 출력(짧은 변 500px 미만 + 최소 크기)에서 상쇄가 실제 pad
+    증가보다 커져 **글자가 2px 움직인다**(실측 600x400 프레임). 이 함수가 존재하는 이유가
+    바로 '글자는 영역과 무관하게 제자리'이므로 하한 누락은 그 보장을 깬다."""
+    return int(round(max(6.0, float(text_h_px)) * 1.6 * float(spread)))
 
 
 def bleed_px(text_h_px, spread=DEFAULT_SPREAD):
@@ -199,12 +203,16 @@ SCREEN_MIX = 0.7        # 합성 블렌드: 1.0=순수 screen(밝은 배경서 �
                         # 중간값=밝은 배경 과다 소멸 완화. ⚠️ui/Main.qml stampOverlay.screenMix 와 동기 유지.
 
 
-def user_fonts_dir():
+def user_fonts_dir(create=False):
     """사용자가 추가한 폰트 폴더. 앱 폴더가 아니라 사용자 데이터 폴더에 두는 이유는 models
-    와 동일(설치 폴더 무쓰기·업데이트에도 보존). app_dirs 는 지연 임포트."""
+    와 동일(설치 폴더 무쓰기·업데이트에도 보존). app_dirs 는 지연 임포트.
+    ⚠️`create` 는 **추가할 때만** True — 읽기 경로(`has_font`)는 `stampChanged` 마다 불리고
+    그건 슬라이더 드래그 중 매 프레임이다. 거기서 mkdir 를 돌리면 프레임마다 디스크를
+    건드리고, 사용자가 폴더를 지워도 즉시 되살아난다."""
     import app_dirs
     d = Path(app_dirs.user_data_path("fonts"))
-    d.mkdir(parents=True, exist_ok=True)
+    if create:
+        d.mkdir(parents=True, exist_ok=True)
     return d
 
 
@@ -288,13 +296,35 @@ def add_user_font(src):
         srcp = Path(str(src))
         if srcp.suffix.lower() not in (".ttf", ".otf") or not srcp.is_file():
             return ""
-        dst = user_fonts_dir() / srcp.name
+        dst = user_fonts_dir(create=True) / srcp.name
+        # 같은 이름이 이미 등록돼 있으면 **먼저 등록 해제**한다 — 덮어쓰기 자체는 잠금에
+        # 걸리지 않지만(실측), Qt 가 이미 로드한 옛 글리프를 계속 쓰면 '같은 이름으로
+        # 고친 폰트를 다시 추가'가 아무 효과 없는 것처럼 보인다.
+        old_style = USER_PREFIX + dst.name
+        old_fid = _font_ids.pop(old_style, None)
+        _families.pop(old_style, None)
+        if old_fid is not None:
+            QFontDatabase.removeApplicationFont(old_fid)
         if not dst.exists() or srcp.resolve() != dst.resolve():
             shutil.copyfile(srcp, dst)      # 이미 그 폴더의 파일을 고른 경우는 복사 생략
         style = USER_PREFIX + dst.name
         _families.pop(style, None)          # 덮어썼으면 패밀리 캐시도 버린다
         _font_ids.pop(style, None)
-        return style if font_family(style) != "monospace" else ""
+        # ⚠️Qt 등록 결과로 직접 판정한다. 예전엔 `font_family(style) != "monospace"` 로 봤는데,
+        #   font_family 가 실패 시 **기본 데이트백 폰트로 폴백**하도록 바뀌면서 이 검사가
+        #   죽은 코드가 됐다 — 폰트가 아닌 파일도 '성공'으로 보고되어 목록에 남고, 파일은
+        #   존재하니 누락 배너도 안 뜨고, 각인만 조용히 기본 폰트로 그려졌다.
+        fid = QFontDatabase.addApplicationFont(str(dst))
+        if fid < 0 or not QFontDatabase.applicationFontFamilies(fid):
+            if fid >= 0:
+                QFontDatabase.removeApplicationFont(fid)
+            try:
+                dst.unlink()                # 못 읽는 파일을 폴더에 남기지 않는다
+            except Exception:
+                pass
+            return ""
+        _font_ids[style] = fid
+        return style
     except Exception as exc:
         print(f"[stamp] 폰트 추가 실패: {exc}")
         return ""
@@ -375,8 +405,10 @@ def render_sprite(text, text_h_px, style=DEFAULT_STYLE, grain=0.0,
                 (H / gh, W / gw), order=1)[:H, :W]
     if nlow.shape != (H, W):     # zoom 라운딩이 언더슈트하면 슬라이스로 못 채움 → edge 패드
         nlow = np.pad(nlow, ((0, H - nlow.shape[0]), (0, W - nlow.shape[1])), mode="edge")
-    glow = (w_mid + w_halo + w_band) * (0.78 + 0.22 * nlow)
-    inten = np.clip(w_core + glow, 0.0, 1.0)
+    # ⚠️이름을 glow 로 쓰지 않는다 — 인자 `glow`(헤일로 밝기 배율, 스칼라)를 덮어써서,
+    #   이 아래에 그 인자를 읽는 코드를 추가하면 (H,W) 배열이 조용히 브로드캐스트된다.
+    glow_field = (w_mid + w_halo + w_band) * (0.78 + 0.22 * nlow)
+    inten = np.clip(w_core + glow_field, 0.0, 1.0)
     col = np.clip(rgb, 0.0, 1.0)
 
     # 단순 source-over(프리뷰 QML Image + export numpy 동일 합성)만으로도 예전 '하이브리드'(코어
