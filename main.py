@@ -122,6 +122,86 @@ def wallpaper_prefs_path() -> str:
     import app_dirs
     return app_dirs.user_data_path("wallpaper.json")
 
+# ---------- 앱 설정(prefs.json) — 크로스 플랫폼 단일 저장소 ----------
+# ⚠️레지스트리(QSettings)는 쓰지 않는다. Windows 전용이고 백업·이전·삭제가 어려워서,
+#   배경화면 설정에 이어 나머지 앱 설정도 **OS 공통 사용자 데이터 폴더의 JSON** 으로 옮겼다
+#   (mac/Linux 에서 같은 코드가 그대로 동작한다). 구버전 레지스트리 값은 1회 이관 후 삭제한다.
+#   Controller 밖(`main()` 의 시작 폴더 복원)에서도 읽으므로 모듈 레벨에 둔다.
+_PREFS_GROUPS = ("export", "explorer")     # 이관 대상 그룹(구 QSettings 그룹명과 동일)
+_prefs_cache = None
+
+
+def app_prefs_path() -> str:
+    import app_dirs
+    return app_dirs.user_data_path("prefs.json")
+
+
+def _migrate_registry_prefs() -> dict:
+    """구버전 레지스트리 값 1회 이관 후 그 그룹을 제거. 없으면 빈 dict.
+    (wallpaper 그룹은 _migrate_wall_prefs_from_registry 가 따로 담당한다.)"""
+    data = {}
+    try:
+        # 모듈 상단의 QSettings 를 쓴다(함수 안 재임포트 금지 — 테스트가 이 이름을 교체한다)
+        st = QSettings("FilmRawstery", "FilmRawstery")
+        for g in _PREFS_GROUPS:
+            st.beginGroup(g)
+            grp = {}
+            for k in st.childKeys():
+                v = st.value(k, "")
+                if v not in (None, ""):
+                    grp[str(k)] = v
+            st.endGroup()
+            if grp:
+                data[g] = grp
+        if data:
+            _atomic_write_json(app_prefs_path(), data)
+            for g in _PREFS_GROUPS:
+                st.remove(g)              # 레지스트리에는 남기지 않는다
+            st.sync()
+            n = sum(len(v) for v in data.values())
+            print(f"[prefs] 설정 {n}개를 {app_prefs_path()} 로 이관(레지스트리에서 제거)")
+    except Exception as exc:
+        print(f"[prefs] 레지스트리 이관 실패(무시): {exc}")
+        data = {}
+    return data
+
+
+def load_prefs() -> dict:
+    global _prefs_cache
+    if _prefs_cache is None:
+        data = {}
+        try:
+            f = Path(app_prefs_path())
+            if f.is_file():
+                with open(f, encoding="utf-8") as fh:
+                    raw = json.load(fh)
+                if isinstance(raw, dict):
+                    data = {str(k): v for k, v in raw.items() if isinstance(v, dict)}
+        except Exception:
+            data = {}                     # 손상 시 기본값으로 시작(다음 저장에 덮어씀)
+        if not data:
+            data = _migrate_registry_prefs()
+        _prefs_cache = data
+    return _prefs_cache
+
+
+def pref_get(group: str, key: str, default=None):
+    return load_prefs().get(group, {}).get(key, default)
+
+
+def pref_set(group: str, key: str, value) -> None:
+    """값 하나 저장(원자적 쓰기). 값이 같으면 디스크를 건드리지 않는다."""
+    d = load_prefs()
+    grp = d.setdefault(group, {})
+    if grp.get(key) == value:
+        return
+    grp[key] = value
+    try:
+        _atomic_write_json(app_prefs_path(), d)
+    except Exception as exc:
+        print(f"[prefs] 저장 실패: {exc}")
+
+
 def stamp_prefs_path() -> str:
     """날짜 스탬프 '내 기본값'(폰트·크기·여백·켜짐) 저장 파일 — 사용자 데이터 폴더.
     사진 여러 장을 연속 작업할 때 매번 다시 설정하지 않도록 마지막 사용값을 남긴다
@@ -899,6 +979,7 @@ class Controller(QObject):
     exifChanged = Signal()      # 촬영정보(EXIF) 갱신 알림
     stampChanged = Signal()     # 날짜 스탬프 오버레이 갱신 알림
     stampDefaultsChanged = Signal()   # 스탬프 '내 기본값' 갱신 알림
+    exportOptsChanged = Signal()      # 기억된 export 옵션 갱신 알림
     stampFontsChanged = Signal()      # 폰트 목록(사용자 추가/삭제) 갱신 알림
     editsReady = Signal()       # 새 파일 디코딩 완료 -> QML 이 저장 편집 복원(또는 기본값 리셋)
     histogramChanged = Signal()  # 톤커브 배경 히스토그램 갱신 알림
@@ -1177,12 +1258,20 @@ class Controller(QObject):
         self._rescan_timer.setSingleShot(True)
         self._rescan_timer.setInterval(400)   # 연속 변화/중복 이벤트 합치기
         self._rescan_timer.timeout.connect(self._do_auto_rescan)
-        # 마지막 탐색 폴더 영구 저장(재시작 시 복원 + 폴더 대화상자 시작 위치)
-        self._settings = QSettings("FilmRawstery", "FilmRawstery")
+        # 앱 설정은 prefs.json(사용자 데이터 폴더) — 레지스트리는 쓰지 않는다(위 주석 참조).
+        # wallpaper 그룹만 별도 파일(wallpaper.json)이고, 그 이관도 별도 함수가 담당한다.
+        self._settings = QSettings("FilmRawstery", "FilmRawstery")   # wallpaper 이관 전용
         # 마지막으로 저장에 쓴 export 확장자(png/jpg/tif). 제안 파일명·defaultSuffix·
         # name filter 가 모두 이 값을 따라 서로 어긋나지 않게 한다.
-        _ext = str(self._settings.value("export/lastExt", "png") or "png").lower()
+        _ext = str(pref_get("export", "lastExt", "png") or "png").lower()
         self._export_ext = _ext if _ext in _EXPORT_EXTS else "png"
+        # 나머지 export 옵션도 함께 기억한다 — "파일 크기·형식을 미리 정해두고 export
+        # 버튼만 누르고 싶다"는 피드백. 저장소는 prefs.json(모듈 상단 pref_get/pref_set).
+        self._export_edge = self._sane_export_edge(pref_get("export", "lastEdge", 0))
+        self._export_render = 1 if str(pref_get("export", "lastRender", 0)) == "1" else 0
+        self._export_16bit = str(pref_get("export", "last16Bit", False)).lower() == "true"
+        # 마지막으로 저장한 폴더(없거나 사라졌으면 원본 폴더로 폴백)
+        self._export_folder = str(pref_get("export", "lastFolder", "") or "")
         # 배경화면 설정은 레지스트리가 아니라 사용자 데이터 폴더의 JSON(_wall_prefs).
         self._wall_prefs_cache = None
         self._wall_prefs_timer = QTimer(self)
@@ -2173,7 +2262,83 @@ class Controller(QObject):
         if not self._path:
             return QUrl()
         p = Path(self._path)
-        return QUrl.fromLocalFile(str(p.with_name(f"{p.stem}_exported.{self._export_ext}")))
+        name = f"{p.stem}_exported.{self._export_ext}"
+        # 마지막으로 저장한 폴더에서 열되, 없거나 사라졌으면 원본 폴더로 폴백한다
+        # (외장 드라이브를 뽑은 뒤에도 대화상자가 정상적으로 열려야 한다).
+        try:
+            last = Path(self._export_folder) if self._export_folder else None
+            if last is not None and last.is_dir():
+                return QUrl.fromLocalFile(str(last / name))
+        except Exception:
+            pass
+        return QUrl.fromLocalFile(str(p.with_name(name)))
+
+    # ---------- export 옵션 기억(해상도·렌더·16bit·폴더) ----------
+    # ⚠️허용 목록은 QML win.exportEdges 와 같아야 한다 — 어긋나면 저장된 값이 콤보에서
+    #   인덱스 -1 이 되어 조용히 Original 로 되돌아간다.
+    _EXPORT_EDGES = (0, 4096, 3840, 2560, 2048, 1920, 1280)
+
+    def _sane_export_edge(self, v) -> int:
+        try:
+            iv = int(v)
+        except (TypeError, ValueError):
+            return 0
+        return iv if iv in self._EXPORT_EDGES else 0
+
+    def _get_export_edge(self) -> int:
+        return self._export_edge
+
+    def _get_export_render(self) -> int:
+        return self._export_render
+
+    def _get_export_16bit(self) -> bool:
+        return self._export_16bit
+
+    exportEdge = Property(int, _get_export_edge, notify=exportOptsChanged)
+    exportRender = Property(int, _get_export_render, notify=exportOptsChanged)
+    export16Bit = Property(bool, _get_export_16bit, notify=exportOptsChanged)
+
+    @Slot("QVariantMap")
+    def rememberExportOpts(self, opts: dict) -> None:  # noqa: N802 (QML 슬롯)
+        """사용자가 export 옵션을 직접 바꿨을 때 호출(변화 없으면 디스크에 쓰지 않는다)."""
+        o = dict(opts or {})
+        changed = False
+        if "edge" in o:
+            v = self._sane_export_edge(o["edge"])
+            if v != self._export_edge:
+                self._export_edge = v
+                pref_set("export", "lastEdge", v)
+                changed = True
+        if "render" in o:
+            v = 1 if int(o["render"] or 0) == 1 else 0
+            if v != self._export_render:
+                self._export_render = v
+                pref_set("export", "lastRender", v)
+                changed = True
+        if "bit16" in o:
+            v = bool(o["bit16"])
+            if v != self._export_16bit:
+                self._export_16bit = v
+                pref_set("export", "last16Bit", "true" if v else "false")
+                changed = True
+        if changed:
+            self.exportOptsChanged.emit()
+
+    @Slot(QUrl)
+    def rememberExportFolder(self, file_url: QUrl) -> None:  # noqa: N802 (QML 슬롯)
+        """방금 저장에 쓴 파일의 **폴더**를 기억한다 — 다음 export 대화상자가 그 폴더에서
+        열린다(export 전용 폴더에 모으는 흔한 작업 방식). 파일명은 기억하지 않는다."""
+        try:
+            d = Path(file_url.toLocalFile()).parent
+        except Exception:
+            return
+        if not d.is_dir():
+            return
+        folder = str(d)
+        if folder == self._export_folder:
+            return
+        self._export_folder = folder
+        pref_set("export", "lastFolder", folder)
 
     # ---------- 마지막 사용 export 형식(확장자) — 이름/필터/defaultSuffix 의 단일 출처 ----------
     def _get_export_ext(self) -> str:
@@ -2186,7 +2351,7 @@ class Controller(QObject):
         if e not in _EXPORT_EXTS or e == self._export_ext:
             return
         self._export_ext = e
-        self._settings.setValue("export/lastExt", e)
+        pref_set("export", "lastExt", e)
         self.exportExtChanged.emit()
 
     def _remember_export_ext(self, path: str) -> None:
@@ -3303,7 +3468,7 @@ class Controller(QObject):
         self.folderChanged.emit()
         self.likesChanged.emit()
         self.editsChanged.emit()
-        self._settings.setValue("explorer/lastFolder", folder)   # 재시작 복원용   # 재시작 복원용
+        pref_set("explorer", "lastFolder", folder)   # 재시작 복원용
 
     @Slot(QUrl)
     def setFolder(self, url: QUrl) -> None:  # noqa: N802 (QML 슬롯, FolderDialog)
@@ -5212,8 +5377,7 @@ def main() -> int:
             controller.setFolderPath(str(Path(start_path).parent))
     else:
         # 마지막 탐색 폴더 복원(종료 후에도 기억) > 개발 샘플 폴더 > Pictures.
-        last = str(QSettings("FilmRawstery", "FilmRawstery")
-                   .value("explorer/lastFolder", "") or "")
+        last = str(pref_get("explorer", "lastFolder", "") or "")
         if last and Path(last).is_dir():
             start_folder = last
         elif Path(DEFAULT_RAF).is_file():

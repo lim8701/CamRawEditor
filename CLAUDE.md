@@ -282,6 +282,27 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
 - 저장 위치: `%LOCALAPPDATA%/FilmRawstery/presets/` (models 와 같은 base dir — 로밍 안 되고
   언인스톨 후에도 남는다. 기능 하나 때문에 두 번째 base dir 를 만들지 않는다).
 
+## 설정 저장 위치 (레지스트리 금지)
+
+⚠️**앱 설정은 레지스트리에 쓰지 않는다.** Windows 전용이라 크로스 플랫폼에서 못 쓰고
+백업·이전·삭제가 어렵다. 모든 설정은 **OS 공통 사용자 데이터 폴더**(`app_dirs`)의 JSON 이다.
+
+| 파일 | 내용 |
+|------|------|
+| `prefs.json` | 앱 전역 설정 — `export`(lastExt·lastEdge·lastRender·last16Bit·lastFolder) · `explorer`(lastFolder). 모듈 레벨 `pref_get`/`pref_set`(원자적 쓰기, 같은 값이면 디스크 미접촉) |
+| `stamp.json` | 날짜 스탬프 '내 기본값' |
+| `wallpaper.json` | 배경화면 패널 설정 |
+| `presets/*.frpreset` | 레시피 프리셋 |
+| `fonts/*.ttf` | 사용자가 추가한 스탬프 폰트 |
+| `models/` | AI 모델(런타임 다운로드) |
+
+사진별 편집은 설정이 아니라 **사이드카**다: `<사진 폴더>/.filmrawsteryedits/<파일명>.json`
+(사진과 함께 이동·백업돼야 하므로 앱 설정과 섞지 않는다).
+
+⚠️`QSettings` 는 **구버전 값 1회 이관 전용**으로만 남아 있다 — `_migrate_registry_prefs`
+(export·explorer 그룹)와 `_migrate_wall_prefs_from_registry`(wallpaper 그룹). 둘 다 이관 후
+레지스트리 그룹을 **제거**한다. 새 설정을 QSettings 에 추가하지 말 것.
+
 ## Export
 
 - `pipeline.py` 가 풀해상도(6246×4170)를 동일 파이프라인으로 현상 → jpg/png/tif(8bit) 저장.

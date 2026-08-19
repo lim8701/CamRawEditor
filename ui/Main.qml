@@ -2946,7 +2946,11 @@ ApplicationWindow {
         readonly property var filterExts: ["png", "jpg", "tif"]
         defaultSuffix: controller.exportExt
         // 렌더 모드: 0=CPU(render_full), 1=GPU(프리뷰 셰이더로 풀해상도 렌더 → 프리뷰=Export)
-        onAccepted: win.startExport(selectedFile, win.exportParams())   // 엔진 선택은 win.startExport
+        onAccepted: {
+            // 다음 export 대화상자가 같은 폴더에서 열리게 기억한다(파일명은 기억하지 않는다).
+            controller.rememberExportFolder(selectedFile)
+            win.startExport(selectedFile, win.exportParams())   // 엔진 선택은 win.startExport
+        }
     }
 
     // 배경화면 저장도 같은 결함을 가진다 — 제안 이름은 항상 .jpg 인데 필터를 PNG 로 바꿔도
@@ -6141,14 +6145,22 @@ ApplicationWindow {
                                     ComboBox {
                                         id: resCombo
                                         Layout.fillWidth: true
-                                        currentIndex: 0     // 원본
                                         model: ["Original (Full)", "4096", "3840 (4K)",
                                                 "2560", "2048", "1920 (FHD)", "1280"]
+                                        // 기억된 값에서 시작(피드백: "미리 설정해두고 export 만").
+                                        // ⚠️인라인 currentIndex 바인딩은 첫 선택 시 파괴되므로
+                                        //   독립 Binding 으로 둔다(stampCheck 와 같은 이유).
+                                        onActivated: controller.rememberExportOpts(
+                                            { "edge": win.exportEdges[currentIndex] })
                                         // 드롭다운 닫히면 포커스 해제(단축키 복구 — captionLevelCombo 와 동일)
                                         Connections {
                                             target: resCombo.popup
                                             function onClosed() { viewport.forceActiveFocus() }
                                         }
+                                    }
+                                    Binding {
+                                        target: resCombo; property: "currentIndex"
+                                        value: Math.max(0, win.exportEdges.indexOf(controller.exportEdge))
                                     }
                                 }
                                 RowLayout {
@@ -6159,21 +6171,31 @@ ApplicationWindow {
                                         Layout.fillWidth: true
                                         // 16bit 는 CPU 전용(GPU grab 은 8bit) → 16bit 체크 시 GPU 비활성/CPU 고정
                                         enabled: !bitDepth16Check.checked
-                                        currentIndex: 0     // 기본 CPU
                                         model: ["CPU", "GPU"]
+                                        onActivated: controller.rememberExportOpts({ "render": currentIndex })
                                         // 드롭다운 닫히면 포커스 해제(단축키 복구 — captionLevelCombo 와 동일)
                                         Connections {
                                             target: renderModeCombo.popup
                                             function onClosed() { viewport.forceActiveFocus() }
                                         }
                                     }
+                                    Binding {
+                                        target: renderModeCombo; property: "currentIndex"
+                                        value: controller.exportRender
+                                    }
                                 }
                                 RowLayout {
                                     Layout.fillWidth: true; spacing: 6
                                     CheckBox {
                                         id: bitDepth16Check
+                                        onToggled: controller.rememberExportOpts({ "bit16": checked })
                                         ToolTip.visible: hovered
                                         ToolTip.text: "Save 16-bit/channel (preserves gradation · headroom). TIFF recommended. CPU render only."
+                                    }
+                                    // 기억된 값 재푸시(인라인 checked 바인딩은 첫 클릭에 파괴된다)
+                                    Binding {
+                                        target: bitDepth16Check; property: "checked"
+                                        value: controller.export16Bit
                                     }
                                     Label {
                                         Layout.fillWidth: true
