@@ -1941,8 +1941,11 @@ class Controller(QObject):
         import presets
         out = []
         for d in presets.listdir(self._presets_dir(), self._PRESET_KEYS):
-            out.append({k: d[k] for k in ("name", "description", "color", "createdAt",
-                                          "appVersion", "source", "file")})
+            row = {k: d[k] for k in ("id", "name", "description", "color", "createdAt",
+                                     "appVersion", "source", "file")}
+            # 룩 지문 — QML 이 현재 편집값의 지문과 비교해 배지 활성 여부를 정한다(값 기준).
+            row["lookHash"] = presets.look_hash(d["edits"], self._PRESET_KEYS)
+            out.append(row)
         return out
 
     @Slot(str, str, str, "QVariantMap", result=str)
@@ -1982,6 +1985,13 @@ class Controller(QObject):
         d["error"] = ""
         return d
 
+    @Slot("QVariantMap", result=str)
+    def lookHash(self, edits) -> str:  # noqa: N802 (QML 슬롯)
+        """편집값의 룩 지문. 배지가 '이 사진의 룩 == 이 레시피' 를 값으로 판정하는 데 쓴다.
+        레시피 목록의 lookHash 와 같은 함수·같은 키 집합이라 비교가 성립한다."""
+        import presets
+        return presets.look_hash({k: edits[k] for k in edits}, self._PRESET_KEYS)
+
     @Slot(str, "QVariantMap", result=str)
     def updatePresetLook(self, file: str, edits) -> str:  # noqa: N802 (QML 슬롯)
         """기존 레시피의 **룩을 현재 편집값으로 덮어쓴다**. 이름·색·설명은 그대로.
@@ -2004,7 +2014,7 @@ class Controller(QObject):
             return ""
         doc = presets.build(d["name"], d["color"], self.presetSource(), keep,
                             APP_VERSION, datetime.date.today().isoformat(),
-                            d.get("description", ""))
+                            d.get("description", ""), d.get("id", ""))
         try:
             path = presets.write(self._presets_dir(), doc)
         except Exception as exc:
@@ -2028,7 +2038,7 @@ class Controller(QObject):
             return ""
         doc = presets.build(name, str(color or ""), d["source"], d["edits"],
                             d["appVersion"] or APP_VERSION, d["createdAt"],
-                            str(description or ""))
+                            str(description or ""), d.get("id", ""))
         try:
             path = presets.write(self._presets_dir(), doc)
         except Exception as exc:
@@ -2071,7 +2081,7 @@ class Controller(QObject):
             return ""
         doc = presets.build(d["name"], d["color"], d["source"], d["edits"],
                             d["appVersion"] or APP_VERSION, d["createdAt"],
-                            d.get("description", ""))
+                            d.get("description", ""), d.get("id", ""))
         try:
             path = presets.write(self._presets_dir(), doc)
         except Exception as exc:

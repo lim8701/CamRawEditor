@@ -182,15 +182,55 @@ def validate_edits(edits, allowed) -> tuple:
     return out, ""
 
 
+# ---------- 룩 지문(사이드카 <-> 배지 상태 판정) ----------
+
+def look_hash(edits, allowed) -> str:
+    """룩의 지문. 같은 룩이면 같은 문자열, 다르면 다른 문자열.
+
+    사이드카에 이 값을 함께 저장해 두면, 사진을 다시 열 때 **레시피 파일을 읽지 않고도**
+    "지금 이 사진의 룩이 그 레시피와 아직 같은가"를 판정할 수 있다. 배지를 '참조'가 아니라
+    **'값'** 으로 켜는 것이 요점이다 — 슬라이더를 만졌는데도 활성으로 남으면 배지가 거짓을
+    말하게 되고, 출처 배너를 정직하게 만든 이 기능의 전제가 무너진다.
+
+    ⚠️`allowed`(=_PRESET_KEYS) 로 한정한다 — 사진별 값(크롭·WB·마스크)은 룩이 아니므로
+      그것 때문에 지문이 달라지면 안 된다.
+    ⚠️부동소수는 6자리로 반올림한다. 슬라이더 왕복은 보통 정확히 일치하지만, 커브 보간이나
+      배열 마샬링에서 마지막 비트가 흔들리면 '같은 룩'이 다른 지문을 갖게 된다."""
+    import hashlib
+
+    def norm(v):
+        if isinstance(v, bool) or isinstance(v, str):
+            return v
+        if isinstance(v, (int, float)):
+            return round(float(v), 6)
+        if isinstance(v, list):
+            return [norm(x) for x in v]
+        if isinstance(v, dict):
+            return {k: norm(v[k]) for k in sorted(v)}
+        return v
+
+    if not isinstance(edits, dict):
+        return ""
+    keep = {k: norm(edits[k]) for k in sorted(allowed) if k in edits}
+    blob = json.dumps(keep, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
+
+
 # ---------- 읽기/쓰기 ----------
 
 def build(name: str, color: str, source: dict, edits: dict, app_version: str,
-          created: str, description: str = "") -> dict:
+          created: str, description: str = "", pid: str = "") -> dict:
     """저장할 프리셋 dict. `color`/`description` 은 **메타데이터이지 룩 값이 아니다** — 루트에
-    두고 edits 에는 절대 넣지 않는다(넣으면 슬라이더로 흘러간다)."""
+    두고 edits 에는 절대 넣지 않는다(넣으면 슬라이더로 흘러간다).
+
+    `id`: 이름·파일명과 무관한 **안정 식별자**. 사이드카가 "이 사진은 어느 레시피에서 왔나"를
+    기록할 때 이것을 쓴다 — 경로는 이름을 바꾸면 깨지고(파일명이 이름에서 파생됨) 이름 자체도
+    바뀌므로, 둘 중 어느 것으로도 계보를 안정적으로 가리킬 수 없다. 없으면 새로 만든다."""
+    import uuid
     return {
         "kind": KIND,
         "v": SCHEMA_V,
+        "id": str(pid or uuid.uuid4().hex[:12]),
         "name": str(name),
         "description": str(description or "")[:280],   # 배지 툴팁/공유용 한두 줄
         "color": color if color in PALETTE else FALLBACK_COLOR,
@@ -218,6 +258,7 @@ def read(path: str, allowed) -> tuple:
         return None, err
     src = d.get("source")
     return {
+        "id": str(d.get("id") or ""),      # 옛/외부 파일엔 없을 수 있다 → 호출측이 폴백
         "name": str(d.get("name") or os.path.splitext(os.path.basename(path))[0]),
         "description": str(d.get("description") or "")[:280],
         "color": d["color"] if d.get("color") in PALETTE else FALLBACK_COLOR,

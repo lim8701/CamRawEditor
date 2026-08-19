@@ -774,7 +774,10 @@ ApplicationWindow {
             "flipH": flipHBtn.checked, "flipV": flipVBtn.checked,
             "aspectIndex": aspectCombo.currentIndex, "cropLandscape": cropLandscapeBtn.checked,
             "cropX": win.cropX, "cropY": win.cropY, "cropW": win.cropW, "cropH": win.cropH,
-            "geoV": geoVSlider.value, "geoH": geoHSlider.value, "geoScale": geoScaleSlider.value
+            "geoV": geoVSlider.value, "geoH": geoHSlider.value, "geoScale": geoScaleSlider.value,
+            // 레시피 계보(사진별 정보). ⚠️_PRESET_KEYS 에 없으므로 프리셋에는 실리지 않고,
+            //   _copyExclude 에 있으므로 붙여넣기로도 옮겨가지 않는다(남의 계보를 주장하지 않게).
+            "recipe": win.presetRef
         }
         // 마스킹(선택 클래스 + 로컬 조정) 병합. 마스크 픽셀은 저장 안 함 — 로드 시 클래스로 재생성.
         var sk = win.skyEditParams()
@@ -786,6 +789,7 @@ ApplicationWindow {
     // 저장된 편집을 컨트롤에 복원. 반드시 _applying 가드 안에서 호출(자동저장/WB 재디코딩 방지).
     // fastMasks: applySkyEdits 의 획 즉각 경로 허용(undo/redo 전용 — applySnapshot 만 true).
     function applyEdits(p, fastMasks) {
+        win.presetRef = _ev(p, "recipe", ({}))   // 레시피 계보 복원(없으면 빈 객체)
         expSlider.value = _ev(p, "exposure", 0.0); conSlider.value = _ev(p, "contrast", 1.0)
         hiSlider.value = _ev(p, "highlights", 0.0); shSlider.value = _ev(p, "shadows", 0.0)
         whSlider.value = _ev(p, "whites", 0.0); blSlider.value = _ev(p, "blacks", 0.0)
@@ -943,7 +947,7 @@ ApplicationWindow {
     // excludeWb=true 면 temp/tint 를 뺀 스냅샷 → 붙여넣을 때 대상의 WB 유지.
     // 사진별 고유 항목은 복사에서 제외 → 붙여넣을 때 대상 이미지의 값이 유지됨.
     // (date stamp + geometry. WB·Tint 는 excludeWb 일 때 추가 제외)
-    readonly property var _copyExclude: ["dateStamp", "stampText",
+    readonly property var _copyExclude: ["recipe", "dateStamp", "stampText",
         "quarterTurns", "rotateAngle", "flipH", "flipV", "aspectIndex", "cropLandscape",
         "cropX", "cropY", "cropW", "cropH", "geoV", "geoH", "geoScale"]
     function copyEdits(excludeWb) {
@@ -973,6 +977,28 @@ ApplicationWindow {
 
     // ===== 레시피 프리셋 =====
     property var presetItems: []          // controller.presetList() 캐시(배지 그리드 모델)
+    // 사이드카에 함께 저장하는 **계보** — "이 사진은 어느 레시피에서 왔나".
+    // ⚠️배지의 '활성'은 이 참조가 아니라 **룩 지문 비교**로 정한다(아래 badgeState).
+    //   참조만 믿으면 슬라이더를 만진 뒤에도 활성으로 남아 배지가 거짓을 말한다.
+    //   참조가 필요한 건 "기반했지만 수정됨" 상태 하나뿐이다.
+    property var presetRef: ({})          // {name, file, lookHash} 또는 {}
+    property string currentLookHash: ""   // 현재 편집값의 룩 지문
+    // 편집이 커밋될 때/적용될 때/사진이 바뀔 때만 갱신 — 드래그 중 매 프레임 계산할 이유가 없다.
+    function refreshLookHash() {
+        win.currentLookHash = controller.imagePath === ""
+            ? "" : controller.lookHash(win.editParams())
+    }
+    // 배지 상태: 2=현재 룩과 일치 / 1=이 레시피에 기반했으나 수정됨 / 0=관계 없음
+    function badgeState(item) {
+        if (win.currentLookHash !== "" && item.lookHash === win.currentLookHash) return 2
+        var r = win.presetRef
+        if (!r) return 0
+        // ⚠️id 우선 — 이름을 바꾸면 파일명(이름에서 파생)과 이름이 **둘 다** 바뀌어 계보 링크가
+        //   끊긴다. id 는 그 둘과 무관해 rename 을 견딘다. file/name 은 id 없는 외부·구파일 폴백.
+        if (r.id && item.id && r.id === item.id) return 1
+        if (!r.id && (r.file === item.file || (r.name && r.name === item.name))) return 1
+        return 0
+    }
     // 우클릭 컨텍스트 대상(수정/내보내기/삭제 공용)
     property string _presetCtxFile: ""
     property string _presetCtxName: ""
@@ -985,9 +1011,8 @@ ApplicationWindow {
     // ⚠️'비교 불가(회색)'와 '다른 기종(앰버)'이 똑같이 보이면 둘 다 안 읽힌다 → 시각 비중을 나눈다.
     property string presetNotice: ""
     property bool presetNoticeWarn: false
-    property string presetApplied: ""     // 방금 적용한 프리셋 파일(배지 선택 표시용)
     function clearPresetNotice() {
-        win.presetNotice = ""; win.presetNoticeWarn = false; win.presetApplied = ""
+        win.presetNotice = ""; win.presetNoticeWarn = false
     }
 
     // 프리셋의 출처와 현재 사진을 비교해 배너 문구를 만든다.
@@ -1043,7 +1068,11 @@ ApplicationWindow {
         var msg = win.presetMessage(d, missing)
         win.presetNotice = msg.text
         win.presetNoticeWarn = msg.warn
-        win.presetApplied = file      // 배지 선택 표시(5단계). 일치 시엔 이게 유일한 피드백이다
+        // 계보 기록 — 이후 슬라이더를 만지면 배지는 '수정됨'(1단계)으로 내려간다.
+        win.presetRef = { "id": d.id || "", "name": d.name, "file": file,
+                          "lookHash": controller.lookHash(d.edits) }
+        controller.saveEdits(win.editParams())   // 참조까지 포함해 사이드카에 반영
+        win.refreshLookHash()
     }
 
     // 프리셋의 '룩'을 현재 사진에 적용. 붙여넣기(pasteEdits)와 같은 커밋 경로를 쓰되 **3단**이다.
@@ -1470,6 +1499,7 @@ ApplicationWindow {
         controller.setCurve(curveEditor.allLuts())
         controller.saveEdits(win.editParams())
         win.refreshHistogram()
+        win.refreshLookHash()
     }
     function undo() { if (win.canUndo) { win.undoPos = win.undoPos - 1; win.applySnapshot(win.undoHist[win.undoPos]) } }
     function redo() { if (win.canRedo) { win.undoPos = win.undoPos + 1; win.applySnapshot(win.undoHist[win.undoPos]) } }
@@ -1488,6 +1518,7 @@ ApplicationWindow {
         var snap = win.editParams()
         controller.saveEdits(snap)
         win.histPush(JSON.stringify(snap))   // 커밋된 편집 1개 = undo 스텝 1개
+        win.refreshLookHash()                // 룩이 바뀌었으면 배지 상태도 따라간다
     }
     // 드래그 진행 중 여부 — 편집에 관여하는 모든 드래그 소스를 **명시적으로 열거**(결정론적).
     // 과거 전역 PointHandler(패시브 감시)만으로는 일부 컨트롤의 press 를 이벤트 전달 경로에 따라
@@ -3277,8 +3308,6 @@ ApplicationWindow {
                             onClicked: {
                                 if (presetConfirmDialog.isDelete) {
                                     controller.deletePreset(win._presetCtxFile)
-                                    if (win.presetApplied === win._presetCtxFile)
-                                        win.clearPresetNotice()
                                 } else {
                                     controller.updatePresetLook(win._presetCtxFile,
                                                                win.editParams())
@@ -6220,10 +6249,12 @@ ApplicationWindow {
                                 width: badgeFlow.cellW; height: 56
                                 radius: 5
                                 color: "#1e1e1e"
-                                readonly property bool isOn: win.presetApplied === modelData.file
-                                border.color: badge.isOn ? "#E0A226"
+                                // 2=룩 일치(앰버 실선) / 1=기반했으나 수정됨(흐린 앰버) / 0=무관
+                                readonly property int state2: win.badgeState(modelData)
+                                border.color: badge.state2 === 2 ? "#E0A226"
+                                            : badge.state2 === 1 ? Qt.alpha("#E0A226", 0.42)
                                             : (bgHover.hovered ? "#5a5a5a" : "#3a3a3a")
-                                border.width: badge.isOn ? 2 : 1
+                                border.width: badge.state2 > 0 ? 2 : 1
                                 // 출처: 카메라(짧게) + 렌즈 또는 초점거리. 모르면 빈 줄로 자리만 유지해
                                 //       그리드 규칙성을 지킨다(참고 이미지 윗줄과 같은 역할).
                                 readonly property string prov: {
@@ -6238,6 +6269,8 @@ ApplicationWindow {
                                 }
                                 ToolTip.visible: bgHover.hovered
                                 ToolTip.text: modelData.name
+                                    + (badge.state2 === 2 ? "  \u2713 applied"
+                                       : badge.state2 === 1 ? "  \u2014 based on this, modified" : "")
                                     + (modelData.description ? "\n" + modelData.description : "")
                                     + (badge.prov ? "\n" + badge.prov : "\nNo camera info recorded")
                                     + "\nCreated " + modelData.createdAt
@@ -7472,6 +7505,7 @@ ApplicationWindow {
                         // 새 파일 *디코딩 완료* 후: 저장된 편집이 있으면 복원, 없으면 기본값으로 초기화.
                         // (디코딩 전 트리거 금지 — 이전 이미지에 새 편집이 잘못 반영되는 것 방지)
                         win.clearPresetNotice()   // 사진이 바뀌면 이전 사진의 프리셋 배너는 무효
+                        win.presetRef = ({})      // 참조는 아래 applyEdits 가 사이드카에서 복원
                         win._applying = true
                         var e = controller.editsForCurrent()
                         if (e && e.v !== undefined) {
@@ -7486,6 +7520,9 @@ ApplicationWindow {
                         editSaveTimer.stop()
                         win.refreshHistogram()
                         win.histReset(JSON.stringify(win.editParams()))   // 로드 상태 = undo baseline
+                        // 사진을 다시 열었을 때 배지 활성 표시의 근거 — 복원된 룩의 지문을 잡는다.
+                        // (참조는 위 applyEdits 가 사이드카의 recipe 키에서 이미 복원했다)
+                        win.refreshLookHash()
                     }
                 }
                 }   // end Date Stamp section
