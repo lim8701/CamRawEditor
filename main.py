@@ -2002,6 +2002,11 @@ class Controller(QObject):
     # 모두 이 하나를 본다(셋으로 갈라지면 반드시 어긋난다).
     # ⚠️여기 없는 것은 의도적으로 뺀 것이다 — 각각 이유가 다르다:
     #   · temp/tint — WB 는 장면 조명에 따라 사진마다 달라, 남의 레시피가 가져오면 대개 이상해진다
+    #   · exposure — WB 와 같은 성격의 **촬영 조건 보정**이다(룩이 아니다). 실측: 사이드카
+    #     245개에서 범위 −0.81~+3.00 스톱, 71%가 기본값 아님(WB 는 100%, 대비는 60%).
+    #     저노출 프레임을 +3 올려 만든 레시피를 정상 노출 사진에 적용하면 하얗게 날아간다.
+    #     ⚠️밝기 성격이 있는 룩은 whites/blacks/커브로 담는다. 옛 레시피의 exposure 값은
+    #     read() 가 이 목록으로 걸러 자동으로 무시된다(별도 마이그레이션 불필요)
     #   · 크롭/기하/회전/플립, stampText, dateStamp — 사진별(복사/붙여넣기의 _copyExclude 와 동일)
     #   · maskLayers — 마스크 선택(세그 클래스)과 브러시 획은 그 사진의 구도에 묶여 있다.
     #     숫자 파라미터만 싣는 것은 **더 나쁘다**: 마스크가 없으면 레이어 기여가 0으로 게이팅돼
@@ -2012,7 +2017,7 @@ class Controller(QObject):
     #     ⚠️복사/붙여넣기는 이 둘을 **싣는다**(_copyExclude 에 없음) — 프리셋과 의도적으로 다르다
     #   · simIndex/v — 위치 의존 폴백과 사이드카 스키마 마커
     _PRESET_KEYS = (
-        "exposure", "contrast", "highlights", "shadows", "whites", "blacks",
+        "contrast", "highlights", "shadows", "whites", "blacks",
         "simKey", "simStrength",
         "texture", "clarity", "dehaze", "vibrance", "saturation",
         "hslH", "hslS", "hslL",
