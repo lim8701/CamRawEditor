@@ -182,6 +182,44 @@ def validate_edits(edits, allowed) -> tuple:
     return out, ""
 
 
+# ---------- 룩 기본값(공장값) 단일 진실원 ----------
+# `main.Controller._PRESET_KEYS` 의 모든 키에 대한 **공장 기본값**. QML `applyEdits` 가 저장된
+# 값이 없을 때 쓰는 폴백이 바로 이 값이고(`controller.lookDefaults`), `look_hash` 도 옛 레시피에
+# 없는 키를 이 값으로 채운다.
+#
+# ★왜 표가 필요한가: 룩 키가 늘어날 때마다 **그 키를 모르는 옛 레시피**가 생긴다. 예전에는
+#   배지 비교를 '그 레시피가 지정한 키'로 좁혀서 넘겼는데, 그러면 나중에 추가된 키를 만져도
+#   배지가 안 꺼져 거짓을 말한다(미스트를 추가하며 실제로 드러났다). 빠진 키를 기본값으로
+#   **채워서 전체 키로** 비교하면, 그게 곧 '그 레시피를 적용했을 때 나오는 상태'와 같아진다
+#   (`applyPresetEdits` 가 프리셋 소유 키를 지우고 폴백에 맡기므로).
+#
+# ⚠️키를 추가하면 여기에도 넣어야 한다. `python presets.py` 가 `_PRESET_KEYS`·QML 슬라이더
+#   기본값과 대조해 누락/불일치를 보고한다.
+# ⚠️한 키에 기본값은 **하나**여야 한다. 미스트 Color 를 '공장 0.5 / 사이드카 폴백 0.0' 으로
+#   두었다가 이 구조가 성립하지 않아 0.5 로 통일했다.
+_IDENTITY_CURVE = [[{"x": 0.0, "y": 0.0}, {"x": 1.0, "y": 1.0}] for _ in range(4)]
+
+LOOK_DEFAULTS = {
+    "contrast": 1.0, "highlights": 0.0, "shadows": 0.0, "whites": 0.0, "blacks": 0.0,
+    # ⚠️applyEdits 의 리터럴은 `""` 지만 그건 '미지정 → simIndex 로 폴백' 신호이지 룩 값이
+    #   아니다. editParams() 가 실제로 내보내는 값은 "identity" 다.
+    "simKey": "identity", "simStrength": 1.0,
+    "texture": 0.0, "clarity": 0.0, "dehaze": 0.0, "vibrance": 0.0, "saturation": 0.0,
+    "hslH": [0.0] * 8, "hslS": [0.0] * 8, "hslL": [0.0] * 8,
+    "cgShadowHue": 0.0, "cgShadowSat": 0.0, "cgMidHue": 0.0, "cgMidSat": 0.0,
+    "cgHighHue": 0.0, "cgHighSat": 0.0, "cgBalance": 0.0,
+    "vignette": 0.0,
+    "mistAmt": 0.0, "mistChar": 0.0, "mistRadius": 1.0, "mistHi": 0.8, "mistColor": 0.5,
+    "grainAmt": 0.0, "grainSize": 0.5, "grainRough": 0.1, "grainColor": 0.3,
+    "grainShape": False,
+    "sharpenAmt": 0.0, "sharpenRadius": 1.0, "sharpenDetail": 0.25, "sharpenMask": 0.0,
+    # ⚠️applyEdits 리터럴은 `null`(=resetAll() 하라)이고, 저장되는 값은 그 결과인 제어점이다.
+    "curves": _IDENTITY_CURVE,
+    "stampStyle": "7c_bold", "stampSize": 0.032, "stampMargin": 0.05,
+    "stampColor": "#ff8a29", "stampGlow": 1.0, "stampSpread": 1.0,
+}
+
+
 # ---------- 룩 지문(사이드카 <-> 배지 상태 판정) ----------
 
 def look_hash(edits, allowed) -> str:
@@ -195,7 +233,12 @@ def look_hash(edits, allowed) -> str:
     ⚠️`allowed`(=_PRESET_KEYS) 로 한정한다 — 사진별 값(크롭·WB·마스크)은 룩이 아니므로
       그것 때문에 지문이 달라지면 안 된다.
     ⚠️부동소수는 6자리로 반올림한다. 슬라이더 왕복은 보통 정확히 일치하지만, 커브 보간이나
-      배열 마샬링에서 마지막 비트가 흔들리면 '같은 룩'이 다른 지문을 갖게 된다."""
+      배열 마샬링에서 마지막 비트가 흔들리면 '같은 룩'이 다른 지문을 갖게 된다.
+
+    ★**없는 키는 `LOOK_DEFAULTS` 로 채운다.** 그래서 지문은 항상 `allowed` 전체를 덮는다 —
+      룩 키가 나중에 늘어나도 그 키를 모르는 옛 레시피가 '그 키는 기본값' 으로 해석되고, 그게
+      곧 그 레시피를 적용했을 때 나오는 상태다(LOOK_DEFAULTS 주석 참조). 예전에는 비교 집합을
+      레시피가 가진 키로 좁혔는데, 그러면 나중에 추가된 키를 만져도 배지가 안 꺼졌다."""
     import hashlib
 
     def norm(v):
@@ -211,7 +254,8 @@ def look_hash(edits, allowed) -> str:
 
     if not isinstance(edits, dict):
         return ""
-    keep = {k: norm(edits[k]) for k in sorted(allowed) if k in edits}
+    keep = {k: norm(edits[k] if k in edits else LOOK_DEFAULTS.get(k))
+            for k in sorted(allowed)}
     blob = json.dumps(keep, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 
@@ -302,3 +346,114 @@ def listdir(folder: str, allowed) -> list:
             print(f"[preset] 건너뜀 {n}: {err}")
     out.sort(key=lambda d: d["name"].lower())
     return out
+
+
+# ---------- 기본값 표 대조기 (`python presets.py`) ----------
+# 룩 키를 추가하거나 기본값을 바꿨을 때 **여기로 확인한다.** 기본값이 흩어져 있으면(슬라이더
+# `value:` / `defaultValue:` / applyEdits 폴백) 조용히 갈라지고, 갈라지면 배지가 거짓을 말한다.
+# 앱은 이 블록을 실행하지 않는다(`__main__` 가드).
+
+def _drift_report(root: str = None) -> int:
+    """LOOK_DEFAULTS ↔ main._PRESET_KEYS ↔ QML 슬라이더 기본값 대조. 불일치 개수를 반환."""
+    import io as _io
+    import re as _re
+    root = root or os.path.dirname(os.path.abspath(__file__))
+    main_src = _io.open(os.path.join(root, "main.py"), encoding="utf-8").read()
+    qml = _io.open(os.path.join(root, "ui", "Main.qml"), encoding="utf-8").read()
+    blk = main_src[main_src.index("_PRESET_KEYS = ("):]
+    keys = _re.findall(r'"([^"]+)"', blk[:blk.index(")")])
+
+    bad = 0
+    miss = [k for k in keys if k not in LOOK_DEFAULTS]
+    extra = [k for k in LOOK_DEFAULTS if k not in keys]
+    if miss:
+        print(f"[X] LOOK_DEFAULTS 에 없는 _PRESET_KEYS: {miss}")
+        bad += len(miss)
+    if extra:
+        print(f"[X] _PRESET_KEYS 에 없는 LOOK_DEFAULTS: {extra}")
+        bad += len(extra)
+    if not miss and not extra:
+        print(f"[OK] 키 집합 일치 ({len(keys)}개)")
+
+    # QML 슬라이더: `id: xSlider` 블록의 value:/defaultValue: 가 표와 같은지.
+    # 슬라이더 id ↔ 프리셋 키 대응은 applyEdits 의 `xSlider.value = _ev(p, "key", ...)` 에서 얻는다.
+    pairs = _re.findall(r'(\w+)\.value\s*=\s*_ev\(\s*p,\s*"([^"]+)"', qml)
+    seen, nofind = 0, []
+    for sid, key in pairs:
+        if key not in LOOK_DEFAULTS or isinstance(LOOK_DEFAULTS[key], bool) \
+                or not isinstance(LOOK_DEFAULTS[key], (int, float)):
+            continue
+        # ⚠️`id: x` 뒤가 개행이 아닐 수 있다 — 컬러 그레이딩 슬라이더는 `id: x; from: 0; ...`
+        #   처럼 세미콜론으로 한 줄에 쓴다.
+        # ⚠️`\b` 를 앞에도 붙인다 — `cgHueMid: cgMidHueSlider` 의 꼬리가 `id: ` 로 읽혀
+        #   엉뚱한 위치를 잡았다(그래서 두 슬라이더가 '못 읽음' 으로 나왔다).
+        mid = _re.search(r'\bid:\s*' + sid + r'\b', qml)
+        if not mid:
+            nofind.append(sid)
+            continue
+        i = mid.start()
+        blk2 = qml[i:i + 700]              # 선언 블록 — value:/defaultValue: 가 이 안에 있다
+        hit = False
+        for prop in ("value", "defaultValue"):
+            mm = _re.search(r'\b' + prop + r':\s*(-?[\d.]+)', blk2)
+            if not mm:
+                continue
+            hit = True
+            seen += 1
+            got, want = float(mm.group(1)), float(LOOK_DEFAULTS[key])
+            if abs(got - want) > 1e-9:
+                print(f"[X] {sid}.{prop} = {got} 인데 LOOK_DEFAULTS['{key}'] = {want}")
+                bad += 1
+        if not hit:
+            nofind.append(sid)
+    # ⚠️'못 찾은 것'을 반드시 보고한다 — 조용히 건너뛰면 8/35 만 검사하고도 통과로 읽힌다.
+    if nofind:
+        print(f"[X] 기본값을 못 읽은 슬라이더 {len(nofind)}개: {sorted(set(nofind))}")
+        bad += len(set(nofind))
+    print(f"[..] QML 슬라이더 기본값 {seen}개 확인")
+
+    # applyEdits 는 표를 읽어야 한다(리터럴이 남아 있으면 갈라진다). 센티널 둘은 예외 —
+    # `""`(simKey: 미지정→simIndex 폴백)와 `null`(curves: resetAll 하라)은 룩 값이 아니다.
+    apply_src = qml[qml.index("function applyEdits("):qml.index("function resetSky(")]
+    lits = [(k, v) for k, v in _re.findall(r'_ev\(\s*p,\s*"([^"]+)"\s*,\s*([^()]*?)\s*\)',
+                                           apply_src)
+            if k in LOOK_DEFAULTS and "lookDef" not in v]
+    for k, v in lits:
+        if (k, v) in (("simKey", '""'), ("curves", "null")):
+            continue
+        print(f"[X] applyEdits 가 '{k}' 를 리터럴 {v} 로 폴백 — win.lookDef(\"{k}\") 를 쓸 것")
+        bad += 1
+    print(f"[..] applyEdits 폴백 {len(lits)}개가 리터럴(센티널 예상 2개)")
+
+    # resetEdits 의 직접 대입도 표와 같아야 한다(리셋이 공장값과 갈라지면 배지가 거짓이 된다).
+    # ⚠️함수 이름을 상수로 박아 두면 이름이 바뀔 때 **조용히 0개 확인**이 되어 통과한다
+    #   (실제로 `resetEdits` 로 찾다가 그렇게 됐다). 그래서 못 찾으면 실패로 만든다.
+    RESET_FN = "function resetAllEdits("
+    if RESET_FN not in qml:
+        print(f"[X] QML 에서 {RESET_FN} 를 못 찾았다 — 이름이 바뀌었으면 여기도 고칠 것")
+        return bad + 1
+    reset = qml[qml.index(RESET_FN):]
+    reset = reset[:reset.index("\n    function ")] if "\n    function " in reset else reset
+    rseen = 0
+    for sid, key in pairs:
+        want = LOOK_DEFAULTS.get(key)
+        if not isinstance(want, (int, float)) or isinstance(want, bool):
+            continue
+        mm = _re.search(r'\b' + sid + r'\.value\s*=\s*(-?[\d.]+)', reset)
+        if not mm:
+            continue
+        rseen += 1
+        if abs(float(mm.group(1)) - float(want)) > 1e-9:
+            print(f"[X] resetEdits: {sid} = {mm.group(1)} 인데 "
+                  f"LOOK_DEFAULTS['{key}'] = {want}")
+            bad += 1
+    if rseen == 0:
+        print("[X] resetAllEdits 에서 슬라이더 대입을 하나도 못 읽었다 — 검사가 헛돌고 있다")
+        bad += 1
+    print(f"[..] resetAllEdits 대입 {rseen}개 확인")
+    print("[OK] 불일치 없음" if bad == 0 else f"[X] 불일치 {bad}건")
+    return bad
+
+
+if __name__ == "__main__":
+    raise SystemExit(1 if _drift_report() else 0)

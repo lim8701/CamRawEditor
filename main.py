@@ -2134,11 +2134,6 @@ class Controller(QObject):
                                      "appVersion", "source", "file")}
             # 룩 지문 — QML 이 현재 편집값의 지문과 비교해 배지 활성 여부를 정한다(값 기준).
             row["lookHash"] = presets.look_hash(d["edits"], self._PRESET_KEYS)
-            # ⚠️그 레시피가 **실제로 지정한 키 목록**. 배지 비교는 이 집합에서만 해야 한다 —
-            #   프리셋 키가 나중에 늘어나면(예: 스탬프 색/글로우 추가) 옛 레시피의 지문은
-            #   적은 키로 계산돼 있어, 전체 키로 계산한 현재 룩 지문과 **영원히 달라진다**
-            #   (실제로 그래서 "적용은 되는데 앰버가 안 켜지는" 레시피가 생겼다).
-            row["lookKeys"] = sorted(k for k in self._PRESET_KEYS if k in d["edits"])
             row["orderKey"] = self._order_key(d)
             out.append(row)
         # 사용자 정렬 적용. 목록에 없는 레시피(방금 만든 것·폴더에 직접 넣은 것)는 **맨 위**로,
@@ -2208,16 +2203,17 @@ class Controller(QObject):
         d["error"] = ""
         return d
 
-    # ⚠️인자 2개를 선언해야 QML 의 2인자 호출이 매칭된다 — 파이썬 기본값만 바꾸고 이 선언을
-    #   빠뜨리면 호출이 조용히 실패한다(배지가 안 켜지는 원인이었다).
-    @Slot("QVariantMap", "QVariantList", result=str)
-    def lookHash(self, edits, keys=None) -> str:  # noqa: N802 (QML 슬롯)
+    @Slot("QVariantMap", result=str)
+    def lookHash(self, edits) -> str:  # noqa: N802 (QML 슬롯)
         """편집값의 룩 지문. 배지가 '이 사진의 룩 == 이 레시피' 를 값으로 판정하는 데 쓴다.
-        `keys` 를 주면 **그 키 집합에서만** 계산한다 — 레시피가 지정하지 않은 키는 비교 대상이
-        아니다(레시피 파일의 lookHash 도 그 파일에 있는 키만으로 계산되므로 이래야 성립한다)."""
+
+        항상 `_PRESET_KEYS` **전체**로 계산한다. 레시피에 없는 키는 `presets.LOOK_DEFAULTS`
+        로 채워지므로(look_hash 안에서), 옛 레시피는 '그 키는 공장 기본값' 으로 해석된다 —
+        그게 바로 그 레시피를 적용했을 때 나오는 상태다.
+        ⚠️예전에는 '그 레시피가 지정한 키' 로 비교 집합을 좁혔다. 그러면 나중에 추가된 키를
+          만져도 배지가 안 꺼져 **거짓을 말한다**(미스트를 추가하며 드러났다)."""
         import presets
-        allowed = self._PRESET_KEYS if not keys else [str(k) for k in keys]
-        return presets.look_hash({k: edits[k] for k in edits}, allowed)
+        return presets.look_hash({k: edits[k] for k in edits}, self._PRESET_KEYS)
 
     @Slot(str, "QVariantMap", result=str)
     def updatePresetLook(self, file: str, edits) -> str:  # noqa: N802 (QML 슬롯)
@@ -5032,6 +5028,14 @@ class Controller(QObject):
     segStatus = Property(str, _get_seg_status, notify=segStatusChanged)
     segDownloading = Property(bool, _get_seg_downloading, notify=segStatusChanged)
     segDlProgress = Property(float, _get_seg_dl_prog, notify=segStatusChanged)
+
+    def _get_look_defaults(self):
+        import presets
+        return dict(presets.LOOK_DEFAULTS)
+
+    # 룩 키의 **공장 기본값 단일 진실원**(presets.LOOK_DEFAULTS). QML applyEdits 의 폴백과
+    # 룩 지문 채우기가 같은 표를 봐야 배지가 정직해진다 — 이유는 그쪽 주석.
+    lookDefaults = Property("QVariantMap", _get_look_defaults, constant=True)
 
     def _get_adjust_coeffs(self):
         import coeffs

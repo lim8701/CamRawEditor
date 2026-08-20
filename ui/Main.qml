@@ -812,51 +812,60 @@ ApplicationWindow {
         for (var k in sk) o[k] = sk[k]
         return o
     }
+    // 룩 키의 공장 기본값 — presets.LOOK_DEFAULTS 단일 진실원. applyEdits 의 폴백이 이것을
+    // 쓰고, 룩 지문도 없는 키를 같은 값으로 채운다(배지가 정직해지는 근거 — presets.py 주석).
+    // ⚠️여기에 리터럴을 다시 쓰지 말 것. 키를 추가하면 `python presets.py` 가 누락을 잡아준다.
+    function lookDef(k) { return controller.lookDefaults[k] }
+
     function _ev(p, k, d) { return p[k] !== undefined ? p[k] : d }
 
     // 저장된 편집을 컨트롤에 복원. 반드시 _applying 가드 안에서 호출(자동저장/WB 재디코딩 방지).
     // fastMasks: applySkyEdits 의 획 즉각 경로 허용(undo/redo 전용 — applySnapshot 만 true).
     function applyEdits(p, fastMasks) {
-        expSlider.value = _ev(p, "exposure", 0.0); conSlider.value = _ev(p, "contrast", 1.0)
-        hiSlider.value = _ev(p, "highlights", 0.0); shSlider.value = _ev(p, "shadows", 0.0)
-        whSlider.value = _ev(p, "whites", 0.0); blSlider.value = _ev(p, "blacks", 0.0)
+        expSlider.value = _ev(p, "exposure", 0.0); conSlider.value = _ev(p, "contrast", win.lookDef("contrast"))
+        hiSlider.value = _ev(p, "highlights", win.lookDef("highlights")); shSlider.value = _ev(p, "shadows", win.lookDef("shadows"))
+        whSlider.value = _ev(p, "whites", win.lookDef("whites")); blSlider.value = _ev(p, "blacks", win.lookDef("blacks"))
         tempSlider.value = _ev(p, "temp", controller.asShotKelvin)
         tintSlider.value = _ev(p, "tint", controller.asShotTint)
         // 필름시뮬 복원: simKey(문자열) 우선 → 현재 목록에서 인덱스 역추적(없으면 None). 구버전은 simIndex.
+        // ⚠️여기 `""` 는 **센티널**(미지정 → 아래 simIndex 폴백)이지 룩 값이 아니다. 그래서
+        //   lookDefaults 를 쓰지 않는다 — 표의 값("identity")을 넣으면 구버전 사이드카의
+        //   simIndex 폴백 분기가 죽는다. 표는 룩 지문 채우기 전용으로 "identity" 를 갖는다.
         var _sk = _ev(p, "simKey", "")
         var _si
         if (_sk !== "") { _si = win.simKeys.indexOf(_sk); if (_si < 0) _si = 0 }   // 목록에 없는 LUT → None
         else { _si = _ev(p, "simIndex", 0); if (_si < 0 || _si >= win.simKeys.length) _si = 0 }
         simCombo.currentIndex = _si
-        simStrengthSlider.value = _ev(p, "simStrength", 1.0)
-        texSlider.value = _ev(p, "texture", 0.0); claritySlider.value = _ev(p, "clarity", 0.0)
-        dehazeSlider.value = _ev(p, "dehaze", 0.0)
-        vibSlider.value = _ev(p, "vibrance", 0.0); satSlider.value = _ev(p, "saturation", 0.0)
-        win.hslH = _ev(p, "hslH", [0,0,0,0,0,0,0,0]).slice()
-        win.hslS = _ev(p, "hslS", [0,0,0,0,0,0,0,0]).slice()
-        win.hslL = _ev(p, "hslL", [0,0,0,0,0,0,0,0]).slice()
-        cgShHueSlider.value = _ev(p, "cgShadowHue", 0.0); cgShSatSlider.value = _ev(p, "cgShadowSat", 0.0)
-        cgMidHueSlider.value = _ev(p, "cgMidHue", 0.0); cgMidSatSlider.value = _ev(p, "cgMidSat", 0.0)
-        cgHiHueSlider.value = _ev(p, "cgHighHue", 0.0); cgHiSatSlider.value = _ev(p, "cgHighSat", 0.0)
-        cgBalanceSlider.value = _ev(p, "cgBalance", 0.0)
+        simStrengthSlider.value = _ev(p, "simStrength", win.lookDef("simStrength"))
+        texSlider.value = _ev(p, "texture", win.lookDef("texture")); claritySlider.value = _ev(p, "clarity", win.lookDef("clarity"))
+        dehazeSlider.value = _ev(p, "dehaze", win.lookDef("dehaze"))
+        vibSlider.value = _ev(p, "vibrance", win.lookDef("vibrance")); satSlider.value = _ev(p, "saturation", win.lookDef("saturation"))
+        win.hslH = _ev(p, "hslH", win.lookDef("hslH")).slice()
+        win.hslS = _ev(p, "hslS", win.lookDef("hslS")).slice()
+        win.hslL = _ev(p, "hslL", win.lookDef("hslL")).slice()
+        cgShHueSlider.value = _ev(p, "cgShadowHue", win.lookDef("cgShadowHue")); cgShSatSlider.value = _ev(p, "cgShadowSat", win.lookDef("cgShadowSat"))
+        cgMidHueSlider.value = _ev(p, "cgMidHue", win.lookDef("cgMidHue")); cgMidSatSlider.value = _ev(p, "cgMidSat", win.lookDef("cgMidSat"))
+        cgHiHueSlider.value = _ev(p, "cgHighHue", win.lookDef("cgHighHue")); cgHiSatSlider.value = _ev(p, "cgHighSat", win.lookDef("cgHighSat"))
+        cgBalanceSlider.value = _ev(p, "cgBalance", win.lookDef("cgBalance"))
         hslHueSlider.value = win.hslH[win.hslBand]
         hslSatSlider.value = win.hslS[win.hslBand]
         hslLumSlider.value = win.hslL[win.hslBand]
-        vignetteSlider.value = _ev(p, "vignette", 0.0)
+        vignetteSlider.value = _ev(p, "vignette", win.lookDef("vignette"))
         // 미스트 — 폴백은 공장 기본값(이 키가 없던 사이드카는 미스트 없음으로 열려야 한다).
-        mistAmtSlider.value = _ev(p, "mistAmt", 0.0); mistCharSlider.value = _ev(p, "mistChar", 0.0)
-        mistRadiusSlider.value = _ev(p, "mistRadius", 1.0); mistHiSlider.value = _ev(p, "mistHi", 0.8)
-        // ⚠️폴백만 **0.0**(공장값 0.5 아님) — 이 키가 없던 시절 사이드카는 미스트가 켜져 있어도
-        //   Color 0 으로 저장된 룩이다. 그 사진을 열었을 때 룩이 바뀌지 않게 한다.
-        mistColorSlider.value = _ev(p, "mistColor", 0.0)
+        mistAmtSlider.value = _ev(p, "mistAmt", win.lookDef("mistAmt")); mistCharSlider.value = _ev(p, "mistChar", win.lookDef("mistChar"))
+        mistRadiusSlider.value = _ev(p, "mistRadius", win.lookDef("mistRadius")); mistHiSlider.value = _ev(p, "mistHi", win.lookDef("mistHi"))
+        // ⚠️한때 폴백만 0.0(공장값 0.5) 으로 뒀는데, 그러면 룩 지문이 성립하지 않는다 —
+        //   **한 키에 기본값은 하나**여야 한다(presets.LOOK_DEFAULTS 주석). 0.5 로 통일했고,
+        //   그 대가는 이 키가 없던 시절 사이드카가 Color 0.5 로 열린다는 것뿐이다.
+        mistColorSlider.value = _ev(p, "mistColor", win.lookDef("mistColor"))
         controller.requestMistField(mistRadiusSlider.value, mistHiSlider.value)   // 복원은 즉시 1회
-        grainSlider.value = _ev(p, "grainAmt", 0.0); grainSizeSlider.value = _ev(p, "grainSize", 0.5)
-        grainRoughSlider.value = _ev(p, "grainRough", 0.1)
-        grainColorSlider.value = _ev(p, "grainColor", 0.3)
-        grainShapeCheck.checked = _ev(p, "grainShape", false)
+        grainSlider.value = _ev(p, "grainAmt", win.lookDef("grainAmt")); grainSizeSlider.value = _ev(p, "grainSize", win.lookDef("grainSize"))
+        grainRoughSlider.value = _ev(p, "grainRough", win.lookDef("grainRough"))
+        grainColorSlider.value = _ev(p, "grainColor", win.lookDef("grainColor"))
+        grainShapeCheck.checked = _ev(p, "grainShape", win.lookDef("grainShape"))
         controller.setStampGrainSrc(grainSlider.value)   // 스탬프 그레인 연동(프리뷰)
-        sharpAmtSlider.value = _ev(p, "sharpenAmt", 0.0); sharpRadiusSlider.value = _ev(p, "sharpenRadius", 1.0)
-        sharpDetailSlider.value = _ev(p, "sharpenDetail", 0.25); sharpMaskSlider.value = _ev(p, "sharpenMask", 0.0)
+        sharpAmtSlider.value = _ev(p, "sharpenAmt", win.lookDef("sharpenAmt")); sharpRadiusSlider.value = _ev(p, "sharpenRadius", win.lookDef("sharpenRadius"))
+        sharpDetailSlider.value = _ev(p, "sharpenDetail", win.lookDef("sharpenDetail")); sharpMaskSlider.value = _ev(p, "sharpenMask", win.lookDef("sharpenMask"))
         lumaNrSlider.value = _ev(p, "lumaNR", 0.0); colorNrSlider.value = _ev(p, "colorNR", 0.0)
         // AI 디노이즈: 프로그램적 checked 변경은 onToggled 미발화 → 명시 전달.
         // 켜져 있으면 requestAiNr(비대화형) 경유 — GPU 면 즉시, CPU 폴백이면 세션 선택 정책
@@ -871,23 +880,25 @@ ApplicationWindow {
         stampField.text = _ev(p, "stampText", controller.stampText)
         // 프로그램으로 text 를 바꾸면 onTextEdited 가 안 불리므로 직접 push(스탬프 렌더 갱신).
         controller.setStampText(stampField.text)
-        controller.setStampFont(_ev(p, "stampStyle", "7c_bold"))
-        var _sz = _ev(p, "stampSize", 0.032)
+        controller.setStampFont(_ev(p, "stampStyle", win.lookDef("stampStyle")))
+        var _sz = _ev(p, "stampSize", win.lookDef("stampSize"))
         if (typeof _sz === "string") _sz = ({S: 0.024, M: 0.032, L: 0.044})[_sz] || 0.032  // 구 사이드카 호환
         stampSizeSlider.value = _sz
         controller.setStampSize(_sz)
-        var _mg = _ev(p, "stampMargin", 0.05)
+        var _mg = _ev(p, "stampMargin", win.lookDef("stampMargin"))
         stampMarginSlider.value = _mg; controller.setStampMargin(_mg)
         // 색/글로우도 공장 기본값 폴백 — 이 키가 없던 시절 사이드카가 예전 앰버 룩 그대로
         // 열려야 한다(date_stamp 가 기본 색·기본 영역에서 예전과 비트 동일하게 렌더한다).
-        controller.setStampColor(_ev(p, "stampColor", "#ff8a29"))
-        var _gl = _ev(p, "stampGlow", 1.0);   stampGlowSlider.value = _gl; controller.setStampGlow(_gl)
-        var _sp = _ev(p, "stampSpread", 1.0); stampSpreadSlider.value = _sp; controller.setStampSpread(_sp)
+        controller.setStampColor(_ev(p, "stampColor", win.lookDef("stampColor")))
+        var _gl = _ev(p, "stampGlow", win.lookDef("stampGlow"));   stampGlowSlider.value = _gl; controller.setStampGlow(_gl)
+        var _sp = _ev(p, "stampSpread", win.lookDef("stampSpread")); stampSpreadSlider.value = _sp; controller.setStampSpread(_sp)
         // 체크박스도 명시 대입(aiNrCheck 동일) — 사용자가 한 번이라도 클릭하면
         // `checked: controller.lensCorrection` 바인딩이 파괴되어, 이후 사이드카 복원이
         // 박스에 반영되지 않고 낡은 값이 자동저장으로 역전파되던 버그 방지.
         lensCheck.checked = _ev(p, "lensCorrection", true)
         controller.setLensCorrection(lensCheck.checked)
+        // ⚠️여기 `null` 도 **센티널**(=resetAll() 하라)이라 lookDefaults 를 쓰지 않는다.
+        //   표는 그 결과인 identity 제어점을 갖는다(룩 지문 채우기 전용).
         var cp = _ev(p, "curves", null)
         if (cp) { curveEditor.setChannelPoints(cp); controller.setCurve(curveEditor.allLuts()) }
         else curveEditor.resetAll()
@@ -1051,7 +1062,7 @@ ApplicationWindow {
             var ep = win.editParams()          // 한 번만 만든다
             for (var i = 0; i < win.presetItems.length; i++) {
                 var it = win.presetItems[i]
-                out.push(controller.lookHash(ep, it.lookKeys || []) === it.lookHash)
+                out.push(controller.lookHash(ep) === it.lookHash)
             }
         }
         win.recipeOn = out
@@ -1090,7 +1101,7 @@ ApplicationWindow {
     //   매 프레임 재평가된다. 화면 표시는 win.recipeOn[index] 를 읽는다.
     function badgeOn(item) {
         if (controller.imagePath === "") return false
-        return controller.lookHash(win.editParams(), item.lookKeys || []) === item.lookHash
+        return controller.lookHash(win.editParams()) === item.lookHash
     }
     // 우클릭 컨텍스트 대상(수정/내보내기/삭제 공용)
     property string _presetCtxFile: ""
