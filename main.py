@@ -706,17 +706,6 @@ class HazeProvider(QQuickImageProvider):
         return self._img
 
 
-def _mist_dither(shape):
-    """미스트 필드 코덱용 ±0.5 LSB(8bit 기준) 사각 디더. 시드 고정 = 재로드 시 동일 결과.
-
-    ⚠️진폭을 **8bit 기준(1/255)** 으로 잡는다. 텍스처 자체는 16bit 로 올리지만, Qt/드라이버가
-    8bit 로 내려도 등고선이 생기지 않게 하는 것이 목적이다(16bit 로 유지되면 그만큼의 노이즈가
-    남지만 실측 0.06 코드 수준으로 센서 노이즈에 묻힌다). raw_loader._dither 와 같은 발상."""
-    import numpy as np
-    return ((np.random.default_rng(20260820).random(shape, dtype=np.float32) - 0.5)
-            * (1.0 / 255.0))
-
-
 class MistProvider(QQuickImageProvider):
     """미스트 산란 필드 3장(narrow/mid/wide)을 'image://mist/<i>?v=N' 로 제공.
 
@@ -4201,16 +4190,26 @@ class Controller(QObject):
                 nat = (raw_loader._srgb2lin_lut()[u8.astype(np.uint16) * 257]
                        * PROXY_HEADROOM).astype(np.float32)
                 fields, mean = mist.scatter_fields(nat, hi, radius, max(nat.shape[:2]))
-                # full_shape: 어느 필드가 원해상도인지 판정용(디더 대상 — _on_mist_ready 주석)
-                res = (fields, [float(x) for x in mean], nat.shape[:2])
+                # 인코딩(로그 코덱 + 디더)도 **여기서** 한다 — 예전엔 메인 스레드에서 해서
+                # 4.4MP 프록시에서 275ms 동안 UI 가 얼었다. 디더는 원해상도 필드만
+                # (축소 필드에 걸면 업샘플되어 블롭이 된다 — mist.encode_field 주석).
+                imgs = []
+                for f in fields:
+                    code = mist.encode_field(f, dither=(f.shape[:2] == nat.shape[:2]))
+                    hh, ww = code.shape[:2]
+                    rgba = np.empty((hh, ww, 4), np.uint16)
+                    rgba[..., :3] = code
+                    rgba[..., 3] = 65535
+                    rgba = np.ascontiguousarray(rgba)
+                    imgs.append(QImage(rgba.data, ww, hh, 8 * ww,
+                                       QImage.Format.Format_RGBA64).copy())
+                res = (imgs, [float(x) for x in mean])
         except Exception as exc:
             print(f"[mist] 산란 필드 계산 실패(미스트 무동작): {exc}")
         self._mistReady.emit((seq, (float(radius), float(hi)), res))
 
     @Slot(object)
     def _on_mist_ready(self, payload) -> None:
-        import numpy as np
-        import coeffs
         seq, field_key, res = payload
         if seq != self._mist_seq:
             return                       # 이미지 전환/파라미터 재변경 → 낡은 결과 폐기
@@ -4220,25 +4219,8 @@ class Controller(QObject):
             if self._mist_provider is not None:
                 self._mist_provider.clear()
         else:
-            fields, mean, full_shape = res
-            imgs = []
-            log_k = coeffs.mist_log_k()
-            for f in fields:
-                # 로그 인코딩(coeffs.MIST_TEX_* 주석) — 셰이더가 되돌린다. 선형/√ 로 담으면
-                # 8bit 로 떨어질 때 어두운 영역에 색 뒤틀림·등고선이 남는다(둘 다 사용자 보고).
-                code = np.log2(1.0 + np.clip(f, 0.0, coeffs.MIST_TEX_MAX)
-                               / coeffs.MIST_TEX_LOG_A) / log_k
-                # ±0.5 LSB 디더 — 양자화 오차를 '등고선'에서 '노이즈'로 바꾼다(프록시와 같은 수단).
-                # ⚠️**원해상도 필드에만** 걸어야 한다. 축소된 필드(mid/wide)에 걸면 그 노이즈가
-                #   업샘플되어 f×f 블롭, 즉 없애려던 저주파 결이 된다(실측: coh 0.075 → 0.098).
-                if code.shape[:2] == full_shape:
-                    code = code + _mist_dither(code.shape)
-                h, w = code.shape[:2]
-                rgba = np.empty((h, w, 4), np.uint16)
-                rgba[..., :3] = (np.clip(code, 0.0, 1.0) * 65535.0 + 0.5).astype(np.uint16)
-                rgba[..., 3] = 65535
-                rgba = np.ascontiguousarray(rgba)
-                imgs.append(QImage(rgba.data, w, h, 8 * w, QImage.Format.Format_RGBA64).copy())
+            # 워커가 QImage 까지 다 만들어 온다(인코딩은 무겁다 — 메인 스레드 금지).
+            imgs, mean = res
             self._mist_provider.set_images(imgs)
             self._mist_mean = mean
             self._mist_field = field_key

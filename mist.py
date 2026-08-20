@@ -48,10 +48,18 @@
 것이 곧 그 뜻이다(자동노출 게인은 이미 `nat` 에 들어 있으므로 기준은 카메라 측광).
 """
 
+import os
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 from scipy.ndimage import gaussian_filter, zoom
 
 import coeffs
+
+# 스트립 병렬 스레드 수. 코어 하나는 UI/다른 워커에 남긴다.
+# ⚠️scipy.ndimage 와 numpy ufunc 은 큰 배열에서 GIL 을 놓으므로 실제로 병렬로 돈다
+#   (실측 4.4MP 좁은 성분: 1스레드 827ms → 8스레드 157ms, **오차 0.000000**).
+_THREADS = min(8, max(1, (os.cpu_count() or 4) - 1))
 
 # 색 복원(tint_scatter)에서 '받는 픽셀 휘도'를 재는 가중치. 셰이더 LUMA 와 동일해야 한다.
 # ⚠️카메라네이티브 공간이라 엄밀한 휘도는 아니다 — 룩 노브의 스칼라라 일관성만 있으면 된다.
@@ -61,6 +69,42 @@ LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
 def _smoothstep(e0, e1, x):
     t = np.clip((x - e0) / (e1 - e0), 0.0, 1.0)
     return t * t * (3.0 - 2.0 * t)
+
+
+def _map_strips(fn, img, pad=0, out=None):
+    """`fn` 을 행 밴드로 나눠 스레드로 실행. `pad` 만큼 겹쳐 계산하고 버린다.
+
+    pad 가 커널 지지폭(가우시안은 scipy 의 `int(4σ+0.5)`) 이상이면 결과가 **분할하지 않은
+    것과 정확히 동일**하다(실측 오차 0). 경계 스트립은 pad 가 이미지에 잘려 원래대로
+    `mode="nearest"` 가 걸린다.
+
+    겹침 비용이 이득을 먹지 않도록 `h > 2·n·pad` 가 되게 스레드 수를 줄인다. 작은 배열
+    (축소된 넓은 성분 등)은 그냥 직접 호출한다 — 스레드 띄우는 값이 안 나온다.
+    """
+    h = int(img.shape[0])
+    n = _THREADS
+    while n > 1 and h <= 2 * n * max(pad, 1):
+        n //= 2
+    if n <= 1 or img.size < 1_000_000:
+        r = fn(img, 0)
+        if out is None:
+            return r
+        out[...] = r
+        return out
+    res = np.empty(img.shape, np.float32) if out is None else out
+    bounds = np.linspace(0, h, n + 1).astype(int)
+
+    def work(i):
+        a, b = int(bounds[i]), int(bounds[i + 1])
+        if b <= a:
+            return
+        a2 = max(0, a - pad)
+        r = fn(img[a2:min(h, b + pad)], a2)
+        res[a:b] = r[a - a2:(a - a2) + (b - a)]
+
+    with ThreadPoolExecutor(n) as ex:
+        list(ex.map(work, range(n)))
+    return res
 
 
 def _blur_small(img, sigma_px):
@@ -75,9 +119,17 @@ def _blur_small(img, sigma_px):
     f = max(1, int(sigma_px / 8.0))
     hh, ww = (h // f) * f, (w // f) * f
     if f == 1 or hh < f or ww < f:             # 너무 작아 축소 불가 → 원해상도
-        return gaussian_filter(img, sigma=(sigma_px, sigma_px, 0), mode="nearest"), 1
+        return _gauss(img, sigma_px), 1
     small = img[:hh, :ww].reshape(hh // f, f, ww // f, f, 3).mean(axis=(1, 3))
-    return gaussian_filter(small, sigma=(sigma_px / f, sigma_px / f, 0), mode="nearest"), f
+    return _gauss(small, sigma_px / f), f
+
+
+def _gauss(img, sigma_px):
+    """스트립 병렬 가우시안. pad 는 scipy 의 커널 지지폭과 같게 잡아 결과가 동일하다."""
+    pad = int(4.0 * sigma_px + 0.5) + 1        # scipy: lw = int(truncate*sd + 0.5)
+    return _map_strips(
+        lambda a, _r: gaussian_filter(a, sigma=(sigma_px, sigma_px, 0), mode="nearest"),
+        img, pad)
 
 
 def _blur(img, sigma_px):
@@ -104,18 +156,70 @@ def sigmas(radius, long_edge_px):
     return [s * float(radius) * float(long_edge_px) for s in coeffs.MIST_SIGMA]
 
 
-def hl_boost(lin, hi):
-    """하이라이트 보상 E (스칼라, 색 불변). hi=0 이면 1.0(순수 물리)."""
-    if hi <= 0.0:
-        return None
-    mx = lin.max(axis=2, keepdims=True)
-    return 1.0 + hi * _smoothstep(coeffs.MIST_HL0, coeffs.MIST_HL1, mx)
-
-
 def scatter_source(nat, hi):
-    """산란 소스 L·E (카메라네이티브 scene-linear). 커널을 걸기 전 단계."""
-    e = hl_boost(nat, float(hi))
-    return nat if e is None else (nat * e).astype(np.float32)
+    """산란 소스 L·E (카메라네이티브 scene-linear). 커널을 걸기 전 단계.
+
+    픽셀 단위 연산이라 겹침 없이(pad=0) 스트립 병렬 — 4.4MP 에서 290ms 짜리 항이었다.
+    """
+    hi = float(hi)
+    if hi <= 0.0:
+        return nat
+    inv = 1.0 / (coeffs.MIST_HL1 - coeffs.MIST_HL0)
+
+    def one(a, _r):
+        # ⚠️in-place 로 임시배열을 줄인다 — 큰 임시가 있으면 malloc 경합으로 **스레딩이 안 먹는다**
+        #   (실측: 임시 있는 판은 8스레드에서도 그대로, 융합판은 4배).
+        m = a.max(axis=2)                              # (h,w) — E 는 스칼라(색 불변)
+        m -= coeffs.MIST_HL0
+        m *= inv
+        np.clip(m, 0.0, 1.0, out=m)
+        s = 3.0 - 2.0 * m
+        m *= m
+        m *= s                                         # smoothstep
+        m *= hi
+        m += 1.0                                       # = E
+        return (a * m[..., None]).astype(np.float32)
+
+    return _map_strips(one, nat)
+
+
+def encode_field(field, dither=False):
+    """[프리뷰] 산란 필드 → 텍스처용 16bit 코드(H,W,3 uint16). 코덱은 coeffs.MIST_TEX_* 주석.
+
+    dither: ±0.5 LSB(**8bit 기준**) 사각 디더. 양자화 오차를 '등고선'에서 '노이즈'로 바꾼다.
+      진폭을 8bit 기준으로 잡는 이유는 텍스처가 16bit 로 올라가도 Qt/드라이버가 8bit 로 내릴
+      수 있기 때문이다(그 경우에도 등고선이 안 생기게). 시드 고정 = 재로드 시 동일 결과.
+      ⚠️**원해상도 필드에만** 켤 것 — 축소된 필드에 걸면 노이즈가 업샘플되어 f×f 블롭이 되어
+      없애려던 저주파 결이 된다(실측 coh 0.075 → 0.098). 판단은 호출자가 한다.
+
+    ⚠️워커 스레드에서 부른다 — 예전엔 메인 스레드(`_on_mist_ready`)에서 해서 4.4MP 에서
+      275ms 동안 UI 가 얼었다.
+    """
+    log_k = 1.0 / coeffs.mist_log_k()
+    inv_a = 1.0 / coeffs.MIST_TEX_LOG_A
+
+    def one(a, row0):
+        # ⚠️**융합 in-place** — 임시배열을 만들면 malloc 경합으로 스레딩이 안 먹는다
+        #   (실측 13M 값: 임시 있는 판 190ms(8스레드에서도), 융합판 8스레드 29ms, 결과 비트 동일).
+        c = np.clip(a, 0.0, coeffs.MIST_TEX_MAX)
+        c *= inv_a
+        c += 1.0
+        np.log2(c, out=c)
+        c *= log_k
+        if dither:
+            # ±0.5 LSB(8bit). **시드를 스트립 시작 행으로** 나눠 병렬로 뽑는다 — 스케줄링
+            # 순서와 무관하게 결정적이다(같은 기계에서 재로드 시 동일. export 는 코덱을 타지
+            # 않으므로 패턴이 export 와 같을 필요는 없다).
+            c += ((np.random.default_rng((20260820, row0)).random(c.shape, dtype=np.float32)
+                   - 0.5) * (1.0 / 255.0))
+        np.clip(c, 0.0, 1.0, out=c)
+        c *= 65535.0
+        c += 0.5
+        return c
+
+    # uint16 캐스팅도 스트립 안에서 한다 — 마지막에 `.astype` 하면 13M 값 변환이 직렬로
+    # 남아 45ms 를 먹는다. `one` 이 이미 +0.5 를 더했으므로 절단 == 반올림.
+    return _map_strips(one, field, out=np.empty(field.shape, np.uint16))
 
 
 def scatter_fields(nat, hi, radius, long_edge_px):
