@@ -48,7 +48,8 @@ def app_base() -> Path:
 
 BASE = app_base()
 SHADERS_DIR = BASE / "shaders"
-SHADER_NAMES = ["adjust.frag", "blur.frag", "convert.frag", "displaycm.frag", "stamp.frag"]
+SHADER_NAMES = ["adjust.frag", "blur.frag", "convert.frag", "displaycm.frag", "mistfield.frag",
+                "stamp.frag"]
 LUTS_DIR = BASE / "luts"
 APP_VERSION = "1.9.0"   # SemVer(MAJOR.MINOR.PATCH). 올릴 때 packaging/version_info.txt(exe 버전 리소스)도 수동으로 맞출 것
 
@@ -705,6 +706,49 @@ class HazeProvider(QQuickImageProvider):
         return self._img
 
 
+def _mist_dither(shape):
+    """미스트 필드 코덱용 ±0.5 LSB(8bit 기준) 사각 디더. 시드 고정 = 재로드 시 동일 결과.
+
+    ⚠️진폭을 **8bit 기준(1/255)** 으로 잡는다. 텍스처 자체는 16bit 로 올리지만, Qt/드라이버가
+    8bit 로 내려도 등고선이 생기지 않게 하는 것이 목적이다(16bit 로 유지되면 그만큼의 노이즈가
+    남지만 실측 0.06 코드 수준으로 센서 노이즈에 묻힌다). raw_loader._dither 와 같은 발상."""
+    import numpy as np
+    return ((np.random.default_rng(20260820).random(shape, dtype=np.float32) - 0.5)
+            * (1.0 / 255.0))
+
+
+class MistProvider(QQuickImageProvider):
+    """미스트 산란 필드 3장(narrow/mid/wide)을 'image://mist/<i>?v=N' 로 제공.
+
+    카메라네이티브 scene-linear ÷ `coeffs.MIST_TEX_MAX` 를 **선형** RGBA64 로 담는다(HDR 이라
+    [0,1] 8bit 로는 못 담고, 감마 인코딩 블러는 물리적으로 틀리다 — coeffs 주석 참조).
+    각 장은 σ 에 맞는 축소 해상도이고 셰이더가 bilinear 업샘플한다. 준비 전에는 1x1 검정이며
+    셰이더 `mistOn` 게이트가 미스트를 끈다(내용 무관)."""
+
+    def __init__(self):
+        super().__init__(QQuickImageProvider.ImageType.Image)
+        self._imgs = [self._blank() for _ in range(3)]
+
+    @staticmethod
+    def _blank() -> QImage:
+        im = QImage(1, 1, QImage.Format.Format_RGBA64)
+        im.fill(0)
+        return im
+
+    def set_images(self, imgs) -> None:
+        self._imgs = list(imgs)
+
+    def clear(self) -> None:
+        self._imgs = [self._blank() for _ in range(3)]
+
+    def requestImage(self, image_id, size, requested_size):  # noqa: N802
+        try:
+            i = int(str(image_id).split("?")[0])
+        except ValueError:
+            i = 0
+        return self._imgs[i] if 0 <= i < len(self._imgs) else self._blank()
+
+
 class ThumbProvider(QQuickImageProvider):
     """RAW 임베드 프리뷰 -> 썸네일을 'image://thumb/<percent-encoded-path>' 로 제공.
 
@@ -1004,6 +1048,7 @@ class Controller(QObject):
     cmChanged = Signal()         # 디스플레이 색관리 LUT 갱신 알림(모니터 전환/로드)
     hazeChanged = Signal()       # 디헤이즈 투과율 맵/대기광/conf 갱신 알림(DCP)
     nrChanged = Signal()         # 휘도 NR 베이스 텍스처/준비 상태 갱신 알림
+    mistChanged = Signal()       # 미스트 산란 필드 텍스처/균일항/준비 상태 갱신 알림
     aiNrChanged = Signal()       # AI 디노이즈(NAFNet) 사용 여부/상태 문구 갱신 알림
     captionChanged = Signal()    # 캡션 텍스트/생성 상태 갱신 알림(Florence-2)
     searchChanged = Signal()     # 탐색기 캡션 검색어 변경 알림(explorerFiles 재평가)
@@ -1029,6 +1074,7 @@ class Controller(QObject):
     _keepAwakeSig = Signal(bool)  # (내부) export 워커 -> 메인 스레드 슬립 방지 해제(스레드 귀속 API)
     _hazeReady = Signal(object)  # (내부) 디헤이즈 추정 워커 -> 메인 스레드 (seq, (t, A, conf))
     _nrReady = Signal(object)    # (내부) NR 베이스 워커 -> 메인 스레드 (seq, 디노이즈드 luma)
+    _mistReady = Signal(object)  # (내부) 미스트 필드 워커 -> 메인 (seq, (radius,hi), 필드3, 평균)
     _aiNrStatusSig = Signal(object)  # (내부) AI NR 워커 -> 메인 스레드 (seq, 상태 문구)
     _aiNrDlSig = Signal(object)      # (내부) AI 모델 다운로드 워커 -> 메인 (downloading, 진행률 0..1)
                                      #  ⚠️seq 없음 — 다운로드는 모델 전역(이미지 무관), finally 로 항상 해제
@@ -1044,7 +1090,8 @@ class Controller(QObject):
                  cm_provider: "DisplayCmProvider" = None,
                  haze_provider: "HazeProvider" = None,
                  nr_provider: "NrBaseProvider" = None,
-                 face_provider: "FaceThumbProvider" = None):
+                 face_provider: "FaceThumbProvider" = None,
+                 mist_provider: "MistProvider" = None):
         super().__init__()
         self._face_provider = face_provider      # 얼굴 선택 타일 썸네일
         self._provider = provider
@@ -1066,6 +1113,15 @@ class Controller(QObject):
         self._haze_t = None         # 투과율 맵(numpy float32, 소형) — CPU export 용
         self._haze_A = [1.0, 1.0, 1.0]   # 대기광(display sRGB)
         self._haze_conf = 0.0       # 추정 신뢰도(0=물리 모델 미사용 → 톤모델 폴백)
+        self._mist_provider = mist_provider      # 미스트 산란 필드 3장(narrow/mid/wide)
+        self._mist_urls = [f"image://mist/{i}?v=0" for i in range(3)]
+        self._mist_counter = 0
+        self._mist_seq = 0          # 비동기 계산 순번(이미지 전환/파라미터 변경 레이스 방지)
+        self._mist_ready = False    # 준비 전 셰이더 미스트 무동작(mistOn 게이트)
+        self._mist_mean = [0.0, 0.0, 0.0]   # 균일항(산란 소스 프레임 평균, 카메라네이티브 선형)
+        # 현재 필드가 어떤 (Radius, Highlight) 로 계산됐는지 — 이 둘만 재계산을 부른다.
+        # Amount/Character 는 셰이더 uniform 이라 실시간(필드 무관).
+        self._mist_field = (1.0, 0.8)
         self._nr_provider = nr_provider          # 디노이즈드 중성 luma 텍스처(휘도 NR 베이스)
         self._nr_url = "image://nrbase/n?v=0"
         self._nr_counter = 0
@@ -1243,6 +1299,7 @@ class Controller(QObject):
         self._keepAwakeSig.connect(self._apply_keep_awake)
         self._hazeReady.connect(self._on_haze_ready)
         self._nrReady.connect(self._on_nr_ready)
+        self._mistReady.connect(self._on_mist_ready)
         self._aiNrStatusSig.connect(self._on_ai_nr_status)
         self._aiNrDlSig.connect(self._on_ai_nr_dl)
         self._aiNrInitSig.connect(self._on_ai_nr_init)
@@ -2024,6 +2081,7 @@ class Controller(QObject):
         "cgShadowHue", "cgShadowSat", "cgMidHue", "cgMidSat",
         "cgHighHue", "cgHighSat", "cgBalance",
         "vignette",
+        "mistAmt", "mistChar", "mistRadius", "mistHi", "mistColor",
         "grainAmt", "grainSize", "grainRough", "grainColor", "grainShape",
         "sharpenAmt", "sharpenRadius", "sharpenDetail", "sharpenMask",
         "curves",
@@ -4125,6 +4183,116 @@ class Controller(QObject):
     hazeA = Property("QVariantList", _get_haze_A, notify=hazeChanged)
     hazeConf = Property(float, _get_haze_conf, notify=hazeChanged)
 
+    # ---------- 미스트 산란 필드: (Radius, Highlight) 당 1회 CPU 계산 → 셰이더 텍스처 3장 ----------
+    def _mist_worker(self, seq: int, radius: float, hi: float) -> None:
+        """백그라운드: 프록시의 카메라네이티브 scene-linear → 산란 필드 3장 + 균일항.
+
+        입력이 WB/매트릭스/노출 **앞**의 공간이라(mist.py 참조) 그 슬라이더들과 무관하다 —
+        Amount/Character 도 셰이더 uniform 이라 무관. 그래서 재계산을 부르는 것은 이 두 인자뿐.
+        """
+        import numpy as np
+        import mist
+        res = None
+        try:
+            import raw_loader
+            u8 = self._qimage_to_rgb(self._proxy_img)
+            if u8.size:
+                # 헤드룸 디코드만(유저 WB·매트릭스 없음). 8bit 입력이라 LUT 조회로 오차 0.
+                nat = (raw_loader._srgb2lin_lut()[u8.astype(np.uint16) * 257]
+                       * PROXY_HEADROOM).astype(np.float32)
+                fields, mean = mist.scatter_fields(nat, hi, radius, max(nat.shape[:2]))
+                # full_shape: 어느 필드가 원해상도인지 판정용(디더 대상 — _on_mist_ready 주석)
+                res = (fields, [float(x) for x in mean], nat.shape[:2])
+        except Exception as exc:
+            print(f"[mist] 산란 필드 계산 실패(미스트 무동작): {exc}")
+        self._mistReady.emit((seq, (float(radius), float(hi)), res))
+
+    @Slot(object)
+    def _on_mist_ready(self, payload) -> None:
+        import numpy as np
+        import coeffs
+        seq, field_key, res = payload
+        if seq != self._mist_seq:
+            return                       # 이미지 전환/파라미터 재변경 → 낡은 결과 폐기
+        if res is None:
+            self._mist_ready = False
+            self._mist_mean = [0.0, 0.0, 0.0]
+            if self._mist_provider is not None:
+                self._mist_provider.clear()
+        else:
+            fields, mean, full_shape = res
+            imgs = []
+            log_k = coeffs.mist_log_k()
+            for f in fields:
+                # 로그 인코딩(coeffs.MIST_TEX_* 주석) — 셰이더가 되돌린다. 선형/√ 로 담으면
+                # 8bit 로 떨어질 때 어두운 영역에 색 뒤틀림·등고선이 남는다(둘 다 사용자 보고).
+                code = np.log2(1.0 + np.clip(f, 0.0, coeffs.MIST_TEX_MAX)
+                               / coeffs.MIST_TEX_LOG_A) / log_k
+                # ±0.5 LSB 디더 — 양자화 오차를 '등고선'에서 '노이즈'로 바꾼다(프록시와 같은 수단).
+                # ⚠️**원해상도 필드에만** 걸어야 한다. 축소된 필드(mid/wide)에 걸면 그 노이즈가
+                #   업샘플되어 f×f 블롭, 즉 없애려던 저주파 결이 된다(실측: coh 0.075 → 0.098).
+                if code.shape[:2] == full_shape:
+                    code = code + _mist_dither(code.shape)
+                h, w = code.shape[:2]
+                rgba = np.empty((h, w, 4), np.uint16)
+                rgba[..., :3] = (np.clip(code, 0.0, 1.0) * 65535.0 + 0.5).astype(np.uint16)
+                rgba[..., 3] = 65535
+                rgba = np.ascontiguousarray(rgba)
+                imgs.append(QImage(rgba.data, w, h, 8 * w, QImage.Format.Format_RGBA64).copy())
+            self._mist_provider.set_images(imgs)
+            self._mist_mean = mean
+            self._mist_field = field_key
+            self._mist_ready = True
+        self._mist_counter += 1
+        self._mist_urls = [f"image://mist/{i}?v={self._mist_counter}" for i in range(3)]
+        self.mistChanged.emit()
+
+    @Slot(float, float)
+    def requestMistField(self, radius: float, hi: float) -> None:  # noqa: N802
+        """Radius/Highlight 가 바뀌었을 때 산란 필드 재계산(QML 이 디바운스해서 부른다).
+
+        ⚠️`_mist_field` 는 '계산됐거나 **계산 중인** 키'다 — 준비 여부(`_mist_ready`)로 판정하면
+        안 된다. 이미지 로드가 기본 키로 워커를 띄운 직후 QML applyEdits 가 같은 키로 복원 요청을
+        보내므로, 준비 전이라는 이유로 통과시키면 프록시 3× 가우시안이 매 로드마다 두 번 돈다."""
+        key = (float(radius), float(hi))
+        if key == self._mist_field:
+            return
+        if self._proxy_img is None:
+            return
+        self._mist_field = key
+        self._mist_seq += 1
+        threading.Thread(target=self._mist_worker,
+                         args=(self._mist_seq, key[0], key[1]), daemon=True).start()
+
+    def _get_mist_url0(self) -> str:
+        return self._mist_urls[0]
+
+    def _get_mist_url1(self) -> str:
+        return self._mist_urls[1]
+
+    def _get_mist_url2(self) -> str:
+        return self._mist_urls[2]
+
+    def _get_mist_on(self) -> float:
+        return 1.0 if self._mist_ready else 0.0
+
+    def _get_mist_mean_r(self) -> float:
+        return self._mist_mean[0]
+
+    def _get_mist_mean_g(self) -> float:
+        return self._mist_mean[1]
+
+    def _get_mist_mean_b(self) -> float:
+        return self._mist_mean[2]
+
+    mistUrl0 = Property(str, _get_mist_url0, notify=mistChanged)
+    mistUrl1 = Property(str, _get_mist_url1, notify=mistChanged)
+    mistUrl2 = Property(str, _get_mist_url2, notify=mistChanged)
+    mistOn = Property(float, _get_mist_on, notify=mistChanged)
+    mistMeanR = Property(float, _get_mist_mean_r, notify=mistChanged)
+    mistMeanG = Property(float, _get_mist_mean_g, notify=mistChanged)
+    mistMeanB = Property(float, _get_mist_mean_b, notify=mistChanged)
+
     # ---------- 휘도 NR 베이스: 이미지당 1회 가이디드 필터 디노이즈(중성 luma) ----------
     def _nr_worker(self, seq: int) -> None:
         """백그라운드: 중성 display luma 에 가이디드 필터(coeffs.NR_*) → 셰이더 nrBase 텍스처.
@@ -5041,6 +5209,19 @@ class Controller(QObject):
         threading.Thread(target=self._nr_worker, args=(self._nr_seq,), daemon=True).start()
         if self._ai_nr:
             threading.Thread(target=self._ai_nr_worker, args=(self._nr_seq,), daemon=True).start()
+        # 미스트 산란 필드: 새 프록시 → 무효화 후 현재 (Radius, Highlight) 로 재계산.
+        # 준비 전에는 mistOn=0 이라 미스트가 무동작(NR 과 동형).
+        self._mist_seq += 1
+        self._mist_ready = False
+        self._mist_mean = [0.0, 0.0, 0.0]
+        if self._mist_provider is not None:
+            self._mist_provider.clear()
+        self._mist_counter += 1
+        self._mist_urls = [f"image://mist/{i}?v={self._mist_counter}" for i in range(3)]
+        self.mistChanged.emit()
+        threading.Thread(target=self._mist_worker,
+                         args=(self._mist_seq, self._mist_field[0], self._mist_field[1]),
+                         daemon=True).start()
         # 비-fresh 재디코딩(렌즈 보정·WB 커밋 등)은 editsReady(복원)를 안 거친다 → 활성 마스크가
         # 있었으면 같은 클래스로 새 프록시에 재생성(렌즈 보정은 기하 변경 → 정렬 위해 재생성 필수).
         # fresh load 는 applyEdits 가 저장본에서 복원하므로 여기선 건드리지 않는다.
@@ -5409,9 +5590,12 @@ def main() -> int:
     face_provider = FaceThumbProvider()
     engine.addImageProvider("facethumb", face_provider)
 
+    mist_provider = MistProvider()
+    engine.addImageProvider("mist", mist_provider)
+
     controller = Controller(provider, curve_provider, stamp_provider, full_provider,
                             sky_provider, cm_provider, haze_provider, nr_provider,
-                            face_provider)
+                            face_provider, mist_provider)
     ctx = engine.rootContext()
     ctx.setContextProperty("controller", controller)
     ctx.setContextProperty("lutN", lut_provider.size)

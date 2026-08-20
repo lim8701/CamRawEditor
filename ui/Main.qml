@@ -150,7 +150,7 @@ ApplicationWindow {
     // 11컬러그레이딩 6디테일&비네팅 7그레인 8샤프닝 12노이즈리덕션 9렌즈 10날짜). 헤더 클릭으로 토글.
     // 기본 접힘: 5 Color Mixer, 8 Sharpening, 12 Noise Reduction, 9 Lens, 11 Color Grading.
     // 13 = Recipes(레시피 프리셋). 배지 그리드가 세로 공간을 먹으므로 기본 접힘.
-    property var secOpen: [true, true, true, true, true, false, true, true, false, false, true, false, false, false]
+    property var secOpen: [true, true, true, true, true, false, true, true, false, false, true, false, false, false, false]
     function toggleSec(i) { var a = secOpen.slice(); a[i] = !a[i]; secOpen = a }
 
     // 마스크 선택영역 오버레이 표시(프리뷰 전용, 활성 레이어 마스크)
@@ -787,6 +787,9 @@ ApplicationWindow {
             "cgMidHue": cgMidHueSlider.value, "cgMidSat": cgMidSatSlider.value,
             "cgHighHue": cgHiHueSlider.value, "cgHighSat": cgHiSatSlider.value,
             "cgBalance": cgBalanceSlider.value,
+            "mistAmt": mistAmtSlider.value, "mistChar": mistCharSlider.value,
+            "mistRadius": mistRadiusSlider.value, "mistHi": mistHiSlider.value,
+            "mistColor": mistColorSlider.value,
             "vignette": vignetteSlider.value, "grainAmt": grainSlider.value, "grainSize": grainSizeSlider.value,
             "grainRough": grainRoughSlider.value, "grainColor": grainColorSlider.value,
             "grainShape": grainShapeCheck.checked,
@@ -840,6 +843,13 @@ ApplicationWindow {
         hslSatSlider.value = win.hslS[win.hslBand]
         hslLumSlider.value = win.hslL[win.hslBand]
         vignetteSlider.value = _ev(p, "vignette", 0.0)
+        // 미스트 — 폴백은 공장 기본값(이 키가 없던 사이드카는 미스트 없음으로 열려야 한다).
+        mistAmtSlider.value = _ev(p, "mistAmt", 0.0); mistCharSlider.value = _ev(p, "mistChar", 0.0)
+        mistRadiusSlider.value = _ev(p, "mistRadius", 1.0); mistHiSlider.value = _ev(p, "mistHi", 0.8)
+        // ⚠️폴백만 **0.0**(공장값 0.5 아님) — 이 키가 없던 시절 사이드카는 미스트가 켜져 있어도
+        //   Color 0 으로 저장된 룩이다. 그 사진을 열었을 때 룩이 바뀌지 않게 한다.
+        mistColorSlider.value = _ev(p, "mistColor", 0.0)
+        controller.requestMistField(mistRadiusSlider.value, mistHiSlider.value)   // 복원은 즉시 1회
         grainSlider.value = _ev(p, "grainAmt", 0.0); grainSizeSlider.value = _ev(p, "grainSize", 0.5)
         grainRoughSlider.value = _ev(p, "grainRough", 0.1)
         grainColorSlider.value = _ev(p, "grainColor", 0.3)
@@ -936,6 +946,9 @@ ApplicationWindow {
         sharpDetailSlider.value = 0.25; sharpMaskSlider.value = 0.0
         lumaNrSlider.value = 0.0; colorNrSlider.value = 0.0
         aiNrCheck.checked = false; controller.setAiNr(false)
+        mistAmtSlider.value = 0.0; mistCharSlider.value = 0.0
+        mistRadiusSlider.value = 1.0; mistHiSlider.value = 0.8; mistColorSlider.value = 0.5
+        controller.requestMistField(1.0, 0.8)
         vignetteSlider.value = 0.0; grainSlider.value = 0.0; grainSizeSlider.value = 0.5
         grainRoughSlider.value = 0.1; grainColorSlider.value = 0.3
         grainShapeCheck.checked = false
@@ -1621,6 +1634,8 @@ ApplicationWindow {
         || cgShHueSlider.pressed || cgShSatSlider.pressed || cgMidHueSlider.pressed
         || cgMidSatSlider.pressed || cgHiHueSlider.pressed || cgHiSatSlider.pressed
         || cgBalanceSlider.pressed || vignetteSlider.pressed || grainSlider.pressed
+        || mistAmtSlider.pressed || mistCharSlider.pressed
+        || mistRadiusSlider.pressed || mistHiSlider.pressed || mistColorSlider.pressed
         || grainSizeSlider.pressed || grainRoughSlider.pressed || grainColorSlider.pressed
         || sharpAmtSlider.pressed || sharpRadiusSlider.pressed
         || sharpDetailSlider.pressed || sharpMaskSlider.pressed || lumaNrSlider.pressed
@@ -1662,6 +1677,8 @@ ApplicationWindow {
         win.hslH, win.hslS, win.hslL,
         cgShHueSlider.value, cgShSatSlider.value, cgMidHueSlider.value, cgMidSatSlider.value,
         cgHiHueSlider.value, cgHiSatSlider.value, cgBalanceSlider.value,
+        mistAmtSlider.value, mistCharSlider.value, mistRadiusSlider.value, mistHiSlider.value,
+        mistColorSlider.value,
         vignetteSlider.value, grainSlider.value, grainSizeSlider.value,
         grainRoughSlider.value, grainColorSlider.value, grainShapeCheck.checked,
         sharpAmtSlider.value, sharpRadiusSlider.value, sharpDetailSlider.value, sharpMaskSlider.value,
@@ -1703,6 +1720,9 @@ ApplicationWindow {
             "sharpenAmt": sharpAmtSlider.value, "sharpenRadius": sharpRadiusSlider.value,
             "sharpenDetail": sharpDetailSlider.value, "sharpenMask": sharpMaskSlider.value,
             "lumaNR": lumaNrSlider.value, "colorNR": colorNrSlider.value, "aiNr": aiNrCheck.checked,
+            "mistAmt": mistAmtSlider.value, "mistChar": mistCharSlider.value,
+            "mistRadius": mistRadiusSlider.value, "mistHi": mistHiSlider.value,
+            "mistColor": mistColorSlider.value,
             "vignette": vignetteSlider.value, "grainAmt": grainSlider.value, "grainSize": grainSizeSlider.value,
             "grainRough": grainRoughSlider.value, "grainColor": grainColorSlider.value,
             "grainShape": grainShapeCheck.checked,
@@ -1883,6 +1903,11 @@ ApplicationWindow {
         m[1] *= (1.0 - 0.3 * t)
         return m
     }
+    // coeffs 의 리스트 계수 → vec4 uniform. 길이가 모자라면 항등 커널(narrow 만)로 안전 폴백.
+    function vec4Of(a) {
+        return (a && a.length >= 4) ? Qt.vector4d(a[0], a[1], a[2], a[3]) : Qt.vector4d(1, 0, 0, 0)
+    }
+
     function wbPreview(targetK, targetT) {   // baked->target 상대 게인
         var m = controller.camMatrix
         if (!m || m.length < 9) return Qt.vector3d(1, 1, 1)
@@ -4502,13 +4527,6 @@ ApplicationWindow {
             }
 
             // 날짜 스탬프 오버레이 텍스처(프록시 RGBA). 셰이더가 가산 합성.
-            Image {
-                id: stampImage
-                visible: false
-                cache: false
-                smooth: true
-                source: controller.stampUrl
-            }
 
             // 로컬 마스크 텍스처(레이어별, 프록시 크기 단일채널). 셰이더가 레이어별 로컬조정에 게이팅.
             Image { id: skyMaskImage0; visible: false; cache: false; smooth: true; source: controller.layerMaskUrls[0] }
@@ -4536,6 +4554,14 @@ ApplicationWindow {
                 smooth: true
                 source: controller.nrBaseUrl
             }
+
+            // 미스트 산란 필드 3장(narrow/mid/wide). 카메라네이티브 scene-linear 를 **로그 코덱**
+            // 으로 담은 16bit(coeffs.MIST_TEX_* 주석 — 8bit 로 떨어져도 등고선이 안 생기게).
+            // 각기 σ 에 맞는 축소 해상도라 **smooth:true(bilinear 업샘플) 전제**다.
+            // 준비 전(1x1)엔 셰이더 mistOn 게이트가 미스트를 끔. (Radius, Highlight) 당 1회 갱신.
+            Image { id: mistImage0; visible: false; cache: false; smooth: true; source: controller.mistUrl0 }
+            Image { id: mistImage1; visible: false; cache: false; smooth: true; source: controller.mistUrl1 }
+            Image { id: mistImage2; visible: false; cache: false; smooth: true; source: controller.mistUrl2 }
 
             // ── GPU export: 풀해상도를 프리뷰와 **동일한 adjust.frag** 로 렌더(프리뷰=Export) ──
             //   온디맨드(렌더=GPU 일 때만 active). src 만 풀해상도, 블러 텍스처는 프록시 것 재사용
@@ -4606,7 +4632,6 @@ ApplicationWindow {
                         property variant texBlur: texBlurTex
                         property variant claBlur: claBlurTex
                         property variant sharpBlur: sharpBlurTex
-                        property variant stampTex: stampImage
                         property real camM0: win.camM[0]; property real camM1: win.camM[1]; property real camM2: win.camM[2]
                         property real camM3: win.camM[3]; property real camM4: win.camM[4]; property real camM5: win.camM[5]
                         property real camM6: win.camM[6]; property real camM7: win.camM[7]; property real camM8: win.camM[8]
@@ -4718,6 +4743,17 @@ ApplicationWindow {
                         property variant nrBase: nrBaseImage
                         property real nrOn: controller.nrReady ? 1.0 : 0.0
                         property real nrChroma: controller.nrChroma ? 1.0 : 0.0
+                        // 미스트(1단계) — 커널 합성은 mistFieldPass 가 이미 했다(샘플러 슬롯 절약).
+                        // ⚠️binding 6 은 원래 stampTex 였다. adjust.frag 는 D3D11 상한인 16개를
+                        //   정확히 쓰고 있으니 새 sampler 를 추가하지 말 것(셰이더 주석 참조).
+                        property variant mistScat: mistFieldTex
+                        property real mistAmt: mistAmtSlider.value
+                        property real mistOn: controller.mistOn
+                        property real mistK: controller.adjustCoeffs["mistK"]
+                        property real mistLogA: controller.adjustCoeffs["mistLogA"]
+                        property real mistLogK: controller.adjustCoeffs["mistLogK"]
+                        property real mistColor: mistColorSlider.value
+                        property real mistColorFloor: controller.adjustCoeffs["mistColorFloor"]
                         fragmentShader: "../shaders/adjust.frag.qsb"
                     }
                 }}
@@ -4859,6 +4895,35 @@ ApplicationWindow {
                         fragmentShader: "../shaders/displaycm.frag.qsb"
                     }
 
+                    // --- 미스트 산란 필드 합성 (mistfield.frag) ---
+                    // CPU 가 만든 3개 스케일 필드를 Character 무게로 섞어 한 장으로 굽는다.
+                    // ⚠️출력이 **1 을 넘는 선형 scene-linear** 라 format: RGBA16F 필수.
+                    //   RGBA8 로 두면 하이라이트 산란이 1.0 에서 잘려 후광이 죽는다.
+                    // Character 를 움직이면 이 패스만 다시 돈다(프록시 1패스 = 사실상 공짜).
+                    ShaderEffect {
+                        id: mistFieldPass
+                        visible: false
+                        width: viewport.procW; height: viewport.procH
+                        property variant mistS0: mistImage0
+                        property variant mistS1: mistImage1
+                        property variant mistS2: mistImage2
+                        property real mistChar: mistCharSlider.value
+                        property real mistLogA: controller.adjustCoeffs["mistLogA"]
+                        property real mistLogK: controller.adjustCoeffs["mistLogK"]
+                        property real mistMeanR: controller.mistMeanR
+                        property real mistMeanG: controller.mistMeanG
+                        property real mistMeanB: controller.mistMeanB
+                        property vector4d mistWBlack: win.vec4Of(controller.adjustCoeffs["mistWBlack"])
+                        property vector4d mistWWhite: win.vec4Of(controller.adjustCoeffs["mistWWhite"])
+                        fragmentShader: "../shaders/mistfield.frag.qsb"
+                    }
+                    ShaderEffectSource {
+                        id: mistFieldTex; sourceItem: mistFieldPass; visible: false
+                        textureSize: Qt.size(viewport.procW, viewport.procH)
+                        format: ShaderEffectSource.RGBA16F
+                        hideSource: true; live: true
+                    }
+
                     // --- 로컬대비용 가우시안 블러 (dispSrc 에만 의존 -> 로드 시 1회 계산) ---
                     // 텍스처: 작은 반경, 풀 프록시 해상도
                     ShaderEffect {
@@ -4951,7 +5016,6 @@ ApplicationWindow {
                         property variant texBlur: texBlurTex
                         property variant claBlur: claBlurTex
                         property variant sharpBlur: sharpBlurTex
-                        property variant stampTex: stampImage
                         property real camM0: win.camM[0]; property real camM1: win.camM[1]; property real camM2: win.camM[2]
                         property real camM3: win.camM[3]; property real camM4: win.camM[4]; property real camM5: win.camM[5]
                         property real camM6: win.camM[6]; property real camM7: win.camM[7]; property real camM8: win.camM[8]
@@ -5070,6 +5134,17 @@ ApplicationWindow {
                         property variant nrBase: nrBaseImage
                         property real nrOn: controller.nrReady ? 1.0 : 0.0
                         property real nrChroma: controller.nrChroma ? 1.0 : 0.0
+                        // 미스트(1단계) — 커널 합성은 mistFieldPass 가 이미 했다(샘플러 슬롯 절약).
+                        // ⚠️binding 6 은 원래 stampTex 였다. adjust.frag 는 D3D11 상한인 16개를
+                        //   정확히 쓰고 있으니 새 sampler 를 추가하지 말 것(셰이더 주석 참조).
+                        property variant mistScat: mistFieldTex
+                        property real mistAmt: mistAmtSlider.value
+                        property real mistOn: controller.mistOn
+                        property real mistK: controller.adjustCoeffs["mistK"]
+                        property real mistLogA: controller.adjustCoeffs["mistLogA"]
+                        property real mistLogK: controller.adjustCoeffs["mistLogK"]
+                        property real mistColor: mistColorSlider.value
+                        property real mistColorFloor: controller.adjustCoeffs["mistColorFloor"]
 
                         fragmentShader: "../shaders/adjust.frag.qsb"
                     }
@@ -7372,6 +7447,129 @@ ApplicationWindow {
                     }
                 }
 
+                }
+
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        Layout.fillWidth: true
+                        text: (win.secOpen[14] ? "▾  " : "▸  ") + "Mist"
+                        color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                        font.capitalization: Font.AllUppercase
+                    }
+                    TapHandler { onTapped: win.toggleSec(14) }
+                }
+                ColumnLayout {
+                    visible: win.secOpen[14]
+                    Layout.fillWidth: true
+                    spacing: 12
+
+                    // 미스트(디퓨전) 필터 — 렌즈 앞 미세 입자의 산란. docs/mist_filter.md
+                    // Amount/Character 는 셰이더 uniform 이라 실시간. Radius/Highlight 는 산란
+                    // 필드(CPU, 프록시 3× 가우시안)를 다시 만들어야 하므로 드래그를 디바운스한다.
+                    Timer {
+                        id: mistFieldTimer; interval: 160
+                        onTriggered: controller.requestMistField(mistRadiusSlider.value, mistHiSlider.value)
+                    }
+
+                    Label {
+                        text: "Mist Amount:  " + mistAmtSlider.value.toFixed(2)
+                              + "  (0.4 ≈ 1/4, 0.6 ≈ 1/2)"
+                        color: "white"
+                    }
+                    Slider {
+                        id: mistAmtSlider
+                        Layout.fillWidth: true
+                        from: 0.0; to: 1.0; value: 0.0
+                        property real defaultValue: 0.0
+                        property real _lastPressMs: 0
+                        property bool _pendingReset: false
+                        onPressedChanged: {
+                            if (pressed) _pendingReset = win.isDblPress(mistAmtSlider)
+                            else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                        }
+                    }
+
+                    Label {
+                        text: "Mist Character:  " + mistCharSlider.value.toFixed(2) + "  (black ↔ white)"
+                        color: "white"
+                    }
+                    Slider {
+                        id: mistCharSlider
+                        Layout.fillWidth: true
+                        from: 0.0; to: 1.0; value: 0.0
+                        property real defaultValue: 0.0
+                        property real _lastPressMs: 0
+                        property bool _pendingReset: false
+                        onPressedChanged: {
+                            if (pressed) _pendingReset = win.isDblPress(mistCharSlider)
+                            else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                        }
+                    }
+
+                    Label {
+                        text: "Mist Radius:  " + mistRadiusSlider.value.toFixed(2)
+                        color: "white"
+                    }
+                    Slider {
+                        id: mistRadiusSlider
+                        Layout.fillWidth: true
+                        from: 0.5; to: 2.0; value: 1.0
+                        property real defaultValue: 1.0
+                        property real _lastPressMs: 0
+                        property bool _pendingReset: false
+                        onMoved: mistFieldTimer.restart()
+                        onPressedChanged: {
+                            if (pressed) _pendingReset = win.isDblPress(mistRadiusSlider)
+                            else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                            if (!pressed) mistFieldTimer.restart()
+                        }
+                    }
+
+                    // 하이라이트 보상 — 센서에서 클리핑돼 사라진 초과 에너지를 근사 복원한다.
+                    // 0 = 순수 물리(에너지 보존). 이게 없으면 후광이 아니라 회색 막이 된다.
+                    Label {
+                        text: "Mist Highlight:  " + mistHiSlider.value.toFixed(2)
+                              + (mistHiSlider.value === 0.0 ? "  (pure physics)" : "")
+                        color: "white"
+                    }
+                    Slider {
+                        id: mistHiSlider
+                        Layout.fillWidth: true
+                        from: 0.0; to: 2.0; value: 0.8
+                        property real defaultValue: 0.8
+                        property real _lastPressMs: 0
+                        property bool _pendingReset: false
+                        onMoved: mistFieldTimer.restart()
+                        onPressedChanged: {
+                            if (pressed) _pendingReset = win.isDblPress(mistHiSlider)
+                            else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                            if (!pressed) mistFieldTimer.restart()
+                        }
+                    }
+
+                    // 산란광의 휘도는 둔 채 **색만** 받는 화면 쪽으로 되돌린다. 0=물리(산란광 그대로).
+                    // 차가운 광원(LED)이 따뜻한 면에 섞여 창백해지는 것을 되돌릴 때 쓴다.
+                    // ⚠️물리가 아니라 룩 노브다 — 근거와 실측은 mist.tint_scatter 도크스트링.
+                    Label {
+                        text: "Mist Color:  " + mistColorSlider.value.toFixed(2)
+                              + (mistColorSlider.value === 0.0 ? "  (physical)" : "  (restore hue)")
+                        color: "white"
+                    }
+                    Slider {
+                        id: mistColorSlider
+                        Layout.fillWidth: true
+                        from: 0.0; to: 1.0; value: 0.5
+                        property real defaultValue: 0.5
+                        property real _lastPressMs: 0
+                        property bool _pendingReset: false
+                        onPressedChanged: {
+                            if (pressed) _pendingReset = win.isDblPress(mistColorSlider)
+                            else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                        }
+                    }
                 }
 
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }

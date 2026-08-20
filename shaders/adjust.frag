@@ -101,6 +101,17 @@ layout(std140, binding = 0) uniform buf {
     float nrChroma;      // 1=nrBase 가 AI RGB 베이스(크로마 유효) → 컬러 NR 이 AI 크로마 사용
     float zoneShow;      // [프리뷰 전용] 1=존 시스템 오버레이(휘도를 존 0..X 로 양자화 표시). export=0.
     float hlDesat;       // 하이라이트 디새추 강도: 1=RAW(센서클립 색끼 제거), 0=일반 이미지 입력
+    // 미스트(디퓨전) 필터 — 1단계. 모델/계수는 mist.py + coeffs.MIST_* (docs/mist_filter.md).
+    // 커널 합성은 여기서 하지 않는다 — `mistfield.frag` 패스가 산란 필드 3장을 Character 무게로
+    // 섞어 `mistScat`(프록시 해상도 RGBA16F)에 굽고, 여기서는 그것 하나만 섞는다.
+    // ⚠️샘플러 슬롯을 아끼기 위한 구조다(아래 D3D11 16슬롯 주석 참조).
+    float mistAmt;       // 강도 0..1 (0=미적용). k = mistAmt × mistK
+    float mistK;         // Amount=1 에서의 산란 비율(coeffs.MIST_K)
+    float mistOn;        // 1=산란 필드 준비됨. 0이면 무동작(로드 직후/재계산 중)
+    float mistLogA;      // 산란 합성본 저장 코덱: v = (2^(code·logK) − 1)·A
+    float mistLogK;      // = log2(1 + MIST_TEX_MAX / A). coeffs.MIST_TEX_* 주석 참조
+    float mistColor;     // 산란광 색 복원 0..1 (0=물리). mist.tint_scatter 와 동일 수식
+    float mistColorFloor;// 색 복원이 죽는 휘도 바닥(coeffs.MIST_COLOR_FLOOR)
 } ubuf;
 
 layout(binding = 1) uniform sampler2D src;       // 원본(카메라네이티브 감마 인코딩)
@@ -108,7 +119,13 @@ layout(binding = 2) uniform sampler2D lut;       // 3D LUT 아틀라스 (N*N x N
 layout(binding = 3) uniform sampler2D curve;     // 톤 커브 1D LUT (256x1)
 layout(binding = 4) uniform sampler2D texBlur;   // dispSrc 가우시안 블러(작은 반경)
 layout(binding = 5) uniform sampler2D claBlur;   // dispSrc 가우시안 블러(큰 반경)
-layout(binding = 6) uniform sampler2D stampTex;  // 날짜 스탬프 오버레이(프록시 RGBA)
+// ⚠️**D3D11 은 스테이지당 샘플러가 16개뿐이다**(HLSL SM5.0 s0..s15). 아래 목록이 정확히 16개라
+// 한 개라도 더 늘리면 런타임에 "maximum sampler register index exceeded" 로 파이프라인 생성이
+// 실패한다(qsb 컴파일은 통과하므로 앱을 띄워야 드러난다 — 실제로 그렇게 한 번 터졌다).
+// 늘려야 하면 단일채널인 skyMask0..4 를 RGBA 채널에 패킹해 3슬롯을 회수하는 것이 먼저다.
+// (binding 6 은 원래 stampTex 였다 — 날짜 스탬프는 QML stampOverlay 가 그리므로 셰이더 경로가
+//  죽은 코드였고, 그 슬롯을 미스트가 물려받았다.)
+layout(binding = 6) uniform sampler2D mistScat;  // 미스트 산란 필드 합성본(mistfield.frag, 선형 float)
 layout(binding = 7) uniform sampler2D dispSrc;   // src 의 display sRGB 변환본(블러/로컬대비 base)
 layout(binding = 8) uniform sampler2D sharpBlur; // dispSrc 가우시안 블러(샤프닝 반경, 가변)
 layout(binding = 9) uniform sampler2D skyMask0;  // 로컬 마스크 레이어0(단일채널 R, 프록시 해상도). 없으면 1x1 검정
@@ -119,6 +136,7 @@ layout(binding = 13) uniform sampler2D skyMask1; // 로컬 마스크 레이어1(
 layout(binding = 14) uniform sampler2D skyMask2; // 로컬 마스크 레이어2(단일채널 R). 없으면 1x1 검정
 layout(binding = 15) uniform sampler2D skyMask3; // 로컬 마스크 레이어3(단일채널 R). 없으면 1x1 검정
 layout(binding = 16) uniform sampler2D skyMask4; // 로컬 마스크 레이어4(단일채널 R). 없으면 1x1 검정
+
 
 const vec3 LUMA = vec3(0.299, 0.587, 0.114);
 
@@ -430,6 +448,28 @@ void main() {
     //    src 는 헤드룸 인코딩(code=oetf(L/H)) 카메라네이티브 → ×H 로 scene-linear 복원.
     //    마스크 노출(skyExp)도 여기서 합산 — 전역 노출과 동일한 진짜 stop(filmic 롤오프 적용).
     vec3 cam = srgbToLinear(texture(src, uv).rgb) * PROXY_HEADROOM;
+
+    // 1) 미스트(디퓨전) 필터 — **WB/매트릭스/노출보다 앞**(카메라네이티브 scene-linear).
+    //    그 셋은 픽셀마다 같은 선형 연산이라 블러와 정확히 교환되므로 결과는 같으면서 산란
+    //    필드가 세 슬라이더와 무관해진다 → 이미지당 1회 계산으로 충분하고 균일항(프레임 평균)이
+    //    근사가 아니라 정확해진다. ⚠️pipeline.py 1단계(mist.apply)와 동일 수식이어야 한다.
+    if (ubuf.mistAmt > 0.0 && ubuf.mistOn > 0.5) {
+        vec3 sc = clamp(texture(mistScat, uv).rgb, 0.0, 1.0);
+        // 코덱 해제(로그 인코딩) → 선형광. mistfield.frag 의 엔코드와 짝이어야 한다.
+        sc = (exp2(sc * ubuf.mistLogK) - 1.0) * ubuf.mistLogA;
+        // 색 복원(룩 노브, 0=물리) — 산란광의 **휘도는 두고 색만** 받는 픽셀 쪽으로.
+        // ⚠️필드 패스가 아니라 여기서 해야 한다: 블러된 필드가 아니라 **원래 픽셀**이 필요하다.
+        //   그 덕에 uniform 이라 실시간이다. mist.tint_scatter 와 동일 수식.
+        if (ubuf.mistColor > 0.0) {
+            float nl = dot(cam, LUMA);
+            float g = clamp(ubuf.mistColor, 0.0, 1.0)
+                    * smoothstep(0.0, ubuf.mistColorFloor, nl);   // 준-흑색은 색비가 노이즈뿐
+            sc = mix(sc, cam * (dot(sc, LUMA) / max(nl, 1e-6)), g);
+        }
+        float mk = ubuf.mistAmt * ubuf.mistK;
+        cam = (1.0 - mk) * cam + mk * sc;
+    }
+
     cam *= vec3(ubuf.wbR, ubuf.wbG, ubuf.wbB);
     vec3 lin = applyCamMat(cam) * pow(2.0, ubuf.exposure
                  + ubuf.skyA0.x * skyM0 + ubuf.skyA1.x * skyM1 + ubuf.skyA2.x * skyM2
@@ -597,17 +637,10 @@ void main() {
         rgb *= 1.0 + ubuf.vignette * ubuf.vignetteK * smoothstep(0.35, 1.0, r);
     }
 
-    // 11) 날짜 스탬프 (필름 데이트백) — 하이브리드 합성:
-    //     코어(또렷한 숫자)=source-over로 배경무관 일관, 헤일로=screen 가산으로 빛 번짐.
-    //     비네팅 뒤(LED는 렌즈를 거치지 않아 비네팅 영향 없음).
-    if (ubuf.stampOn > 0.5) {
-        vec4 st = texture(stampTex, uv);
-        float a = clamp(st.a * ubuf.stampStrength, 0.0, 1.0);
-        float coreA = smoothstep(0.45, 0.85, a) * 0.70;   // 코어 불투명도 상한(배경 비침)
-        rgb = mix(rgb, st.rgb, coreA);                    // 코어 source-over (일관)
-        vec3 glow = st.rgb * clamp(a * (1.0 - coreA * 0.5) * 1.2, 0.0, 1.0);  // 빛 가산(게인1.2)
-        rgb = 1.0 - (1.0 - rgb) * (1.0 - glow);           // screen 가산 (코어도 일부 태움)
-    }
+    // 11) 날짜 스탬프는 여기서 그리지 않는다 — QML `stampOverlay` 가 최종 프레임(크롭/회전 적용
+    //     후) 기준으로 그린다. 셰이더 경로는 원본 코너 기준이라 프리뷰=export 정합이 성립하지
+    //     않아 폐기됐고(pipe/pipeFull 둘 다 stampOn=0 고정), 그 sampler 슬롯은 미스트가 쓴다.
+    //     ⚠️되살리려 하지 말 것 — 슬롯이 없고, 정합 불가는 이미 결론이 난 사안이다.
 
     // 12) 필름 그레인 (에멀전 입자) — 맨 끝: 장면과 날짜 스탬프 모두에 입혀짐.
     if (ubuf.grainAmt > 0.0) {

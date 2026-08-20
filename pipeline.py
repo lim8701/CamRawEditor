@@ -24,6 +24,7 @@ import coeffs
 import date_stamp
 import image_loader
 import lens
+import mist
 import raw_loader
 import wb
 from wb import baked_wb, cam_to_srgb_matrix
@@ -496,6 +497,16 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     #   hi/sh 톤영역 마스크는 이 '장면 구조' 휘도로 계산해야 프리뷰=Export(노출 무관 마스크).
     neutral_disp = wb.filmic((nat * wb.rel_gain(cam, ref, as_shot, as_shot_tint).astype(np.float32))
                              @ M.T).astype(np.float32)
+    # 1) 미스트(디퓨전) 필터 — 셰이더 1단계 == mist.apply. **유저 WB/매트릭스/노출보다 앞**:
+    #    그 셋은 픽셀마다 같은 선형 연산이라 블러와 정확히 교환되므로 결과는 같으면서 산란 필드가
+    #    세 슬라이더와 무관해진다(프리뷰가 이미지당 1회 계산해 캐시할 수 있는 이유).
+    #    ⚠️중성 베이스(neutral_disp)는 위에서 이미 만들었다 — 미스트가 로컬대비/톤마스크의
+    #    '장면 구조' 기준을 흔들면 안 된다. σ 는 프레임 긴 변 비율이라 프록시/풀해상도 룩이 일치.
+    _mist_amt = float(p.get("mistAmt", 0.0))
+    if _mist_amt > 0.0:
+        nat = mist.apply(nat, _mist_amt, float(p.get("mistChar", 0.0)),
+                         float(p.get("mistRadius", 1.0)), float(p.get("mistHi", 0.8)),
+                         max(nat.shape[:2]), color=float(p.get("mistColor", 0.0)))
     nat = nat * wb.rel_gain(cam, ref, kelvin, tint).astype(np.float32)   # 유저 WB(카메라공간)
     # 노출 = scene-linear 배수. 마스크 노출(skyExp)은 전역과 같은 지수에 합산(셰이더 0단계 동일)
     # → 마스크 영역도 진짜 stop + filmic 하이라이트 롤오프로 반응.

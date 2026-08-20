@@ -44,7 +44,7 @@ datas += ort_datas
 
 hiddenimports = [
     "scipy.ndimage",     # lazy `from scipy.ndimage import ...`
-    "sky_seg", "face_seg", "depth", "coeffs", "display_cm", "haze", "ai_denoise", "caption", "hashtags",  # main/pipeline 에서 지연 import 되는 로컬 모듈(명시로 보장)
+    "sky_seg", "face_seg", "depth", "coeffs", "display_cm", "haze", "mist", "ai_denoise", "caption", "hashtags",  # main/pipeline 에서 지연 import 되는 로컬 모듈(명시로 보장)
     "image_loader",      # main._load_heavy_modules 의 지연 import(일반 이미지 JPG/PNG/TIFF 어댑터)
     "app_dirs",          # 모델 저장 위치(OS 사용자 데이터 디렉터리) — 위 모듈들이 사용
     "cv2",               # face_seg/depth 가 함수 안에서 지연 import(얼굴 검출 FaceDetectorYN + 리샘플/가이디드필터)
