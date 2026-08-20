@@ -132,14 +132,33 @@ def _gauss(img, sigma_px):
         img, pad)
 
 
+def _upsample(small, h, w):
+    """축소본 → (h,w) 쌍선형 업샘플.
+
+    ⚠️`scipy.ndimage.zoom` 은 이 크기에서 **압도적으로 느리다** — 26MP 로 되돌릴 때 201x134
+      필드 하나가 4.6s 인데 `cv2.resize` 는 0.04s(실측 107배). 미스트 export 전체가 14.4s 였고
+      그중 9.9s 가 이 업샘플이었다.
+    ⚠️정렬 규약이 다르다(cv2=half-pixel center, zoom=끝점). 그래서 결과가 미세하게 다르지만
+      (실측 max 0.016 / 필드 진폭 1.95 = 0.8%, 후광 기여로는 display 1코드 미만) **cv2 쪽이
+      GPU bilinear 와 같은 규약**이라 프리뷰=export 정합에는 오히려 유리하다.
+    cv2 는 requirements.txt 의 필수 의존성이지만, export 는 핵심 경로라 없으면 zoom 으로 떨어진다.
+    """
+    try:
+        import cv2
+        return cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
+    except Exception:
+        up = zoom(small, (h / small.shape[0], w / small.shape[1], 1.0),
+                  order=1, mode="nearest")
+        return up[:h, :w]
+
+
 def _blur(img, sigma_px):
     """`_blur_small` 을 원해상도로 되돌린 것(export 경로 — numpy 안에서 합성한다)."""
     small, f = _blur_small(img, sigma_px)
     if f == 1:
         return small
     h, w = img.shape[:2]
-    up = zoom(small, (h / small.shape[0], w / small.shape[1], 1.0), order=1, mode="nearest")
-    return up[:h, :w]
+    return _upsample(small, h, w)
 
 
 def weights(char):
@@ -277,8 +296,15 @@ def apply(lin, amt, char, radius, hi, long_edge_px, color=0.0):
     scat = np.zeros_like(lin)
     for wi, sg in zip(w[:3], sigmas(radius, long_edge_px)):
         if wi > 0.0:
-            scat += (wi * _blur(src, sg)).astype(np.float32)
+            # ⚠️`float(wi)` 필수. `weights()` 는 float64 라 원소가 np.float64 스칼라인데,
+            #   NumPy 2(NEP-50)에서 그것과 float32 배열을 곱하면 **float64 전체 임시배열**이
+            #   생긴다 — 26MP 에서 624MB(주변 코드가 del 로 피크를 깎는 함수 안에서!) + 곱셈
+            #   3배 느림. 파이썬 float 은 weak-promoting 이라 float32 로 남는다.
+            b = _blur(src, sg)
+            b *= float(wi)
+            scat += b
+            del b
     if w[3] > 0.0:                                  # 균일항(σ→∞) = 프레임 평균 = 베일링 글레어
-        scat += (w[3] * src.reshape(-1, 3).mean(axis=0)).astype(np.float32)
+        scat += (src.reshape(-1, 3).mean(axis=0) * float(w[3])).astype(np.float32)
     scat = tint_scatter(lin, scat, color)
     return ((1.0 - k) * lin + k * scat).astype(np.float32)

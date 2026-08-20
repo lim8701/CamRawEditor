@@ -1107,10 +1107,12 @@ class Controller(QObject):
         self._mist_counter = 0
         self._mist_seq = 0          # 비동기 계산 순번(이미지 전환/파라미터 변경 레이스 방지)
         self._mist_ready = False    # 준비 전 셰이더 미스트 무동작(mistOn 게이트)
+        self._mist_amt = 0.0        # 현재 Amount(QML 이 밀어준다). **0 이면 필드를 만들지 않는다**
         self._mist_mean = [0.0, 0.0, 0.0]   # 균일항(산란 소스 프레임 평균, 카메라네이티브 선형)
-        # 현재 필드가 어떤 (Radius, Highlight) 로 계산됐는지 — 이 둘만 재계산을 부른다.
+        # 필드가 어떤 (Radius, Highlight) 로 계산됐는지 — 이 둘만 재계산을 부른다.
         # Amount/Character 는 셰이더 uniform 이라 실시간(필드 무관).
-        self._mist_field = (1.0, 0.8)
+        self._mist_want = (1.0, 0.8)   # 원하는 키(QML 이 설정)
+        self._mist_field = None        # 계산됐거나 계산 중인 키. None = 없음
         self._nr_provider = nr_provider          # 디노이즈드 중성 luma 텍스처(휘도 NR 베이스)
         self._nr_url = "image://nrbase/n?v=0"
         self._nr_counter = 0
@@ -3415,13 +3417,27 @@ class Controller(QObject):
     @Slot("QVariantMap")
     def updateHistogram(self, params) -> None:  # noqa: N802 (QML 슬롯)
         """현재 조절값을 축소 프록시에 numpy 로 적용해 '조절 반영' 히스토그램을 재계산.
-        라이트룸처럼 색 단계 전부 반영: 노출/톤/LUT/채도·바이브런스/HSL/대비/커브/컬러그레이딩/비네팅.
-        (그레인은 노이즈라 제외, 로컬대비/샤프닝 등 공간 단계는 생략)"""
+        라이트룸처럼 색 단계 전부 반영: 미스트/노출/톤/LUT/채도·바이브런스/HSL/대비/커브/
+        컬러그레이딩/비네팅. (그레인은 노이즈라 제외, 로컬대비/샤프닝 등 공간 단계는 생략)"""
         if self._proxy_small is None:
             return
         import numpy as np
         import pipeline
         c = self._proxy_small.copy()                       # scene-linear sRGB
+        # 미스트(1단계) — 노출 **앞**. 베일이 블랙을 들어올리므로 히스토그램에 반영해야 한다.
+        # ⚠️두 가지를 근사한다. ① `_proxy_small` 은 WB·매트릭스가 **이미 적용된** 선형 sRGB 라
+        #   실제 단계(카메라네이티브)와 공간이 다르다 — 미스트 자체는 선형이라 교환되지만
+        #   하이라이트 보상 E 의 임계는 공간 의존이다. ② 축소본이 긴 변 128px 라 σ 가
+        #   (0.3, 1.3, 5.1)px 로 좁은 성분은 사실상 항등이다 — 분포를 움직이는 넓은 성분·균일항은
+        #   살아 있으므로 '블랙이 얼마나 뜨는가' 는 맞는다. 분포 추정치로는 충분하고, 공간
+        #   단계(로컬대비·샤프닝)를 생략하는 기존 태도와 같다.
+        _mist_amt = float(params.get("mistAmt", 0.0))
+        if _mist_amt > 0.0:
+            import mist
+            c = mist.apply(c, _mist_amt, float(params.get("mistChar", 0.0)),
+                           float(params.get("mistRadius", 1.0)),
+                           float(params.get("mistHi", 0.8)), max(c.shape[:2]),
+                           color=float(params.get("mistColor", 0.5)))
         # 노출 = scene-linear 배수 → filmic(단일 톤커브) → display. (셰이더/export 와 동일 순서)
         c = wb.filmic(c * (2.0 ** float(params.get("exposure", 0.0))))
         c = np.maximum(pipeline._tone_zones(
@@ -4211,6 +4227,7 @@ class Controller(QObject):
             return                       # 이미지 전환/파라미터 재변경 → 낡은 결과 폐기
         if res is None:
             self._mist_ready = False
+            self._mist_field = None      # 실패 → 다음 요청이 다시 시도할 수 있게
             self._mist_mean = [0.0, 0.0, 0.0]
             if self._mist_provider is not None:
                 self._mist_provider.clear()
@@ -4225,22 +4242,42 @@ class Controller(QObject):
         self._mist_urls = [f"image://mist/{i}?v={self._mist_counter}" for i in range(3)]
         self.mistChanged.emit()
 
-    @Slot(float, float)
-    def requestMistField(self, radius: float, hi: float) -> None:  # noqa: N802
-        """Radius/Highlight 가 바뀌었을 때 산란 필드 재계산(QML 이 디바운스해서 부른다).
+    def _maybe_start_mist(self) -> None:
+        """필드 계산이 필요하고 **실제로 쓰이는 중**일 때만 시작한다.
 
-        ⚠️`_mist_field` 는 '계산됐거나 **계산 중인** 키'다 — 준비 여부(`_mist_ready`)로 판정하면
-        안 된다. 이미지 로드가 기본 키로 워커를 띄운 직후 QML applyEdits 가 같은 키로 복원 요청을
-        보내므로, 준비 전이라는 이유로 통과시키면 프록시 3× 가우시안이 매 로드마다 두 번 돈다."""
-        key = (float(radius), float(hi))
-        if key == self._mist_field:
+        ⚠️Amount 게이트가 핵심이다. 예전엔 디코드마다 무조건 시작해서, 미스트를 안 쓰는 사진도
+          장당 프록시 3× 가우시안(8스레드 ~0.55s)과 ~75MB 를 태우고 셰이더 게이트에서 버려졌다 —
+          폴더를 화살표로 넘길 때와 배치 export 에서 NR/haze/세그 워커와 코어를 다퉜다."""
+        if self._mist_amt <= 0.0 or self._proxy_img is None:
             return
-        if self._proxy_img is None:
+        if self._mist_field == self._mist_want and self._mist_ready:
             return
-        self._mist_field = key
+        if self._mist_field == self._mist_want:
+            return                       # 같은 키로 이미 계산 중
+        self._mist_field = self._mist_want
         self._mist_seq += 1
         threading.Thread(target=self._mist_worker,
-                         args=(self._mist_seq, key[0], key[1]), daemon=True).start()
+                         args=(self._mist_seq, self._mist_want[0], self._mist_want[1]),
+                         daemon=True).start()
+
+    @Slot(float)
+    def setMistAmount(self, amt: float) -> None:  # noqa: N802 (QML 슬롯)
+        """Amount 를 컨트롤러에 알린다 — 필드를 만들 가치가 있는지 판단하는 유일한 근거다.
+        (Amount 자체는 셰이더 uniform 이라 렌더에는 이 값을 쓰지 않는다.)"""
+        self._mist_amt = float(amt)
+        self._maybe_start_mist()
+
+    @Slot(float, float, float)
+    def requestMistField(self, radius: float, hi: float, amt: float) -> None:  # noqa: N802
+        """Radius/Highlight 가 바뀌었을 때 산란 필드 재계산(QML 이 디바운스해서 부른다).
+
+        ⚠️Amount 를 **같이** 받는다 — 따로 밀면 값이 안 바뀐 대입에서 `onValueChanged` 가 안
+          울려 이전 이미지의 Amount 가 남는다. 한 호출로 상태를 함께 맞춘다.
+        Amount 가 0 이면 키만 기억하고 계산은 미룬다 — Amount 가 0 을 벗어나는 순간
+        `setMistAmount` 가 그 키로 시작한다."""
+        self._mist_want = (float(radius), float(hi))
+        self._mist_amt = float(amt)
+        self._maybe_start_mist()
 
     def _get_mist_url0(self) -> str:
         return self._mist_urls[0]
@@ -5199,15 +5236,19 @@ class Controller(QObject):
         # 준비 전에는 mistOn=0 이라 미스트가 무동작(NR 과 동형).
         self._mist_seq += 1
         self._mist_ready = False
+        self._mist_field = None          # 새 프록시 → 이전 필드 무효
         self._mist_mean = [0.0, 0.0, 0.0]
         if self._mist_provider is not None:
             self._mist_provider.clear()
         self._mist_counter += 1
         self._mist_urls = [f"image://mist/{i}?v={self._mist_counter}" for i in range(3)]
         self.mistChanged.emit()
-        threading.Thread(target=self._mist_worker,
-                         args=(self._mist_seq, self._mist_field[0], self._mist_field[1]),
-                         daemon=True).start()
+        # ⚠️**fresh 로드에서는 여기서 시작하지 않는다.** 곧 QML applyEdits/resetAllEdits 가
+        #   사이드카 값으로 setMistAmount + requestMistField 를 부른다. 여기서 미리 띄우면
+        #   이전 이미지의 키로 계산하고 그 결과는 항상 버려져 **로드당 두 번** 돌았다.
+        #   비-fresh 재디코딩(WB 커밋·렌즈 토글)은 편집 복원을 안 거치므로 여기서 시작한다.
+        if not self._fresh_load:
+            self._maybe_start_mist()
         # 비-fresh 재디코딩(렌즈 보정·WB 커밋 등)은 editsReady(복원)를 안 거친다 → 활성 마스크가
         # 있었으면 같은 클래스로 새 프록시에 재생성(렌즈 보정은 기하 변경 → 정렬 위해 재생성 필수).
         # fresh load 는 applyEdits 가 저장본에서 복원하므로 여기선 건드리지 않는다.

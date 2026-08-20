@@ -858,7 +858,8 @@ ApplicationWindow {
         //   **한 키에 기본값은 하나**여야 한다(presets.LOOK_DEFAULTS 주석). 0.5 로 통일했고,
         //   그 대가는 이 키가 없던 시절 사이드카가 Color 0.5 로 열린다는 것뿐이다.
         mistColorSlider.value = _ev(p, "mistColor", win.lookDef("mistColor"))
-        controller.requestMistField(mistRadiusSlider.value, mistHiSlider.value)   // 복원은 즉시 1회
+        controller.requestMistField(mistRadiusSlider.value, mistHiSlider.value,
+                                   mistAmtSlider.value)   // 복원은 즉시 1회
         grainSlider.value = _ev(p, "grainAmt", win.lookDef("grainAmt")); grainSizeSlider.value = _ev(p, "grainSize", win.lookDef("grainSize"))
         grainRoughSlider.value = _ev(p, "grainRough", win.lookDef("grainRough"))
         grainColorSlider.value = _ev(p, "grainColor", win.lookDef("grainColor"))
@@ -959,7 +960,7 @@ ApplicationWindow {
         aiNrCheck.checked = false; controller.setAiNr(false)
         mistAmtSlider.value = 0.0; mistCharSlider.value = 0.0
         mistRadiusSlider.value = 1.0; mistHiSlider.value = 0.8; mistColorSlider.value = 0.5
-        controller.requestMistField(1.0, 0.8)
+        controller.requestMistField(1.0, 0.8, 0.0)
         vignetteSlider.value = 0.0; grainSlider.value = 0.0; grainSizeSlider.value = 0.5
         grainRoughSlider.value = 0.1; grainColorSlider.value = 0.3
         grainShapeCheck.checked = false
@@ -1711,7 +1712,9 @@ ApplicationWindow {
     property var histWatch: [
         satSlider.value, vibSlider.value, win.hslH, win.hslS, win.hslL,
         cgShHueSlider.value, cgShSatSlider.value, cgMidHueSlider.value, cgMidSatSlider.value,
-        cgHiHueSlider.value, cgHiSatSlider.value, cgBalanceSlider.value, vignetteSlider.value
+        cgHiHueSlider.value, cgHiSatSlider.value, cgBalanceSlider.value, vignetteSlider.value,
+        mistAmtSlider.value, mistCharSlider.value, mistRadiusSlider.value,
+        mistHiSlider.value, mistColorSlider.value
     ]
     onHistWatchChanged: win.refreshHistogram()
 
@@ -1973,7 +1976,12 @@ ApplicationWindow {
             "simKey": win.simKeys[simCombo.currentIndex],
             "lutStrength": simStrengthSlider.value,
             "curves": curveEditor.allLuts(),
-            // 라이트룸식 전체 반영: 색 단계 + 비네팅(그레인 제외)
+            // 라이트룸식 전체 반영: 색 단계 + 비네팅 + 미스트(그레인만 제외 — 노이즈다).
+            // 미스트는 톤 단계다 — 베일이 블랙을 들어올리는데 히스토그램이 그걸 안 보여주면
+            // 클리핑 판단에 쓰는 그림이 화면과 달라진다.
+            "mistAmt": mistAmtSlider.value, "mistChar": mistCharSlider.value,
+            "mistRadius": mistRadiusSlider.value, "mistHi": mistHiSlider.value,
+            "mistColor": mistColorSlider.value,
             "saturation": satSlider.value, "vibrance": vibSlider.value,
             "hslH": win.hslH, "hslS": win.hslS, "hslL": win.hslL,
             "cgShadowHue": cgShHueSlider.value, "cgShadowSat": cgShSatSlider.value,
@@ -4908,8 +4916,9 @@ ApplicationWindow {
 
                     // --- 미스트 산란 필드 합성 (mistfield.frag) ---
                     // CPU 가 만든 3개 스케일 필드를 Character 무게로 섞어 한 장으로 굽는다.
-                    // ⚠️출력이 **1 을 넘는 선형 scene-linear** 라 format: RGBA16F 필수.
-                    //   RGBA8 로 두면 하이라이트 산란이 1.0 에서 잘려 후광이 죽는다.
+                    // 출력은 로그 코덱 코드라 항상 [0,1] — RGBA8 로 떨어져도 **잘리지 않는다**.
+                    // RGBA16F 는 정밀도 선택이다(코덱+디더가 8bit 에서도 견디게 해 두었으므로
+                    // 룩의 정확성이 이 포맷에 의존하지 않는다 — coeffs.MIST_TEX_* 주석).
                     // Character 를 움직이면 이 패스만 다시 돈다(프록시 1패스 = 사실상 공짜).
                     ShaderEffect {
                         id: mistFieldPass
@@ -7482,7 +7491,9 @@ ApplicationWindow {
                     // 필드(CPU, 프록시 3× 가우시안)를 다시 만들어야 하므로 드래그를 디바운스한다.
                     Timer {
                         id: mistFieldTimer; interval: 160
-                        onTriggered: controller.requestMistField(mistRadiusSlider.value, mistHiSlider.value)
+                        onTriggered: controller.requestMistField(mistRadiusSlider.value,
+                                                                 mistHiSlider.value,
+                                                                 mistAmtSlider.value)
                     }
 
                     Label {
@@ -7501,6 +7512,9 @@ ApplicationWindow {
                             if (pressed) _pendingReset = win.isDblPress(mistAmtSlider)
                             else if (_pendingReset) { value = defaultValue; _pendingReset = false }
                         }
+                        // Amount 가 0 을 벗어나는 순간 산란 필드가 필요해진다. 컨트롤러는
+                        // 이 값으로만 '필드를 만들 가치가 있는가' 를 판단한다(main 주석).
+                        onValueChanged: controller.setMistAmount(value)
                     }
 
                     Label {

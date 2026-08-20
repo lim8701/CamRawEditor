@@ -506,7 +506,11 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     if _mist_amt > 0.0:
         nat = mist.apply(nat, _mist_amt, float(p.get("mistChar", 0.0)),
                          float(p.get("mistRadius", 1.0)), float(p.get("mistHi", 0.8)),
-                         max(nat.shape[:2]), color=float(p.get("mistColor", 0.0)))
+                         max(nat.shape[:2]),
+                         # ⚠️폴백은 **공장 기본값과 같아야** 한다(presets.LOOK_DEFAULTS 0.5).
+                         #   0.0 으로 두면 이 키를 안 보내는 경로에서 export 만 순수 물리가 되어
+                         #   프리뷰≠export 가 된다 — 그 규칙이 여기서 한 번 깨졌다.
+                         color=float(p.get("mistColor", 0.5)))
     nat = nat * wb.rel_gain(cam, ref, kelvin, tint).astype(np.float32)   # 유저 WB(카메라공간)
     # 노출 = scene-linear 배수. 마스크 노출(skyExp)은 전역과 같은 지수에 합산(셰이더 0단계 동일)
     # → 마스크 영역도 진짜 stop + filmic 하이라이트 롤오프로 반응.
