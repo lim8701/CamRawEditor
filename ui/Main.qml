@@ -802,10 +802,7 @@ ApplicationWindow {
             "flipH": flipHBtn.checked, "flipV": flipVBtn.checked,
             "aspectIndex": aspectCombo.currentIndex, "cropLandscape": cropLandscapeBtn.checked,
             "cropX": win.cropX, "cropY": win.cropY, "cropW": win.cropW, "cropH": win.cropH,
-            "geoV": geoVSlider.value, "geoH": geoHSlider.value, "geoScale": geoScaleSlider.value,
-            // 레시피 계보(사진별 정보). ⚠️_PRESET_KEYS 에 없으므로 프리셋에는 실리지 않고,
-            //   _copyExclude 에 있으므로 붙여넣기로도 옮겨가지 않는다(남의 계보를 주장하지 않게).
-            "recipe": win.presetRef
+            "geoV": geoVSlider.value, "geoH": geoHSlider.value, "geoScale": geoScaleSlider.value
         }
         // 마스킹(선택 클래스 + 로컬 조정) 병합. 마스크 픽셀은 저장 안 함 — 로드 시 클래스로 재생성.
         var sk = win.skyEditParams()
@@ -817,7 +814,6 @@ ApplicationWindow {
     // 저장된 편집을 컨트롤에 복원. 반드시 _applying 가드 안에서 호출(자동저장/WB 재디코딩 방지).
     // fastMasks: applySkyEdits 의 획 즉각 경로 허용(undo/redo 전용 — applySnapshot 만 true).
     function applyEdits(p, fastMasks) {
-        win.presetRef = _ev(p, "recipe", ({}))   // 레시피 계보 복원(없으면 빈 객체)
         expSlider.value = _ev(p, "exposure", 0.0); conSlider.value = _ev(p, "contrast", 1.0)
         hiSlider.value = _ev(p, "highlights", 0.0); shSlider.value = _ev(p, "shadows", 0.0)
         whSlider.value = _ev(p, "whites", 0.0); blSlider.value = _ev(p, "blacks", 0.0)
@@ -994,7 +990,7 @@ ApplicationWindow {
     // excludeWb=true 면 temp/tint 를 뺀 스냅샷 → 붙여넣을 때 대상의 WB 유지.
     // 사진별 고유 항목은 복사에서 제외 → 붙여넣을 때 대상 이미지의 값이 유지됨.
     // (date stamp + geometry. WB·Tint 는 excludeWb 일 때 추가 제외)
-    readonly property var _copyExclude: ["recipe", "dateStamp", "stampText",
+    readonly property var _copyExclude: ["dateStamp", "stampText",
         "quarterTurns", "rotateAngle", "flipH", "flipV", "aspectIndex", "cropLandscape",
         "cropX", "cropY", "cropW", "cropH", "geoV", "geoH", "geoScale"]
     function copyEdits(excludeWb) {
@@ -1024,33 +1020,53 @@ ApplicationWindow {
 
     // ===== 레시피 프리셋 =====
     property var presetItems: []          // controller.presetList() 캐시(배지 그리드 모델)
-    // 사이드카에 함께 저장하는 **계보** — "이 사진은 어느 레시피에서 왔나".
-    // ⚠️배지의 '활성'은 이 참조가 아니라 **룩 지문 비교**로 정한다(아래 badgeState).
-    //   참조만 믿으면 슬라이더를 만진 뒤에도 활성으로 남아 배지가 거짓을 말한다.
-    //   참조가 필요한 건 "기반했지만 수정됨" 상태 하나뿐이다.
-    property var presetRef: ({})          // {name, file, lookHash} 또는 {}
-    property string currentLookHash: ""   // 현재 편집값의 룩 지문
-    // 편집이 커밋될 때/적용될 때/사진이 바뀔 때만 갱신 — 드래그 중 매 프레임 계산할 이유가 없다.
-    function refreshLookHash() {
-        win.currentLookHash = controller.imagePath === ""
-            ? "" : controller.lookHash(win.editParams())
+    // 배지 재평가 트리거. ⚠️단일 지문을 캐시할 수 없다 — 레시피마다 '지정한 키 집합'이 다르고
+    // (프리셋 키가 늘어난 뒤 저장된 레시피와 그 전 레시피), 비교는 그 집합에서만 성립한다.
+    // 그래서 값 자체는 badgeOn 이 매번 계산하고, 여기서는 '언제 다시 계산할지'만 알린다.
+    property int lookRev: 0
+    // 편집이 커밋될 때만 알린다 — 드래그 중 매 프레임 재계산할 이유가 없다(histPush/histReset).
+    function refreshLookHash() { win.lookRev = win.lookRev + 1 }
+    // 배지 활성 = **지금 룩이 이 레시피와 같은가**. 그것뿐이다.
+    // ⚠️예전에 '이 레시피에 기반했으나 수정됨'(흐린 앰버) 상태를 사이드카 계보로 표시했다가
+    //   **제거했다 — 되살리지 말 것.** 배지가 '보이지 않는 이력'의 함수가 되면 **룩이 완전히
+    //   같은 두 사진이 서로 다른 배지를 보인다**(레시피로 만든 쪽 vs 붙여넣기로 만든 쪽).
+    //   화면에서 구분할 근거가 없는 차이라 사용자에게 설명할 방법이 없었다(사용자 보고:
+    //   "경우에 따라 활성화가 되고 안되고의 차이가 혼란을 준다"). 배지는 눈에 보이는 것만의
+    //   함수여야 한다 — 그러면 규칙이 한 줄로 끝나고 예외가 없다.
+    // ── 레시피 순서 드래그 ──
+    // 행 높이가 고정(44+5)이라 목표 인덱스는 나눗셈으로 나온다. 드래그 중에는 레이아웃을
+    // 건드리지 않고 ①집은 행만 Translate 로 따라오게 하고 ②들어갈 자리에 앰버 선을 그린다.
+    // (ColumnLayout 안에서 y 를 바꾸면 레이아웃과 싸우므로 transform 을 쓴다.)
+    property int recipeDragIdx: -1       // 집고 있는 행(-1=없음)
+    property int recipeDropIdx: -1       // 들어갈 자리(0..count)
+    property real recipeDragDy: 0
+    property int recipeHoverIdx: -1       // 호버 중인 행(입력 레이어가 하나라 여기서 관리)
+    readonly property int recipeRowStride: 49    // 행 44 + spacing 5
+    function recipeDrop() {
+        var from = win.recipeDragIdx, to = win.recipeDropIdx
+        win.recipeDragIdx = -1; win.recipeDropIdx = -1; win.recipeDragDy = 0
+        if (from < 0 || to < 0) return
+        if (to > from) to -= 1                     // 자기 자리를 빼고 나서의 인덱스
+        if (to === from) return
+        var a = win.presetItems.slice()
+        a.splice(to, 0, a.splice(from, 1)[0])
+        win.presetItems = a                        // 화면은 즉시 새 순서
+        var keys = []
+        for (var i = 0; i < a.length; i++) keys.push(a[i].orderKey)
+        controller.setPresetOrder(keys)             // 저장(prefs.json)
     }
-    // 배지 상태: 2=현재 룩과 일치 / 1=이 레시피에 기반했으나 수정됨 / 0=관계 없음
-    function badgeState(item) {
-        if (win.currentLookHash !== "" && item.lookHash === win.currentLookHash) return 2
-        var r = win.presetRef
-        if (!r) return 0
-        // ⚠️id 우선 — 이름을 바꾸면 파일명(이름에서 파생)과 이름이 **둘 다** 바뀌어 계보 링크가
-        //   끊긴다. id 는 그 둘과 무관해 rename 을 견딘다. file/name 은 id 없는 외부·구파일 폴백.
-        if (r.id && item.id && r.id === item.id) return 1
-        if (!r.id && (r.file === item.file || (r.name && r.name === item.name))) return 1
-        return 0
+    function badgeOn(item) {
+        win.lookRev                       // 재평가 트리거(값은 쓰지 않는다)
+        if (controller.imagePath === "") return false
+        // 그 레시피가 지정한 키에서만 비교 — 지정하지 않은 키는 비교 대상이 아니다.
+        return controller.lookHash(win.editParams(), item.lookKeys || []) === item.lookHash
     }
     // 우클릭 컨텍스트 대상(수정/내보내기/삭제 공용)
     property string _presetCtxFile: ""
     property string _presetCtxName: ""
     property string _presetCtxColor: ""
     property string _presetCtxDesc: ""
+    property var _presetCtxSrc: ({})           // 그 레시피에 저장된 출처(카메라/렌즈 수정용)
     property string _presetConfirmMode: ""     // "delete" | "update" — 확인 대화상자 공용
     function refreshPresets() { win.presetItems = controller.presetList() }
 
@@ -1115,11 +1131,6 @@ ApplicationWindow {
         var msg = win.presetMessage(d, missing)
         win.presetNotice = msg.text
         win.presetNoticeWarn = msg.warn
-        // 계보 기록 — 이후 슬라이더를 만지면 배지는 '수정됨'(1단계)으로 내려간다.
-        win.presetRef = { "id": d.id || "", "name": d.name, "file": file,
-                          "lookHash": controller.lookHash(d.edits) }
-        controller.saveEdits(win.editParams())   // 참조까지 포함해 사이드카에 반영
-        win.refreshLookHash()
     }
 
     // 프리셋의 '룩'을 현재 사진에 적용. 붙여넣기(pasteEdits)와 같은 커밋 경로를 쓰되 **3단**이다.
@@ -1524,8 +1535,17 @@ ApplicationWindow {
     readonly property bool canUndo: undoPos > 0
     readonly property bool canRedo: undoPos >= 0 && undoPos < undoHist.length - 1
 
-    function histReset(snapStr) { win.undoHist = [snapStr]; win.undoPos = 0 }
+    // ⚠️룩 지문(배지 활성 판정)은 **여기 두 함수에서만** 갱신한다. 개별 경로(commit/paste/
+    //   reset/apply/forget)에 흩어 뒀더니 **붙여넣기와 Reset 버튼에서 빠져** 룩이 레시피와
+    //   같아졌는데도 배지가 안 켜졌다(사용자 보고). 룩을 바꾸는 경로는 예외 없이 히스토리에
+    //   스냅샷을 남기므로 이 둘이 유일한 공통 지점이다.
+    //   (undo/redo 는 push 하지 않으므로 applySnapshot 이 따로 부른다 — 그 한 곳만 예외다.)
+    function histReset(snapStr) {
+        win.undoHist = [snapStr]; win.undoPos = 0
+        win.refreshLookHash()
+    }
     function histPush(snapStr) {
+        win.refreshLookHash()   // 아래 '변화 없음' 조기반환보다 앞 — 지문이 낡은 채 남지 않게
         if (win.undoPos >= 0 && win.undoHist[win.undoPos] === snapStr) return   // 변화 없음
         var h = win.undoHist.slice(0, win.undoPos + 1)                          // redo 꼬리 버림
         h.push(snapStr)
@@ -1564,8 +1584,7 @@ ApplicationWindow {
         if (win.editDragActive) { editSaveTimer.restart(); return }   // 드래그 중 → 릴리즈 후
         var snap = win.editParams()
         controller.saveEdits(snap)
-        win.histPush(JSON.stringify(snap))   // 커밋된 편집 1개 = undo 스텝 1개
-        win.refreshLookHash()                // 룩이 바뀌었으면 배지 상태도 따라간다
+        win.histPush(JSON.stringify(snap))   // 커밋된 편집 1개 = undo 스텝 1개(지문도 여기서 갱신)
     }
     // 드래그 진행 중 여부 — 편집에 관여하는 모든 드래그 소스를 **명시적으로 열거**(결정론적).
     // 과거 전역 PointHandler(패시브 감시)만으로는 일부 컨트롤의 press 를 이벤트 전달 경로에 따라
@@ -2980,7 +2999,8 @@ ApplicationWindow {
         MenuItem {
             text: "Edit properties\u2026"
             onTriggered: presetSaveDialog.openForEdit(
-                win._presetCtxFile, win._presetCtxName, win._presetCtxColor, win._presetCtxDesc)
+                win._presetCtxFile, win._presetCtxName, win._presetCtxColor,
+                win._presetCtxDesc, win._presetCtxSrc)
         }
         MenuItem {
             text: "Export\u2026"
@@ -3039,16 +3059,22 @@ ApplicationWindow {
             presetNameInput.text = ""
             presetDescInput.text = ""
             presetSaveDialog.src = controller.presetSource()
+            // 자동 기입(EXIF). 렌즈는 대개 비어 있어 사용자가 채우는 자리가 된다.
+            presetCamInput.text = presetSaveDialog.src.camera || ""
+            presetLensInput.text = presetSaveDialog.src.lens || ""
             presetSaveDialog.chosenColor = controller.presetPalette[0]
             presetSaveDialog.open()
         }
         // 수정(이름·색·설명만. 룩과 출처는 저장돼 있던 것을 그대로 유지한다)
-        function openForEdit(file, name, color, desc) {
+        function openForEdit(file, name, color, desc, src) {
             presetSaveDialog.editFile = file
             presetNameInput.text = name
             presetDescInput.text = desc || ""
             presetSaveDialog.chosenColor = color
-            presetSaveDialog.src = ({})     // 수정 모드에선 출처를 새로 기록하지 않는다
+            // 수정 모드에선 **저장돼 있던 출처**를 보여주고 고칠 수 있게 한다(룩은 불변).
+            presetSaveDialog.src = src || ({})
+            presetCamInput.text = presetSaveDialog.src.camera || ""
+            presetLensInput.text = presetSaveDialog.src.lens || ""
             presetSaveDialog.open()
         }
         onOpened: presetNameInput.forceActiveFocus()
@@ -3058,10 +3084,13 @@ ApplicationWindow {
             if (!presetSaveDialog.nameOk) return
             var nm = presetNameInput.text.trim()
             var ds = presetDescInput.text.trim()
+            var so = { "camera": presetCamInput.text.trim(),
+                       "lens": presetLensInput.text.trim() }
             var f = presetSaveDialog.editing
                 ? controller.editPreset(presetSaveDialog.editFile, nm,
-                                        presetSaveDialog.chosenColor, ds)
-                : controller.savePreset(nm, presetSaveDialog.chosenColor, ds, win.editParams())
+                                        presetSaveDialog.chosenColor, ds, so)
+                : controller.savePreset(nm, presetSaveDialog.chosenColor, ds,
+                                        win.editParams(), so)
             presetSaveDialog.close()
             if (f !== "") {
                 win.refreshPresets()
@@ -3089,7 +3118,7 @@ ApplicationWindow {
                 Label {
                     Layout.fillWidth: true
                     text: presetSaveDialog.editing
-                          ? "Name, colour and description only \u2014 the look and its origin stay as saved."
+                          ? "The look stays as saved \u2014 name, colour, description, camera and lens are editable."
                           : (presetSaveDialog.willOverwrite
                              ? "A recipe with this name already exists \u2014 saving replaces its look and origin."
                              : "A recipe stores the look only \u2014 not white balance, crop or masks.")
@@ -3099,6 +3128,9 @@ ApplicationWindow {
                     wrapMode: Text.WordWrap
                 }
 
+                // ⚠️입력칸마다 **라벨을 붙인다** — 값이 채워지면 placeholder 가 사라져 어떤
+                //   항목인지 알 수 없다는 지적을 받았다(자동 기입되는 카메라/렌즈는 특히).
+                Label { text: "Name"; color: "#9a9a9a"; font.pixelSize: 11; Layout.topMargin: 4 }
                 // 이름 — TextInput(코어)+Rectangle. 네이티브 TextField 는 배경이 밝아 밝은 글자가
                 // 묻힌다(캡션 검색창과 같은 패턴으로 통일).
                 Rectangle {
@@ -3128,6 +3160,78 @@ ApplicationWindow {
                     }
                 }
 
+                // 카메라 / 렌즈 — EXIF 에서 자동 기입되고 사용자가 고칠 수 있다.
+                //   렌즈는 대개 비어 있다(고정렌즈 바디는 태그를 안 쓰고 MakerNote 는 미파싱)
+                //   → 손으로 적는 자리. 이 기능의 목적이 "레시피는 장비에 묶여 있다"를 알리는
+                //   것이라, 렌즈가 늘 비면 목적이 반쪽이 된다(사용자 요청).
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+                        Label { text: "Camera"; color: "#9a9a9a"; font.pixelSize: 11 }
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 30
+                            radius: 6; color: "#1b1b1c"
+                            border.color: presetCamInput.activeFocus ? "#E0A226" : "#55555a"
+                            border.width: 1
+                            TextInput {
+                                id: presetCamInput
+                                anchors.fill: parent
+                                anchors.leftMargin: 10; anchors.rightMargin: 10
+                                verticalAlignment: TextInput.AlignVCenter
+                                color: "#e6e6e6"; font.pixelSize: 12
+                                clip: true; selectByMouse: true
+                                maximumLength: 60          // Controller._SRC_TEXT_MAX 와 같은 값
+                                onActiveFocusChanged: win._typing = activeFocus
+                                onAccepted: presetLensInput.forceActiveFocus()
+                                Keys.onEscapePressed: presetSaveDialog.close()
+                                HoverHandler { cursorShape: Qt.IBeamCursor }
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    visible: presetCamInput.text === "" && !presetCamInput.activeFocus
+                                    text: "not recorded"
+                                    color: "#6f6f6f"; font.pixelSize: 12
+                                }
+                            }
+                        }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+                        Label { text: "Lens"; color: "#9a9a9a"; font.pixelSize: 11 }
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 30
+                            radius: 6; color: "#1b1b1c"
+                            border.color: presetLensInput.activeFocus ? "#E0A226" : "#55555a"
+                            border.width: 1
+                            TextInput {
+                                id: presetLensInput
+                                anchors.fill: parent
+                                anchors.leftMargin: 10; anchors.rightMargin: 10
+                                verticalAlignment: TextInput.AlignVCenter
+                                color: "#e6e6e6"; font.pixelSize: 12
+                                clip: true; selectByMouse: true
+                                maximumLength: 60
+                                onActiveFocusChanged: win._typing = activeFocus
+                                onAccepted: presetDescInput.forceActiveFocus()
+                                Keys.onEscapePressed: presetSaveDialog.close()
+                                HoverHandler { cursorShape: Qt.IBeamCursor }
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    visible: presetLensInput.text === "" && !presetLensInput.activeFocus
+                                    text: "e.g. 23mm f/2"
+                                    color: "#6f6f6f"; font.pixelSize: 12
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Label { text: "Description"; color: "#9a9a9a"; font.pixelSize: 11 }
                 // 설명 — 이 레시피가 어떤 사진에 맞는지 등을 남기는 자리(공유 시 특히 유용).
                 Rectangle {
                     Layout.fillWidth: true
@@ -6332,98 +6436,177 @@ ApplicationWindow {
                         text: "No recipes yet \u2014 use \u201cSave as recipe\u2026\u201d in the \u22ef menu."
                         color: "#7f7f7f"; font.pixelSize: 11; wrapMode: Text.WordWrap
                     }
-                    // \u26a0 Flow + 고정 배지 크기 \u2014 열 수를 하드코딩하지 않는다. 패널 300px(가용 \u2248274)
-                    //   에서 지금은 3열로 참고 이미지 밀도와 같고, 패널 폭이 바뀌어도 자동 재배치된다.
-                    Flow {
-                        id: badgeFlow
+                    // 레시피 목록 = **1열 행 리스트**(행 44px + 간격 5 = 스트라이드 49).
+                    // 구성: 왼쪽 구분색 세로 줄 + 이름(대문자) + 장비 한 줄. 적용 중이면 앰버 외곽선.
+                    // ⚠️예전엔 3열 87×56 배지 그리드였다(참고 이미지 film_recipe.png 밀도). 카메라/렌즈를
+                    //   손으로 입력할 수 있게 되자 87px 에 이름과 장비를 함께 담을 수 없었다.
+                    //
+                    // ⚠️**입력(마우스)은 이 Item 하나에서만 받는다.** 행마다 MouseArea 를 두고 그 행을
+                    //   Translate 로 끌었더니 **좌표 피드백 루프**로 위치가 요동쳤다(사용자 보고): mouse.y 는
+                    //   끌리는 행의 로컬 좌표라, 행이 내려가면 로컬 y 가 줄어 dy 가 줄고 → 행이 되올라간다.
+                    //   입력은 움직이지 않는 프레임에서 받아야 한다 — 행 높이가 고정이라 인덱스는 y/스트라이드
+                    //   나눗셈으로 나오므로 오히려 더 단순하다.
+                    Item {
+                        id: recipeList
                         Layout.fillWidth: true
-                        spacing: 6
-                        // ⚠️배지 폭을 고정하면 스크롤바 유무로 가용 폭이 몇 px 달라지는 순간
-                        //   3열이 2열로 접힌다(실제로 그랬다). 폭에서 역산해 3열을 보장한다.
-                        readonly property int cols: 3
-                        readonly property int cellW:
-                            Math.max(60, Math.floor((width - spacing * (cols - 1)) / cols))
-                        Repeater {
-                            model: win.presetItems
-                            delegate: Rectangle {
-                                id: badge
-                                width: badgeFlow.cellW; height: 56
-                                radius: 5
-                                color: "#1e1e1e"
-                                // 2=룩 일치(앰버 실선) / 1=기반했으나 수정됨(흐린 앰버) / 0=무관
-                                readonly property int state2: win.badgeState(modelData)
-                                border.color: badge.state2 === 2 ? "#E0A226"
-                                            : badge.state2 === 1 ? Qt.alpha("#E0A226", 0.42)
-                                            : (bgHover.hovered ? "#5a5a5a" : "#3a3a3a")
-                                border.width: badge.state2 > 0 ? 2 : 1
-                                // 출처: 카메라(짧게) + 렌즈 또는 초점거리. 모르면 빈 줄로 자리만 유지해
-                                //       그리드 규칙성을 지킨다(참고 이미지 윗줄과 같은 역할).
-                                readonly property string prov: {
-                                    var src = modelData.source || {}
-                                    var cam = String(src.camera || "").replace(
-                                        /^(FUJIFILM|NIKON|CANON|SONY|OLYMPUS|PANASONIC|PENTAX|SAMSUNG|LEICA|RICOH) /i, "")
-                                    var l = String(src.lens || src.focalLength || "")
-                                    var a = []
-                                    if (cam) a.push(cam)
-                                    if (l) a.push(l)
-                                    return a.join("_")
-                                }
-                                ToolTip.visible: bgHover.hovered
-                                ToolTip.text: modelData.name
-                                    + (badge.state2 === 2 ? "  \u2713 applied"
-                                       : badge.state2 === 1 ? "  \u2014 based on this, modified" : "")
-                                    + (modelData.description ? "\n" + modelData.description : "")
-                                    + (badge.prov ? "\n" + badge.prov : "\nNo camera info recorded")
-                                    + "\nCreated " + modelData.createdAt
-                                    + (modelData.appVersion ? "  \u00b7  v" + modelData.appVersion : "")
-                                HoverHandler { id: bgHover }
-                                ColumnLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: 5
-                                    spacing: 3
-                                    Label {
-                                        Layout.fillWidth: true
-                                        text: badge.prov
-                                        color: "#8a8a8a"; font.pixelSize: 8
-                                        elide: Text.ElideRight
-                                        horizontalAlignment: Text.AlignHCenter
+                        readonly property int stride: 49
+                        readonly property int count: win.presetItems.length
+                        Layout.preferredHeight: Math.max(0, recipeList.count * recipeList.stride - 5)
+                        function idxAt(y) {
+                            return Math.max(0, Math.min(recipeList.count - 1,
+                                                        Math.floor(y / recipeList.stride)))
+                        }
+                        ColumnLayout {
+                            id: badgeFlow
+                            anchors.fill: parent
+                            spacing: 5
+                            Repeater {
+                                model: win.presetItems
+                                delegate: Rectangle {
+                                    id: badge
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 44
+                                    radius: 5
+                                    readonly property bool hovered: win.recipeHoverIdx === index
+                                                                    && win.recipeDragIdx < 0
+                                    color: badge.hovered ? "#242424" : "#1e1e1e"
+                                    // 집은 행만 떠서 커서를 따라온다(레이아웃 불변 — transform 을 쓴다)
+                                    z: win.recipeDragIdx === index ? 2 : 0
+                                    opacity: win.recipeDragIdx === index ? 0.85 : 1.0
+                                    transform: Translate {
+                                        y: win.recipeDragIdx === index ? win.recipeDragDy : 0
+                                    }
+                                    // 지금 룩이 이 레시피와 같으면 앰버 실선, 아니면 무테(위 badgeOn 주석)
+                                    readonly property bool isOn: win.badgeOn(modelData)
+                                    border.color: badge.isOn ? "#E0A226"
+                                                : (badge.hovered ? "#5a5a5a" : "#3a3a3a")
+                                    border.width: badge.isOn ? 2 : 1
+                                    // 장비 한 줄 = **대화상자에서 입력된 카메라 + 렌즈**.
+                                    // ⚠️예전에는 렌즈가 비면 EXIF 초점거리로 대체했는데, 그건 없는 값을
+                                    //   초점거리로 **위장**하는 것이었다. 행 폭이 넉넉해 제조사도 줄이지 않는다.
+                                    readonly property string gear: {
+                                        var src = modelData.source || {}
+                                        var a = []
+                                        if (String(src.camera || "")) a.push(String(src.camera))
+                                        if (String(src.lens || "")) a.push(String(src.lens))
+                                        return a.join("  \u00b7  ")
+                                    }
+                                    // 들어갈 자리 표시 — 이 행의 위(마지막 행이면 아래에도)
+                                    Rectangle {
+                                        visible: win.recipeDragIdx >= 0 && win.recipeDropIdx === index
+                                        anchors.left: parent.left; anchors.right: parent.right
+                                        y: -3.5; height: 2; radius: 1
+                                        color: "#E0A226"
                                     }
                                     Rectangle {
-                                        Layout.fillWidth: true
-                                        height: 3; radius: 1.5
+                                        visible: win.recipeDragIdx >= 0
+                                                 && win.recipeDropIdx === recipeList.count
+                                                 && index === recipeList.count - 1
+                                        anchors.left: parent.left; anchors.right: parent.right
+                                        y: parent.height + 1.5; height: 2; radius: 1
+                                        color: "#E0A226"
+                                    }
+                                    Rectangle {      // 구분색 — 행 왼쪽 세로 줄
+                                        x: 6
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 4; height: parent.height - 14
+                                        radius: 2
                                         color: modelData.color
                                     }
-                                    Label {
-                                        Layout.fillWidth: true
-                                        Layout.fillHeight: true
-                                        text: modelData.name
-                                        color: "#e6e6e6"; font.pixelSize: 9; font.bold: true
-                                        font.capitalization: Font.AllUppercase
-                                        elide: Text.ElideRight
-                                        wrapMode: Text.WordWrap
-                                        maximumLineCount: 2
-                                        verticalAlignment: Text.AlignVCenter
-                                        horizontalAlignment: Text.AlignHCenter
-                                    }
-                                }
-                                MouseArea {
-                                    anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
-                                    acceptedButtons: Qt.LeftButton | Qt.RightButton
-                                    onClicked: function (mouse) {
-                                        if (mouse.button === Qt.RightButton) {
-                                            // 우클릭은 곧바로 실행하지 않는다 — 어느 동작인지
-                                            // 고를 수 있게 컨텍스트 메뉴를 띄운다.
-                                            win._presetCtxFile = modelData.file
-                                            win._presetCtxName = modelData.name
-                                            win._presetCtxColor = modelData.color
-                                            win._presetCtxDesc = modelData.description || ""
-                                            presetCtxMenu.popup()
-                                        } else if (controller.imagePath !== "") {
-                                            win.applyPresetFile(modelData.file, modelData.name)
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 18; anchors.rightMargin: 10
+                                        anchors.topMargin: 6; anchors.bottomMargin: 6
+                                        spacing: 1
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: modelData.name
+                                            color: "#e6e6e6"; font.pixelSize: 11; font.bold: true
+                                            font.capitalization: Font.AllUppercase
+                                            font.letterSpacing: 0.4
+                                            elide: Text.ElideRight
+                                        }
+                                        Label {
+                                            Layout.fillWidth: true
+                                            // 장비가 없으면 빈 줄로 두지 않고 그 사실을 적는다(행 높이 고정)
+                                            text: badge.gear !== "" ? badge.gear : "no camera or lens recorded"
+                                            color: badge.gear !== "" ? "#8a8a8a" : "#5f5f5f"
+                                            font.pixelSize: 9
+                                            font.italic: badge.gear === ""
+                                            elide: Text.ElideRight
                                         }
                                     }
                                 }
+                            }
+                        }
+                        // 목록 전체를 덮는 단일 입력 레이어(고정 프레임) — 클릭/우클릭/드래그를 모두 여기서.
+                        MouseArea {
+                            id: recipeMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                            // ⚠️바깥 Flickable 이 세로 드래그를 가로채지 못하게(커브 에디터와 같은 이유)
+                            preventStealing: true
+                            property real pressY: 0
+                            property int pressIdx: -1
+                            property bool dragging: false
+                            onPositionChanged: function (mouse) {
+                                win.recipeHoverIdx = recipeList.idxAt(mouse.y)
+                                if (!pressed || !(mouse.buttons & Qt.LeftButton)) return
+                                var dy = mouse.y - recipeMouse.pressY
+                                // 4px 문턱을 넘어야 드래그 — 넘지 않으면 클릭(적용)이다.
+                                if (!recipeMouse.dragging && Math.abs(dy) < 4) return
+                                if (!recipeMouse.dragging) {
+                                    recipeMouse.dragging = true
+                                    win.recipeDragIdx = recipeMouse.pressIdx
+                                }
+                                win.recipeDragDy = dy
+                                var slot = recipeMouse.pressIdx + Math.round(dy / recipeList.stride)
+                                win.recipeDropIdx = Math.max(0, Math.min(recipeList.count, slot))
+                            }
+                            onExited: if (!recipeMouse.dragging) win.recipeHoverIdx = -1
+                            onPressed: function (mouse) {
+                                recipeMouse.pressY = mouse.y
+                                recipeMouse.pressIdx = recipeList.idxAt(mouse.y)
+                                recipeMouse.dragging = false
+                                if (mouse.button === Qt.RightButton) {
+                                    // 우클릭은 곧바로 실행하지 않는다 — 어느 동작인지 고를 수 있게 메뉴를 띄운다.
+                                    var it = win.presetItems[recipeMouse.pressIdx]
+                                    if (!it) return
+                                    win._presetCtxFile = it.file
+                                    win._presetCtxName = it.name
+                                    win._presetCtxColor = it.color
+                                    win._presetCtxDesc = it.description || ""
+                                    win._presetCtxSrc = it.source || ({})
+                                    presetCtxMenu.popup()
+                                }
+                            }
+                            onReleased: function (mouse) {
+                                if (recipeMouse.dragging) {
+                                    win.recipeDrop()
+                                    recipeMouse.dragging = false
+                                    return
+                                }
+                                if (mouse.button !== Qt.LeftButton || controller.imagePath === "") return
+                                var it = win.presetItems[recipeMouse.pressIdx]
+                                if (it) win.applyPresetFile(it.file, it.name)
+                            }
+                            onCanceled: {
+                                recipeMouse.dragging = false
+                                win.recipeDragIdx = -1; win.recipeDropIdx = -1; win.recipeDragDy = 0
+                            }
+                            // 툴팁 — 행 위에 떠 있을 때 그 행의 정보를 보여준다.
+                            ToolTip.visible: recipeMouse.containsMouse && win.recipeDragIdx < 0
+                                             && win.recipeHoverIdx >= 0
+                            ToolTip.delay: 600
+                            ToolTip.text: {
+                                var it = win.presetItems[win.recipeHoverIdx]
+                                if (!it) return ""
+                                return it.name + (win.badgeOn(it) ? "  \u2713 applied" : "")
+                                     + (it.description ? "\n" + it.description : "")
+                                     + "\nCreated " + it.createdAt
+                                     + (it.appVersion ? "  \u00b7  v" + it.appVersion : "")
                             }
                         }
                     }
@@ -7470,7 +7653,6 @@ ApplicationWindow {
                         // 새 파일 *디코딩 완료* 후: 저장된 편집이 있으면 복원, 없으면 기본값으로 초기화.
                         // (디코딩 전 트리거 금지 — 이전 이미지에 새 편집이 잘못 반영되는 것 방지)
                         win.clearPresetNotice()   // 사진이 바뀌면 이전 사진의 프리셋 배너는 무효
-                        win.presetRef = ({})      // 참조는 아래 applyEdits 가 사이드카에서 복원
                         win._applying = true
                         var e = controller.editsForCurrent()
                         if (e && e.v !== undefined) {
@@ -7484,10 +7666,7 @@ ApplicationWindow {
                         // 만들지 않는다 — 저장본 있으면 복원만, 없으면 기본값 유지). 주황 배지 오발 방지.
                         editSaveTimer.stop()
                         win.refreshHistogram()
-                        win.histReset(JSON.stringify(win.editParams()))   // 로드 상태 = undo baseline
-                        // 사진을 다시 열었을 때 배지 활성 표시의 근거 — 복원된 룩의 지문을 잡는다.
-                        // (참조는 위 applyEdits 가 사이드카의 recipe 키에서 이미 복원했다)
-                        win.refreshLookHash()
+                        win.histReset(JSON.stringify(win.editParams()))   // 로드 상태 = undo baseline(지문도 갱신)
                     }
                 }
 
@@ -9274,13 +9453,38 @@ ApplicationWindow {
                                     seg(P(7,2), P(7,17));  seg(P(7,17), P(22,17))
                                     seg(P(2,7), P(17,7));  seg(P(17,7), P(17,22))
                                 } else if (ic === "stamp") {
-                                    // 데이트백: 프레임 + 우하단 각인 자리(짧은 획 3개)
-                                    ctx.strokeRect(o + 3, o + 5, 18, 14)
-                                    ctx.lineWidth = 2
-                                    for (var s3 = 0; s3 < 3; s3++) {
-                                        var sx = o + 10 + s3 * 3.4
-                                        ctx.beginPath(); ctx.moveTo(sx, o + 13); ctx.lineTo(sx, o + 17); ctx.stroke()
+                                    // 데이트백 각인 = **7세그 두 자리('24')**. 이 기능이 실제로
+                                    // 찍는 글자꼴이고(DSEG), 24px 에서 읽힌다.
+                                    // ⚠️예전 시안(프레임+우하단 짧은 획 3개)은 이 크기에서 뭉개져
+                                    //   "직관적이지 않다"는 지적을 받았다. 프레임·필름스트립을
+                                    //   같이 넣는 안도 24px 에서 전부 뭉갰다 — 숫자만 남길 것.
+                                    ctx.lineWidth = 1.6
+                                    ctx.lineCap = "round"
+                                    // 세그먼트 a,b,c,d,e,f,g 점등표(7세그 표준 배치)
+                                    function seg7(sx, sy, sw, sh, on) {
+                                        var m = 0.9   // 세그먼트 끝 여유(모서리에서 선이 겹치지 않게)
+                                        var L = [[sx+m, sy, sx+sw-m, sy],                       // a 위
+                                                 [sx+sw, sy+m, sx+sw, sy+sh/2-m],               // b 우상
+                                                 [sx+sw, sy+sh/2+m, sx+sw, sy+sh-m],            // c 우하
+                                                 [sx+m, sy+sh, sx+sw-m, sy+sh],                 // d 아래
+                                                 [sx, sy+sh/2+m, sx, sy+sh-m],                  // e 좌하
+                                                 [sx, sy+m, sx, sy+sh/2-m],                     // f 좌상
+                                                 [sx+m, sy+sh/2, sx+sw-m, sy+sh/2]]             // g 중간
+                                        for (var k = 0; k < 7; k++) {
+                                            if (on.charAt(k) !== "1") continue
+                                            ctx.beginPath()
+                                            ctx.moveTo(L[k][0], L[k][1]); ctx.lineTo(L[k][2], L[k][3])
+                                            ctx.stroke()
+                                        }
                                     }
+                                    // 어포스트로피 — 실제 각인이 "'YY MM DD" 라 연도 앞에 붙는다.
+                                    // (DSEG 에는 이 글자가 없어 스탬프에서는 Qt 폴백으로 그려지지만,
+                                    //  아이콘에서는 우리가 직접 그리므로 같은 느낌을 낸다.)
+                                    ctx.beginPath()
+                                    ctx.moveTo(o + 2.6, o + 7.0); ctx.lineTo(o + 2.6, o + 10.0)
+                                    ctx.stroke()
+                                    seg7(o + 6.0,  o + 7.5, 5.5, 9, "1101101")   // 2
+                                    seg7(o + 15.0, o + 7.5, 5.5, 9, "1011111")   // 6
                                 } else if (ic === "wall") {
                                     // 배경화면: 세로 패널 3개(트립틱)
                                     ctx.fillRect(o + 3, o + 4, 5, 16)

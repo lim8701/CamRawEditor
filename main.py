@@ -2041,6 +2041,36 @@ class Controller(QObject):
         os.makedirs(d, exist_ok=True)
         return d
 
+    # ---------- 레시피 사용자 정렬 ----------
+    # ⚠️순서는 **prefs.json** 에 둔다. 레시피 파일에 넣으면 공유받은 파일이 **남의 순서**를
+    #   들고 온다 — 순서는 내 로컬 취향이고 레시피의 일부가 아니다.
+    # 키는 `id`, 없으면 파일명. (id 를 도입하기 전에 저장된 파일이 실제로 있다.)
+    def _order_key(self, d: dict) -> str:
+        return str(d.get("id") or "") or ("file:" + Path(str(d.get("file") or "")).name)
+
+    def _preset_order(self) -> list:
+        v = pref_get("recipes", "order", [])
+        return [str(x) for x in v] if isinstance(v, list) else []
+
+    def _remember_order(self, keys) -> None:
+        pref_set("recipes", "order", [str(k) for k in keys])
+
+    @Slot("QVariantList")
+    def setPresetOrder(self, keys) -> None:  # noqa: N802 (QML 슬롯)
+        """드래그로 바뀐 순서를 저장한다. QML 이 보내는 것은 **화면에 보이는 전체 순서**다."""
+        self._remember_order(keys)
+
+    def _prepend_order(self, path: str) -> None:
+        """새로 저장·가져온 레시피를 **맨 위**로(사용자 결정). 방금 만든 것이 위치로 드러난다."""
+        import presets
+        d, err = presets.read(str(path), self._PRESET_KEYS)
+        if err:
+            return
+        d["file"] = str(path)
+        k = self._order_key(d)
+        order = [x for x in self._preset_order() if x != k]
+        self._remember_order([k] + order)
+
     @Slot(result="QVariantList")
     def presetList(self):  # noqa: N802 (QML 슬롯)
         """저장된 프리셋 목록(이름순). 배지 그리드용 — **edits 는 담지 않는다**(적용할 때만
@@ -2052,11 +2082,43 @@ class Controller(QObject):
                                      "appVersion", "source", "file")}
             # 룩 지문 — QML 이 현재 편집값의 지문과 비교해 배지 활성 여부를 정한다(값 기준).
             row["lookHash"] = presets.look_hash(d["edits"], self._PRESET_KEYS)
+            # ⚠️그 레시피가 **실제로 지정한 키 목록**. 배지 비교는 이 집합에서만 해야 한다 —
+            #   프리셋 키가 나중에 늘어나면(예: 스탬프 색/글로우 추가) 옛 레시피의 지문은
+            #   적은 키로 계산돼 있어, 전체 키로 계산한 현재 룩 지문과 **영원히 달라진다**
+            #   (실제로 그래서 "적용은 되는데 앰버가 안 켜지는" 레시피가 생겼다).
+            row["lookKeys"] = sorted(k for k in self._PRESET_KEYS if k in d["edits"])
+            row["orderKey"] = self._order_key(d)
             out.append(row)
+        # 사용자 정렬 적용. 목록에 없는 레시피(방금 만든 것·폴더에 직접 넣은 것)는 **맨 위**로,
+        # 그들끼리는 이름순. presets.listdir 가 이미 이름순이라 stable sort 로 유지된다.
+        order = self._preset_order()
+        rank = {k: i for i, k in enumerate(order)}
+        out.sort(key=lambda r: rank.get(r["orderKey"], -1))
+        # 사라진 레시피의 항목은 정리해 목록이 무한히 자라지 않게 한다(파일이 있는 것만 남긴다).
+        alive = {r["orderKey"] for r in out}
+        pruned = [k for k in order if k in alive]
+        if pruned != order:
+            self._remember_order(pruned)
         return out
 
-    @Slot(str, str, str, "QVariantMap", result=str)
-    def savePreset(self, name: str, color: str, description: str, edits) -> str:  # noqa: N802
+    # 사용자가 대화상자에서 고친 카메라/렌즈를 원래 출처에 덮어쓴다.
+    # ⚠️렌즈는 EXIF 로 거의 얻을 수 없다(고정렌즈 바디는 태그를 안 쓰고 MakerNote 는 미파싱).
+    #   이 기능의 목적이 "레시피는 장비에 묶여 있다"를 알리는 것인데 렌즈가 늘 비어 있으면
+    #   그 목적이 반쪽이라, 손으로 채울 수 있게 했다(사용자 요청).
+    _SRC_TEXT_MAX = 60      # 배지 툴팁·배너 한 줄에 들어갈 만큼만
+
+    def _merge_source(self, base: dict, override) -> dict:
+        out = dict(base or {})
+        for k in ("camera", "lens"):
+            if not override or k not in override:
+                continue
+            v = " ".join(str(override[k] or "").split())      # 공백 정리(줄바꿈·중복 공백)
+            out[k] = v[:self._SRC_TEXT_MAX]
+        return out
+
+    @Slot(str, str, str, "QVariantMap", "QVariantMap", result=str)
+    def savePreset(self, name: str, color: str, description: str, edits,
+                   src_override=None) -> str:  # noqa: N802
         """현재 편집의 '룩'만 프리셋으로 저장. 성공 시 파일 경로, 실패 시 "".
         edits 는 QML 이 넘긴 전체 편집값 — 허용 목록으로 걸러서 사진별 값이 새지 않게 한다."""
         import datetime
@@ -2069,7 +2131,8 @@ class Controller(QObject):
         if err:
             print(f"[preset] 저장 거부: {err}")
             return ""
-        doc = presets.build(name, str(color or ""), self.presetSource(), keep,
+        doc = presets.build(name, str(color or ""),
+                            self._merge_source(self.presetSource(), src_override), keep,
                             APP_VERSION, datetime.date.today().isoformat(),
                             str(description or ""))
         try:
@@ -2077,6 +2140,7 @@ class Controller(QObject):
         except Exception as exc:
             print(f"[preset] 저장 실패: {exc}")
             return ""
+        self._prepend_order(path)          # 새로 만든 것은 맨 위(사용자 결정)
         print(f"[preset] 저장: {path}")
         return path
 
@@ -2092,12 +2156,16 @@ class Controller(QObject):
         d["error"] = ""
         return d
 
-    @Slot("QVariantMap", result=str)
-    def lookHash(self, edits) -> str:  # noqa: N802 (QML 슬롯)
+    # ⚠️인자 2개를 선언해야 QML 의 2인자 호출이 매칭된다 — 파이썬 기본값만 바꾸고 이 선언을
+    #   빠뜨리면 호출이 조용히 실패한다(배지가 안 켜지는 원인이었다).
+    @Slot("QVariantMap", "QVariantList", result=str)
+    def lookHash(self, edits, keys=None) -> str:  # noqa: N802 (QML 슬롯)
         """편집값의 룩 지문. 배지가 '이 사진의 룩 == 이 레시피' 를 값으로 판정하는 데 쓴다.
-        레시피 목록의 lookHash 와 같은 함수·같은 키 집합이라 비교가 성립한다."""
+        `keys` 를 주면 **그 키 집합에서만** 계산한다 — 레시피가 지정하지 않은 키는 비교 대상이
+        아니다(레시피 파일의 lookHash 도 그 파일에 있는 키만으로 계산되므로 이래야 성립한다)."""
         import presets
-        return presets.look_hash({k: edits[k] for k in edits}, self._PRESET_KEYS)
+        allowed = self._PRESET_KEYS if not keys else [str(k) for k in keys]
+        return presets.look_hash({k: edits[k] for k in edits}, allowed)
 
     @Slot(str, "QVariantMap", result=str)
     def updatePresetLook(self, file: str, edits) -> str:  # noqa: N802 (QML 슬롯)
@@ -2130,8 +2198,9 @@ class Controller(QObject):
         print(f"[preset] 룩 갱신: {path}")
         return path
 
-    @Slot(str, str, str, str, result=str)
-    def editPreset(self, file: str, name: str, color: str, description: str) -> str:  # noqa: N802
+    @Slot(str, str, str, str, "QVariantMap", result=str)
+    def editPreset(self, file: str, name: str, color: str, description: str,
+                   src_override=None) -> str:  # noqa: N802
         """이름/구분색/설명만 수정. **룩과 출처는 그대로 유지**한다 — 룩을 바꾸려면 같은 이름으로
         다시 저장하면 된다(내부 name 이 같으면 덮어쓰는 규약).
         ⚠️이름이 바뀌면 파일명도 바뀌므로 **이전 파일을 지워야** 한다(안 그러면 둘로 늘어난다)."""
@@ -2143,7 +2212,8 @@ class Controller(QObject):
         if err:
             print(f"[preset] 수정 실패(읽기) {file}: {err}")
             return ""
-        doc = presets.build(name, str(color or ""), d["source"], d["edits"],
+        doc = presets.build(name, str(color or ""),
+                            self._merge_source(d["source"], src_override), d["edits"],
                             d["appVersion"] or APP_VERSION, d["createdAt"],
                             str(description or ""), d.get("id", ""))
         try:
@@ -2194,6 +2264,7 @@ class Controller(QObject):
         except Exception as exc:
             print(f"[preset] 가져오기 실패: {exc}")
             return ""
+        self._prepend_order(path)          # 가져온 것도 맨 위
         print(f"[preset] 가져옴: {path}")
         return path
 
