@@ -2288,7 +2288,9 @@ class Controller(QObject):
         d, err = presets.read(str(file), self._PRESET_KEYS)
         if err:
             return QUrl()
-        folder = self._folder or str(Path(self._path).parent) if self._path else ""
+        # ⚠️괄호 필수 — 없으면 `(A or B) if cond else ""` 로 묶여, 폴더만 열고 사진을
+        #   안 열었을 때 _folder 가 있는데도 빈 문자열이 된다.
+        folder = self._folder or (str(Path(self._path).parent) if self._path else "")
         fn = presets.share_filename(d["name"], d["source"], d["createdAt"])
         return QUrl.fromLocalFile(str(Path(folder or self._presets_dir()) / fn))
 
@@ -2419,6 +2421,10 @@ class Controller(QObject):
     def setExportExt(self, ext: str) -> None:  # noqa: N802 (QML 슬롯)
         """QML 이 name filter 를 바꿨을 때 호출. 영구 저장해 다음 실행에서도 유지."""
         e = str(ext or "").lstrip(".").lower()
+        # ⚠️jpeg/tiff 는 jpg/tif 로 접는다. 대화상자의 name filter 목록은 png/jpg/tif 셋뿐이라,
+        #   'jpeg' 를 그대로 기억하면 indexOf 가 -1 이 되어 **필터는 PNG 인데 파일명은 .jpeg**
+        #   인 모순 상태로 열린다(예전에 사용자 보고로 고친 그 증상).
+        e = {"jpeg": "jpg", "tiff": "tif"}.get(e, e)
         if e not in _EXPORT_EXTS or e == self._export_ext:
             return
         self._export_ext = e

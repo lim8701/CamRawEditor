@@ -1024,8 +1024,25 @@ ApplicationWindow {
     // (프리셋 키가 늘어난 뒤 저장된 레시피와 그 전 레시피), 비교는 그 집합에서만 성립한다.
     // 그래서 값 자체는 badgeOn 이 매번 계산하고, 여기서는 '언제 다시 계산할지'만 알린다.
     property int lookRev: 0
-    // 편집이 커밋될 때만 알린다 — 드래그 중 매 프레임 재계산할 이유가 없다(histPush/histReset).
-    function refreshLookHash() { win.lookRev = win.lookRev + 1 }
+    // 편집이 커밋될 때만 계산한다(histPush/histReset/applySnapshot + refreshPresets).
+    // ⚠️`lookRev` 카운터만 올리고 delegate 에서 badgeOn 을 호출하는 방식이었는데 **스로틀이
+    //   전혀 듣지 않았다**(실측: 슬라이더 20프레임에 lookHash 476회). QML 은 바인딩이 호출한
+    //   함수 내부에서 읽은 프로퍼티까지 의존성으로 잡으므로, badgeOn -> editParams() 가
+    //   모든 슬라이더·브러시 획을 읽어 배지마다 매 프레임 재평가됐다. 그래서 **여기서 미리
+    //   계산해 배열에 담고** delegate 는 그 배열만 읽는다(프레임당 0회).
+    property var recipeOn: []
+    function refreshLookHash() {
+        win.lookRev = win.lookRev + 1
+        var out = []
+        if (controller.imagePath !== "") {
+            var ep = win.editParams()          // 한 번만 만든다
+            for (var i = 0; i < win.presetItems.length; i++) {
+                var it = win.presetItems[i]
+                out.push(controller.lookHash(ep, it.lookKeys || []) === it.lookHash)
+            }
+        }
+        win.recipeOn = out
+    }
     // 배지 활성 = **지금 룩이 이 레시피와 같은가**. 그것뿐이다.
     // ⚠️예전에 '이 레시피에 기반했으나 수정됨'(흐린 앰버) 상태를 사이드카 계보로 표시했다가
     //   **제거했다 — 되살리지 말 것.** 배지가 '보이지 않는 이력'의 함수가 되면 **룩이 완전히
@@ -1038,16 +1055,17 @@ ApplicationWindow {
     // 건드리지 않고 ①집은 행만 Translate 로 따라오게 하고 ②들어갈 자리에 앰버 선을 그린다.
     // (ColumnLayout 안에서 y 를 바꾸면 레이아웃과 싸우므로 transform 을 쓴다.)
     property int recipeDragIdx: -1       // 집고 있는 행(-1=없음)
-    property int recipeDropIdx: -1       // 들어갈 자리(0..count)
+    property int recipeDropIdx: -1       // 들어갈 **최종 인덱스**(0..count-1)
     property real recipeDragDy: 0
     property int recipeHoverIdx: -1       // 호버 중인 행(입력 레이어가 하나라 여기서 관리)
     readonly property int recipeRowStride: 49    // 행 44 + spacing 5
+    // ⚠️recipeDropIdx 는 **최종 인덱스**(0..count-1)다. 예전엔 '삽입 간격(gap)'으로 두고
+    //   내려갈 때 -1 보정을 했는데, 그러면 **아래로 한 칸 옮기려면 1.5행을 끌어야** 했고
+    //   위로는 0.5행이면 됐다(실측: dy=+49 에서 이동 없음). 최종 인덱스로 두면 대칭이다.
     function recipeDrop() {
         var from = win.recipeDragIdx, to = win.recipeDropIdx
         win.recipeDragIdx = -1; win.recipeDropIdx = -1; win.recipeDragDy = 0
-        if (from < 0 || to < 0) return
-        if (to > from) to -= 1                     // 자기 자리를 빼고 나서의 인덱스
-        if (to === from) return
+        if (from < 0 || to < 0 || to === from) return
         var a = win.presetItems.slice()
         a.splice(to, 0, a.splice(from, 1)[0])
         win.presetItems = a                        // 화면은 즉시 새 순서
@@ -1055,10 +1073,10 @@ ApplicationWindow {
         for (var i = 0; i < a.length; i++) keys.push(a[i].orderKey)
         controller.setPresetOrder(keys)             // 저장(prefs.json)
     }
+    // 단발 조회용(툴팁·테스트). ⚠️**delegate 바인딩에서 부르지 말 것** — 위 주석의 이유로
+    //   매 프레임 재평가된다. 화면 표시는 win.recipeOn[index] 를 읽는다.
     function badgeOn(item) {
-        win.lookRev                       // 재평가 트리거(값은 쓰지 않는다)
         if (controller.imagePath === "") return false
-        // 그 레시피가 지정한 키에서만 비교 — 지정하지 않은 키는 비교 대상이 아니다.
         return controller.lookHash(win.editParams(), item.lookKeys || []) === item.lookHash
     }
     // 우클릭 컨텍스트 대상(수정/내보내기/삭제 공용)
@@ -1068,7 +1086,10 @@ ApplicationWindow {
     property string _presetCtxDesc: ""
     property var _presetCtxSrc: ({})           // 그 레시피에 저장된 출처(카메라/렌즈 수정용)
     property string _presetConfirmMode: ""     // "delete" | "update" — 확인 대화상자 공용
-    function refreshPresets() { win.presetItems = controller.presetList() }
+    function refreshPresets() {
+        win.presetItems = controller.presetList()
+        win.refreshLookHash()          // 목록이 바뀌면 배지 판정도 다시(항목 수가 달라진다)
+    }
 
     // 배너 문구. "" = 배너 없음. presetNoticeWarn=true 면 앰버 경고, false 면 회색 정보.
     // ⚠️'비교 불가(회색)'와 '다른 기종(앰버)'이 똑같이 보이면 둘 다 안 읽힌다 → 시각 비중을 나눈다.
@@ -3040,6 +3061,7 @@ ApplicationWindow {
         property string chosenColor: controller.presetPalette[0]
         property var src: ({})
         property string editFile: ""       // "" = 새로 저장 / 경로 = 그 레시피 수정
+        property string errorText: ""      // 쓰기 실패 안내(비면 숨김)
         readonly property bool editing: presetSaveDialog.editFile !== ""
         readonly property bool nameOk: presetNameInput.text.trim() !== ""
         // 같은 이름으로 저장하면 그 레시피를 덮어쓴다(파일명이 내부 name 에서 파생되므로).
@@ -3056,6 +3078,7 @@ ApplicationWindow {
         // 새로 저장(현재 편집의 룩을 담는다)
         function openForSave() {
             presetSaveDialog.editFile = ""
+            presetSaveDialog.errorText = ""
             presetNameInput.text = ""
             presetDescInput.text = ""
             presetSaveDialog.src = controller.presetSource()
@@ -3068,6 +3091,7 @@ ApplicationWindow {
         // 수정(이름·색·설명만. 룩과 출처는 저장돼 있던 것을 그대로 유지한다)
         function openForEdit(file, name, color, desc, src) {
             presetSaveDialog.editFile = file
+            presetSaveDialog.errorText = ""
             presetNameInput.text = name
             presetDescInput.text = desc || ""
             presetSaveDialog.chosenColor = color
@@ -3091,11 +3115,19 @@ ApplicationWindow {
                                         presetSaveDialog.chosenColor, ds, so)
                 : controller.savePreset(nm, presetSaveDialog.chosenColor, ds,
                                         win.editParams(), so)
-            presetSaveDialog.close()
-            if (f !== "") {
-                win.refreshPresets()
-                if (!win.secOpen[13]) win.toggleSec(13)
+            // ⚠️실패 시 닫지 않는다 — 닫으면 입력한 이름·설명·장비가 사라지고, 화면상
+            //   "저장됐다가 사라진 레시피"와 구분이 안 된다(쓰기 실패는 읽기전용 폴더·디스크
+            //   가득·동명 파일 과다에서 실제로 난다). 콘솔 로그만 남는 것은 안내가 아니다.
+            if (f === "") {
+                presetSaveDialog.errorText = presetSaveDialog.editing
+                    ? "Couldn't save the changes. The recipe folder may be read-only."
+                    : "Couldn't save the recipe. The recipe folder may be read-only."
+                return
             }
+            presetSaveDialog.errorText = ""
+            presetSaveDialog.close()
+            win.refreshPresets()
+            if (!win.secOpen[13]) win.toggleSec(13)
         }
 
         contentItem: ColumnLayout {
@@ -3110,6 +3142,14 @@ ApplicationWindow {
                 Layout.margins: 24
                 spacing: 10
 
+                Label {
+                    Layout.fillWidth: true
+                    visible: presetSaveDialog.errorText !== ""
+                    text: "⚠ " + presetSaveDialog.errorText
+                    color: "#e08a8a"; font.pixelSize: 12
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
+                }
                 Label {
                     text: presetSaveDialog.editing ? "Edit recipe" : "Save as recipe"
                     color: "#f2f2f2"; font.pixelSize: 18; font.bold: true
@@ -6477,7 +6517,8 @@ ApplicationWindow {
                                         y: win.recipeDragIdx === index ? win.recipeDragDy : 0
                                     }
                                     // 지금 룩이 이 레시피와 같으면 앰버 실선, 아니면 무테(위 badgeOn 주석)
-                                    readonly property bool isOn: win.badgeOn(modelData)
+                                    // 미리 계산된 배열만 읽는다(위 refreshLookHash 주석 참조)
+                                readonly property bool isOn: win.recipeOn[index] === true
                                     border.color: badge.isOn ? "#E0A226"
                                                 : (badge.hovered ? "#5a5a5a" : "#3a3a3a")
                                     border.width: badge.isOn ? 2 : 1
@@ -6491,17 +6532,18 @@ ApplicationWindow {
                                         if (String(src.lens || "")) a.push(String(src.lens))
                                         return a.join("  \u00b7  ")
                                     }
-                                    // 들어갈 자리 표시 — 이 행의 위(마지막 행이면 아래에도)
+                                    // 들어갈 자리 — recipeDropIdx 는 **최종 인덱스**다. 올라오는 중이면 그 행의 위,
+                                    // 내려가는 중이면 그 행의 아래에 선을 그린다(간격 인덱스가 아니라 결과 위치를 보여준다).
                                     Rectangle {
                                         visible: win.recipeDragIdx >= 0 && win.recipeDropIdx === index
+                                                 && win.recipeDropIdx <= win.recipeDragIdx
                                         anchors.left: parent.left; anchors.right: parent.right
                                         y: -3.5; height: 2; radius: 1
                                         color: "#E0A226"
                                     }
                                     Rectangle {
-                                        visible: win.recipeDragIdx >= 0
-                                                 && win.recipeDropIdx === recipeList.count
-                                                 && index === recipeList.count - 1
+                                        visible: win.recipeDragIdx >= 0 && win.recipeDropIdx === index
+                                                 && win.recipeDropIdx > win.recipeDragIdx
                                         anchors.left: parent.left; anchors.right: parent.right
                                         y: parent.height + 1.5; height: 2; radius: 1
                                         color: "#E0A226"
@@ -6563,7 +6605,7 @@ ApplicationWindow {
                                 }
                                 win.recipeDragDy = dy
                                 var slot = recipeMouse.pressIdx + Math.round(dy / recipeList.stride)
-                                win.recipeDropIdx = Math.max(0, Math.min(recipeList.count, slot))
+                                win.recipeDropIdx = Math.max(0, Math.min(recipeList.count - 1, slot))
                             }
                             onExited: if (!recipeMouse.dragging) win.recipeHoverIdx = -1
                             onPressed: function (mouse) {
@@ -6603,7 +6645,8 @@ ApplicationWindow {
                             ToolTip.text: {
                                 var it = win.presetItems[win.recipeHoverIdx]
                                 if (!it) return ""
-                                return it.name + (win.badgeOn(it) ? "  \u2713 applied" : "")
+                                return it.name + (win.recipeOn[win.recipeHoverIdx] === true
+                              ? "  \u2713 applied" : "")
                                      + (it.description ? "\n" + it.description : "")
                                      + "\nCreated " + it.createdAt
                                      + (it.appVersion ? "  \u00b7  v" + it.appVersion : "")

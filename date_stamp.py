@@ -315,7 +315,8 @@ def add_user_font(src):
         #   죽은 코드가 됐다 — 폰트가 아닌 파일도 '성공'으로 보고되어 목록에 남고, 파일은
         #   존재하니 누락 배너도 안 뜨고, 각인만 조용히 기본 폰트로 그려졌다.
         fid = QFontDatabase.addApplicationFont(str(dst))
-        if fid < 0 or not QFontDatabase.applicationFontFamilies(fid):
+        fams = QFontDatabase.applicationFontFamilies(fid) if fid >= 0 else []
+        if fid < 0 or not fams:
             if fid >= 0:
                 QFontDatabase.removeApplicationFont(fid)
             try:
@@ -323,7 +324,11 @@ def add_user_font(src):
             except Exception:
                 pass
             return ""
+        # ⚠️패밀리 캐시까지 채운다. 안 채우면 첫 렌더의 font_family 가 **같은 파일을 다시
+        #   등록**해 핸들이 하나 누수되고(_font_ids 가 새 핸들로 덮인다), 삭제가 Qt 내부
+        #   참조 처리에 의존하게 된다(실측: 핸들 0 -> 1 로 바뀜).
         _font_ids[style] = fid
+        _families[style] = fams[0]
         return style
     except Exception as exc:
         print(f"[stamp] 폰트 추가 실패: {exc}")
