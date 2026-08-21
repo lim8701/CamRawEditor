@@ -272,6 +272,10 @@ def _migrate_sidecars(folder: str) -> None:
     except Exception:
         pass
 
+# GPU export grab 의 허용 여유분(px). QML 이 요청 크기를 DPR 로 나눌 때 홀수 치수에서
+# 축당 최대 DPR-1 px 이 더 온다 — 이만큼은 잘라내고, 그 이상이면 재샘플 폴백(_finish_gpu_export).
+_GRAB_SLACK_PX = 4
+
 # 시작 시 자동으로 열어볼 샘플 RAF (명령줄 인자가 없을 때 사용)
 DEFAULT_RAF = r"C:\Pic\x100v\128_FUJI\DSCF8035.RAF"
 # DEFAULT_RAF = r"C:\Pic\x100v\131_FUJI\DSCF1039.RAF"  # 임시 비활성
@@ -2931,8 +2935,16 @@ class Controller(QObject):
         try:
             import pipeline
             import numpy as np
-            # HiDPI 정규화 — grab 이 기대 치수(×DPR 전)와 다르면 먼저 되돌린다. 지오메트리(크롭)
+            # HiDPI 정규화 — grab 이 기대 치수와 다르면 먼저 되돌린다. 지오메트리(크롭)
             # 전에 해야 이후 단계의 치수 기준이 CPU export 와 같아진다. 배율 100% 면 no-op.
+            # QML doGrab 이 요청 크기를 DPR 로 나누므로 보통 여유분은 축당 DPR-1 px 뿐 —
+            # ⚠️그 경우 **잘라낸다(재샘플 금지)**. 축소 재샘플은 그레인을 평균해 세기를 깎는다
+            #   (Retina 실측: 평탄부 σ 가 CPU export 대비 −22%, 문서의 '풀해상도 후 CPU 축소'
+            #   실패와 같은 형태). zoom 폴백은 그 가정이 깨졌을 때만 쓴다.
+            if expected is not None and tuple(arr.shape[:2]) != tuple(expected):
+                dh, dw = arr.shape[0] - expected[0], arr.shape[1] - expected[1]
+                if 0 <= dh <= _GRAB_SLACK_PX and 0 <= dw <= _GRAB_SLACK_PX:
+                    arr = arr[:expected[0], :expected[1]]
             if expected is not None and tuple(arr.shape[:2]) != tuple(expected):
                 from scipy.ndimage import zoom as _zoom, gaussian_filter as _gf
                 fh = expected[0] / arr.shape[0]

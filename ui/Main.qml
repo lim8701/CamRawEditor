@@ -4583,10 +4583,21 @@ ApplicationWindow {
                 sourceComponent: Component { Item {
                     property bool grabPending: false
                     function doGrab() {
+                        // ⚠️grabToImage 는 **요청 크기 × DPR** 픽셀의 이미지를 돌려준다
+                        //   (실측 dpr=2: 301x203 요청 → 602x406). 논리 크기를 그대로 요청하면
+                        //   FBO 가 출력 픽셀의 DPR 배가 되어 ①그레인이 DPR 배 밀도로 계산되고
+                        //   ②2x2 서브픽셀 오프셋(grainTexelW/H = 1/width)이 출력 1px 이 아니라
+                        //   DPR px 을 덮고 ③파이썬이 사후 축소하며 평균돼, Retina 에서 평탄부
+                        //   σ 가 CPU export 대비 −22% 로 약해졌다(문서의 '풀해상도 후 CPU 축소'
+                        //   실패와 같은 형태). DPR 로 나눠 요청해 **FBO = 출력 픽셀 수**로 맞춘다
+                        //   → 그레인이 출력 해상도에서 계산되고 축소가 사라진다(배율 100% 면 no-op).
+                        //   홀수 치수는 축당 최대 DPR-1 px 더 오고, 그 여유분은 파이썬이 잘라낸다
+                        //   (_GRAB_SLACK_PX — 재샘플 금지).
+                        var dpr = Math.max(1, Screen.devicePixelRatio)
                         pipeFull.grabToImage(function(res) {
                             controller.saveGrab(res.image)
                             Qt.callLater(function() { gpuExportLoader.active = false })
-                        }, Qt.size(pipeFull.width, pipeFull.height))
+                        }, Qt.size(Math.ceil(pipeFull.width / dpr), Math.ceil(pipeFull.height / dpr)))
                     }
                     Image {
                         // mipmap: 프리셋 렌더에서 셰이더가 풀해상도 소스를 축소 샘플링하므로
