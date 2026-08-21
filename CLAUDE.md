@@ -39,6 +39,7 @@ PySide6 + QML + GPU 셰이더 기반 RAW(.RAF) 현상/보정 에디터. 후지 �
   cd C:\California\TEST36\CamRawEditor
   .\.venv\Scripts\python.exe main.py
   ```
+  (macOS: `.venv/bin/python main.py` — 패키징은 `## macOS 패키징` 참조)
 - venv = Python 3.13. 의존성: `requirements.txt` (PySide6, rawpy, numpy, scipy).
 - 시작 동작: 사진을 자동 로드하지 않고 **폴더만 탐색기에 연다**(마지막 탐색 폴더 복원 >
   개발 샘플 폴더 > Pictures 순). 개발 샘플 상수 `DEFAULT_RAF = C:\Pic\x100v\128_FUJI\DSCF8035.RAF`
@@ -423,6 +424,71 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   정규화(배율 100% 면 no-op, 동일 객체). ⚠️CPU 점유율 질문(커뮤니티): CPU export 는
   numpy 단일 코어 위주라 12스레드 CPU 에서 8~10% 로 보이는 게 정상 — iGPU 유무와 무관.
 - 16bit TIFF 미지원(QImage 8bit). 필요 시 tifffile/imageio 추가.
+
+## macOS 패키징 (.app + DMG)
+
+`packaging/build_mac.sh` = `build.ps1` 의 mac 대응물(앱 종료 → 클린 → PyInstaller → 개별
+재서명 → 다른 디렉터리 스모크 → 선택적 공증 → DMG). 산출물은 `dist/FilmRawstery.app` 과
+`dist/FilmRawstery-v<ver>-macos-arm64.dmg`(드래그 설치용 `/Applications` 심볼릭 포함).
+`FilmRawstery.spec` 은 `IS_MAC` 로 분기하고 버전은 `main.py` 의 `APP_VERSION` 을 파싱한다
+(mac 용 수동 동기화 지점을 만들지 않는다 — `version_info.txt` 는 Windows 전용).
+실측(v1.9.0, M1 Pro): **.app 457MB / DMG 169MB**, 빌드 약 1분.
+빌드 도구는 런타임 의존이 아니라 `requirements.txt` 에 없다 — venv 에 따로 넣는다:
+`pip install pyinstaller pillow`(pillow 는 아이콘 컨테이너 생성용).
+
+- ⚠️**`excludes` 는 macOS 에서 Qt 프레임워크를 못 막는다.** PySide6 훅이 `PySide6/Qt/lib` 를
+  **120개 전량** 수집한다(Windows 는 포함된 확장 모듈의 의존 DLL 만 수집되므로 excludes 로
+  충분하다). 첫 빌드 676MB 중 Qt/lib 이 322MB 였다. `otool -L` 로 수집 바이너리 523개를 전수
+  검사해 **아무것도 링크하지 않는 프레임워크 47개(250MB)** 를 찾았고 그중 **QtWebEngineCore
+  하나가 218MB(87%)** 다. WebEngine/WebView 계열은 자기 계열 + 자기 qml 플러그인만 참조하는
+  것이 확인돼 그 계열만 제거한다(676→457MB, dangling 0). **남은 44개는 합쳐 32MB 뿐이라
+  건드리지 않는다** — QtSql 은 QtQmlLocalStorage 가, QtMultimedia 는 `Qt/plugins` 의 미디어
+  플러그인이 링크하므로 지우면 실행이 깨질 수 있고 이득이 없다. 재검증:
+  `find dist/FilmRawstery.app -name '*.dylib' -o -name '*.so' | xargs -n1 otool -L | grep '@rpath/QtWebEngine'`
+- ⚠️**cv2 의 ffmpeg 제외 트릭을 mac 에 복사하면 안 된다** — mac 휠은 `cv2.abi3.so` 가
+  `@loader_path/.dylibs/libavcodec…` 를 **로드타임 링크**한다(Windows 는 videoio 지연 로드).
+  지우면 `import cv2` 자체가 실패한다. 그래서 mac 은 cv2 119MB 를 그대로 안고 간다(두 번째로
+  큰 덩어리이고 줄일 방법이 없다).
+- ⚠️**빌드 파이썬이 배포 하한을 결정한다.** Homebrew 파이썬은 호스트 OS 타깃으로 빌드돼 있어
+  (`sysconfig.get_platform()` = `macosx-15.0-arm64`) 그걸로 만든 .app 은 구버전 macOS 에서
+  dyld 오류로 죽는다. **배포 빌드는 python.org 설치본**으로 만든 venv 에서(`VENV=... build_mac.sh`).
+  휠 하한은 numpy/scipy/onnxruntime `macosx_14_0` → 실질 하한 macOS 14(Info.plist 도 14.0).
+- ⚠️**arm64 전용 빌드만 현실적**이다. PySide6 만 universal2 이고 numpy/scipy/onnxruntime/
+  opencv/rawpy 는 arm64 전용 휠이다. spec 의 `target_arch="arm64"` 가 Qt 프레임워크를 thin
+  시킨다(Qt/lib 322→103MB). Intel 지원은 `arch -x86_64` 별도 venv·별도 DMG 가 필요.
+- ⚠️**서명/공증**: 키체인의 GENORAY `Apple Distribution` 인증서로는 **외부 배포 공증이 안 된다**
+  (App Store/사내용). 필요한 것은 **`Developer ID Application`**(개인 등록 권장 — 후원 QR 이
+  있는 개인 프로젝트를 회사 인증서로 서명하면 배포 주체가 회사가 된다). 기본 ad-hoc 서명은
+  `codesign --verify` 는 통과하지만 `spctl` 은 **rejected** 이고, **macOS 15+ 는 Ctrl+클릭
+  '열기' 우회가 제거**돼 사용자가 시스템 설정 › 개인정보 보호 및 보안에서 허용해야 한다.
+  공증까지: `build_mac.sh --sign "Developer ID Application: …" --notarize`
+  (`xcrun notarytool store-credentials` 로 키체인 프로필 저장 선행, 엔타이틀먼트는
+  `packaging/entitlements.plist`). ⚠️zip 은 **`ditto -c -k --keepParent`** 로 만들어야 서명이
+  보존된다.
+- ⚠️**스모크 테스트는 `exec` 로 띄울 것** — `( cd /tmp && app ) &` 의 `$!` 는 서브셸 PID 라
+  kill 이 앱을 남기고, 다음 실행이 단일 인스턴스 가드에 걸려 '이미 실행 중'으로 즉시 종료된다
+  (실측으로 걸렸다). `build.ps1` 이 개발 인스턴스까지 죽이는 것과 같은 계열의 함정.
+- **.app 레이아웃**: PyInstaller 6 은 바이너리를 `Contents/Frameworks`, 데이터를
+  `Contents/Resources` 에 두고 **교차 심볼릭**(실측 231/238개)을 만든다. `sys._MEIPASS` 는
+  Frameworks 를 가리키므로 `main.app_base()` 는 **수정 없이 동작**한다(`shaders/`·`luts/`·`ui/`
+  가 심볼릭으로 해석됨). `contents_directory="lib"` 는 .app 에서는 무효.
+  ⚠️`_feature_flags()` 의 `.env` 는 `sys.executable` 옆 = **`FilmRawstery.app/Contents/MacOS/`
+  안**이다(앱 옆에 두면 안 읽힌다). 환경변수 `FILMRAWSTERY_*` 는 그대로 동작.
+- **아이콘**: `packaging/make_icon.py --icns` (1024 마스터 → `iconutil`). 도형 상수는 `k=size/256`
+  스케일이고 **256px 렌더가 리팩터 전과 픽셀 단위로 동일함을 검증**했다(diff 0바이트 → Windows
+  `.ico` 무영향). 128px 이상에만 **사방 여백**을 준다(Apple 그리드 824/1024 = 80.5%; 16/32 에
+  주면 글자가 뭉갠다). 레터마크 폰트는 mac 에서 **Arial Black**(Segoe UI Black 은 Windows 외
+  재배포 불가) — 글자 모양이 미세하게 다르므로 두 아이콘을 완전히 맞추려면 Windows 에서
+  `--icns` 까지 함께 생성할 것.
+- **검증된 것**(v1.9.0 시험 빌드): Metal RHI 정상(`QRhi backend Metal / Apple M1 Pro`,
+  셰이더 오류 0 — 커밋된 `.qsb` 의 MSL 12 가 재컴파일 없이 로드됨), 메인 창
+  `CAMetalLayer 3456x1946 scale 2.00`(Retina DPR 2), 일반 이미지 로드 경로 통과,
+  **읽기 전용 DMG 볼륨에서 실행 성공**(번들에 쓰지 않음), 번들에 ARR LUT·models 없음.
+- **남은 mac 이슈**(패키징 아님): `_set_keep_awake` 가 win32 전용이라 **긴 export 중 잠든다**
+  (`caffeinate -dims` 또는 IOKit 필요) · 폰트 추가 대화상자가 `C:/Windows/Fonts` 를 연다 ·
+  `QFileOpenEvent` 핸들러가 없어 Finder 더블클릭/Dock 드롭으로 사진이 안 열린다(argv 만 처리) ·
+  `pipeline.py` serif 후보에 mac 폰트가 없어 시작 시 **폰트 별칭 채우기 105ms**(missing
+  "Constantia").
 
 ## 향후 후보
 

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened Runtime 엔타이틀먼트 (Developer ID 서명 + 공증 시에만 의미가 있다).
+  - disable-library-validation: PyInstaller 번들은 서로 다른 팀이 빌드한 dylib(Qt/numpy/
+    onnxruntime/libraw)을 한 프로세스에 로드한다. 우리가 전부 재서명하더라도 라이브러리
+    검증이 켜져 있으면 로드가 거부되는 경우가 있어 관례적으로 끈다.
+  - allow-dyld-environment-variables: PyInstaller 부트로더가 DYLD_* 를 설정한다.
+  ⚠️ad-hoc(무료) 서명에는 Hardened Runtime 이 적용되지 않으므로 이 파일도 쓰이지 않는다.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+</dict>
+</plist>

@@ -214,7 +214,7 @@ Key design decisions:
 - `PySide6`, `rawpy`, `numpy`, `scipy`, `exifread`, `opencv-python-headless`, `onnxruntime-directml` (Windows; plain `onnxruntime` elsewhere — see [`requirements.txt`](requirements.txt))
   - ⚠️ OpenCV must be **`headless` and 5.0+**: the full package ships its own Qt plugins and clashes with PySide6, and 4.x pins `numpy<2.3` so it would downgrade the project's numpy. It is used only for face detection and mask resampling.
 - A GPU/driver supporting the Qt RHI (OpenGL / Direct3D / Metal / Vulkan)
-- AI models download on first use into a per-user data folder that survives app updates (`%LOCALAPPDATA%\FilmRawstery\models` on Windows) — needs an internet connection the first time. Scene masking (SegFormer-B2, ~105 MB), face masking (YuNet + SegFormer-B5, ~341 MB), depth masking (Depth Anything V3 Small, ~105 MB) and AI denoise (NAFNet, ~117 MB) fetch automatically when you first use the feature; the caption model (Florence-2, ~1.1 GB) **only after an explicit in-app opt-in**. The **AI Models** screen (left panel footer) shows what is installed and lets you pre-download any of them (see [`models/README.md`](models/README.md))
+- AI models download on first use into a per-user data folder that survives app updates (`%LOCALAPPDATA%\FilmRawstery\models` on Windows, `~/Library/Application Support/FilmRawstery/models` on macOS) — needs an internet connection the first time. Scene masking (SegFormer-B2, ~105 MB), face masking (YuNet + SegFormer-B5, ~341 MB), depth masking (Depth Anything V3 Small, ~105 MB) and AI denoise (NAFNet, ~117 MB) fetch automatically when you first use the feature; the caption model (Florence-2, ~1.1 GB) **only after an explicit in-app opt-in**. The **AI Models** screen (left panel footer) shows what is installed and lets you pre-download any of them (see [`models/README.md`](models/README.md))
 
 ## Install & Run
 
@@ -253,7 +253,17 @@ Runs from source with the common setup above — all dependencies ship prebuilt 
 - Shaders are precompiled with Metal (MSL) included; if a recompile is triggered, the `pyside6-qsb` tool installed with PySide6 handles it automatically.
 - Display color management (preview-only monitor-profile correction) is Windows-only and silently disabled on macOS — everything else works the same.
 - AI denoise uses the CoreML execution provider (included in the standard `onnxruntime` macOS wheel, Apple Silicon included) and falls back to CPU — with a confirm prompt — if unavailable.
-- ⚠️ **Untested in practice** — the code is written to be platform-clean, but no one has verified a real macOS run yet (I develop on Windows and don't own a Mac — see [Support](#support--후원)). If you try it, [feedback is very welcome](https://github.com/lim8701/FilmRawstery/issues).
+- **Status**: runs on Apple Silicon (M1 Pro, macOS 15) — the Qt RHI picks Metal, the precompiled
+  shaders load without a recompile, and `xplat_check.py` reproduces the numpy export pipeline here.
+  Windows is still the primary development/test platform, so the mac side sees far less mileage: [feedback is very welcome](https://github.com/lim8701/FilmRawstery/issues).
+  Known gaps: the display stays awake protection during long exports is Windows-only (your Mac can
+  sleep mid-export), and double-clicking a RAF in Finder does not hand it to the app yet (open photos
+  from the app's own file explorer).
+- **A local `.app` + DMG** can be built with `packaging/build_mac.sh` (PyInstaller; produces
+  `dist/FilmRawstery.app` and `FilmRawstery-vX.Y.Z-macos-arm64.dmg`, Apple Silicon only, macOS 14+).
+  There is no prebuilt macOS download on the Releases page yet — a public build needs an Apple
+  Developer ID certificate and notarization, without which macOS refuses to open it unless the user
+  allows it by hand in System Settings › Privacy & Security.
 
 ---
 

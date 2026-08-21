@@ -19,10 +19,11 @@ to bump — showing the resulting version for each choice:
 
 Do NOT pick a bump level yourself, even if the changes obviously look like a patch.
 
-## 2. Sync the version (3 places)
+## 2. Sync the version (2 files)
 - `main.py` `APP_VERSION`
 - `packaging/version_info.txt` — `filevers`, `prodvers`, `FileVersion`, `ProductVersion` (static literals; edit all four)
 - `packaging/FilmRawstery.iss` needs no edit — `build.ps1` passes `/DAppVersion` automatically
+- macOS needs no edit either — `FilmRawstery.spec` parses `APP_VERSION` out of `main.py` for `Info.plist`
 
 ## 3. Spec check + clean build
 Run the spec completeness check from the `package` command (QML list, native deps, hidden imports, ARR LUT exclusion, no models/). Then:
@@ -40,10 +41,24 @@ Write `dist\RELEASE_NOTES_v<ver>.md` (English) summarizing `git log v<prev>..HEA
 - `git tag v<ver>` — the tag MUST be exactly `v<major>.<minor>.<patch>`; the in-app update check only recognizes that form.
 - `git push origin dev v<ver>`
 
+## 5.5 macOS asset (optional, only when a Mac build is part of this release)
+The mac artifact is built on the Mac from the same tag — there is no cross-compiling. On that machine,
+after checking out `v<ver>`:
+```
+VENV=<python.org venv> packaging/build_mac.sh --sign "Developer ID Application: … (TEAMID)" --notarize
+```
+Produces `dist/FilmRawstery-v<ver>-macos-arm64.dmg` (arm64 only; macOS 14+). Skip this step for a
+Windows-only release and say so in the report — do not block the release on it.
+⚠️ An ad-hoc-signed DMG is `spctl`-rejected: only publish one if the release notes tell users how to
+allow it (System Settings › Privacy & Security — macOS 15 removed the Ctrl-click bypass).
+
 ## 6. GitHub release (user does the upload)
 No `gh` CLI on this machine. Give the user:
 - the link `https://github.com/lim8701/FilmRawstery/releases/new?tag=v<ver>`
-- the notes file path to paste, and the asset to upload: `dist\FilmRawstery-v<ver>-setup.exe` (installer only — zip is not uploaded since v1.7.1)
+- the notes file path to paste, and the assets to upload: `dist\FilmRawstery-v<ver>-setup.exe`
+  (installer only — zip is not uploaded since v1.7.1) plus `FilmRawstery-v<ver>-macos-arm64.dmg`
+  if a Mac build was made. The in-app updater only opens the release *page*, so adding a second
+  asset needs no code change.
 Wait for the user to say it's up, then verify via `curl https://api.github.com/repos/lim8701/FilmRawstery/releases/latest` (tag matches, not draft/prerelease, setup asset present).
 
 ## 7. Finish: fast-forward main
