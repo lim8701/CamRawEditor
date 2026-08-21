@@ -42,10 +42,17 @@ Write `dist\RELEASE_NOTES_v<ver>.md` (English) summarizing `git log v<prev>..HEA
 - `git push origin dev v<ver>`
 
 ## 5.5 macOS asset (optional, only when a Mac build is part of this release)
-Built on the Mac from the same tag — no cross-compiling. There:
+⚠️**Two machines, one owner of the version.** The release is cut on Windows: this command bumps
+`APP_VERSION`, tags and pushes (steps 2–5). The Mac never bumps the version — it checks out the tag
+that Windows pushed and builds from it, so both artifacts come from identical source:
 ```
+git fetch --tags && git checkout v<ver>        # on the Mac
 packaging/build_mac.sh
+gh release upload v<ver> dist/FilmRawstery-v<ver>-macos-arm64.dmg   # after step 6 created the release
 ```
+(`gh` is installed and authenticated on the Mac — that is where the mac asset gets uploaded from. Add
+`--clobber` to replace an asset already attached. Assets live in GitHub's release storage, never in
+the repo: `dist/` is gitignored.)
 Produces `dist/FilmRawstery-v<ver>-macos-arm64.dmg` (arm64 only; macOS 15+ — the floor is measured, not
 guessed: see the `minos` check in the `package` command) and prints its SHA256. Skip this step for a
 Windows-only release and say so in the report — never block the release on it.
@@ -76,7 +83,7 @@ Once a Developer ID certificate exists, switch to
 paragraph from the notes, and keep the SHA256 line.
 
 ## 6. GitHub release (user does the upload)
-No `gh` CLI on this machine. Give the user:
+No `gh` CLI on the Windows machine (the Mac has one — see 5.5). Give the user:
 - the link `https://github.com/lim8701/FilmRawstery/releases/new?tag=v<ver>`
 - the notes file path to paste, and the assets to upload: `dist\FilmRawstery-v<ver>-setup.exe`
   (installer only — zip is not uploaded since v1.7.1) plus `FilmRawstery-v<ver>-macos-arm64.dmg`
