@@ -129,5 +129,9 @@ fi
 
 echo
 printf 'OK  ->  %s  (%s)\n' "$APP" "$(du -sh "$APP" | cut -f1)"
-[[ -f "$DMG" ]] && printf 'OK  ->  %s  (%s)\n' "$DMG" "$(du -sh "$DMG" | cut -f1)"
+if [[ -f "$DMG" ]]; then
+  printf 'OK  ->  %s  (%s)\n' "$DMG" "$(du -sh "$DMG" | cut -f1)"
+  # 릴리스 본문에 그대로 붙이는 값 — 무서명 배포에서는 이게 신뢰의 부분적 대체물이다.
+  printf 'SHA256  %s\n' "$(shasum -a 256 "$DMG" | cut -d' ' -f1)"
+fi
 codesign -dv "$APP" 2>&1 | sed -n 's/^\(Authority\|Signature\|Identifier\|TeamIdentifier\)/  &/p'

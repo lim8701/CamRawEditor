@@ -479,6 +479,20 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   오류 0). PyInstaller 앱이 하드닝에서 죽는 경우가 흔한데 이 앱은 해당 없음 — 인증서를 산 뒤에
   발견하지 않도록 미리 재 봤다. ad-hoc 에도 같은 플래그를 걸 수 있으므로 엔타이틀먼트를
   바꿨으면 이 방법으로 먼저 확인할 것.
+- ★**배포 결정(2026-08): ad-hoc 서명 + 공증 없음, GitHub Releases 의 experimental 자산으로.**
+  공증에는 Apple Developer Program $99/년 이 필수이고 무료 경로가 없다(무료 Apple ID 의 Personal
+  Team 은 Apple Development 인증서만 발급 — Developer ID 발급·notarytool 사용 불가). mac 사용자
+  규모를 모르는 상태에서 먼저 지출하지 않고, **다운로드 수·반응을 보고 그 해에 공증으로 승급**하는
+  순서를 택했다. 타임스탬프된 서명과 공증 티켓은 멤버십이 끝나도 유효하므로 '공개할 해에만' 내는
+  것이 가능하다. ⚠️App Store 는 선택지가 아니다 — **PySide6/Qt LGPLv3 · LibRaw LGPL-2.1 의 재링크
+  조항**(NOTICE.txt 가 onedir 로 충족시키는 그 조항)을 스토어에서는 보장할 수 없고(Qt Company 도
+  상용 라이선스를 요구), App Sandbox 개조와 후원 화면 제거(심사 3.1.1: IAP 외 외부 결제 유도 금지,
+  자선 예외는 등록 비영리 한정)까지 얹히면 다른 제품이 된다.
+- ⚠️**mac DMG 를 올릴 때 GitHub 릴리스를 pre-release 로 표시하지 말 것** — 인앱 업데이터
+  (`Controller._release_candidates`)가 `prerelease`/`draft` 를 건너뛰므로 **Windows 사용자 전체의
+  업데이트 알림이 조용히 멈춘다**. '실험적'은 릴리스가 아니라 **자산 설명**에 적는다.
+  무서명 배포는 릴리스 본문에 **차단 해제 절차 + SHA256** 이 반드시 함께 가야 한다(없으면 사용자가
+  앱을 아예 열 수 없다). 절차 원문은 README 의 macOS 절, 릴리스 본문 템플릿은 release 스킬 5.5.
 - ⚠️**스모크 테스트는 `exec` 로 띄울 것** — `( cd /tmp && app ) &` 의 `$!` 는 서브셸 PID 라
   kill 이 앱을 남기고, 다음 실행이 단일 인스턴스 가드에 걸려 '이미 실행 중'으로 즉시 종료된다
   (실측으로 걸렸다). `build.ps1` 이 개발 인스턴스까지 죽이는 것과 같은 계열의 함정.

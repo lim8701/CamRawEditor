@@ -42,24 +42,46 @@ Write `dist\RELEASE_NOTES_v<ver>.md` (English) summarizing `git log v<prev>..HEA
 - `git push origin dev v<ver>`
 
 ## 5.5 macOS asset (optional, only when a Mac build is part of this release)
-The mac artifact is built on the Mac from the same tag — there is no cross-compiling. On that machine,
-after checking out `v<ver>`:
+Built on the Mac from the same tag — no cross-compiling. There:
 ```
-packaging/build_mac.sh --sign "Developer ID Application: … (TEAMID)" --notarize
+packaging/build_mac.sh
 ```
-Produces `dist/FilmRawstery-v<ver>-macos-arm64.dmg` (arm64 only; macOS 15+ — the floor is measured,
-not guessed: see the `minos` check in the `package` command). Skip this step for a
-Windows-only release and say so in the report — do not block the release on it.
-⚠️ An ad-hoc-signed DMG is `spctl`-rejected: only publish one if the release notes tell users how to
-allow it (System Settings › Privacy & Security — macOS 15 removed the Ctrl-click bypass).
+Produces `dist/FilmRawstery-v<ver>-macos-arm64.dmg` (arm64 only; macOS 15+ — the floor is measured, not
+guessed: see the `minos` check in the `package` command) and prints its SHA256. Skip this step for a
+Windows-only release and say so in the report — never block the release on it.
+
+**Current distribution decision: ad-hoc signed, NOT notarized** (notarization needs the $99/year Apple
+Developer membership; revisit when the mac download actually gets traffic). That makes two things
+mandatory:
+
+- ⚠️ **Do NOT flag the GitHub release as a pre-release.** The in-app updater skips
+  `prerelease`/`draft` releases (`main.Controller._release_candidates`), so flagging it would silently
+  stop update notifications for every Windows user. Mark the *asset* as experimental in the notes
+  instead, exactly as below.
+- The notes must carry the unblock steps, or users cannot open the app at all. Paste this block into
+  the release body under the macOS heading:
+
+```markdown
+### macOS (experimental, Apple Silicon)
+
+`FilmRawstery-v<ver>-macos-arm64.dmg` — requires macOS 15 (Sequoia) or newer on an Apple Silicon Mac.
+Not notarized, so macOS blocks the first launch: drag the app to Applications, double-click once and
+press **Done**, then **System Settings › Privacy & Security → Open Anyway**. Terminal equivalent:
+`xattr -dr com.apple.quarantine /Applications/FilmRawstery.app`.
+SHA256: `<paste from build_mac.sh>`
+```
+
+Once a Developer ID certificate exists, switch to
+`packaging/build_mac.sh --sign "Developer ID Application: … (TEAMID)" --notarize`, drop the unblock
+paragraph from the notes, and keep the SHA256 line.
 
 ## 6. GitHub release (user does the upload)
 No `gh` CLI on this machine. Give the user:
 - the link `https://github.com/lim8701/FilmRawstery/releases/new?tag=v<ver>`
 - the notes file path to paste, and the assets to upload: `dist\FilmRawstery-v<ver>-setup.exe`
   (installer only — zip is not uploaded since v1.7.1) plus `FilmRawstery-v<ver>-macos-arm64.dmg`
-  if a Mac build was made. The in-app updater only opens the release *page*, so adding a second
-  asset needs no code change.
+  if a Mac build was made. The in-app updater only opens the release *page*, so a second asset needs
+  no code change — but the release must stay a normal (non-pre-)release, see 5.5.
 Wait for the user to say it's up, then verify via `curl https://api.github.com/repos/lim8701/FilmRawstery/releases/latest` (tag matches, not draft/prerelease, setup asset present).
 
 ## 7. Finish: fast-forward main

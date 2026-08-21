@@ -259,12 +259,36 @@ Runs from source with the common setup above — all dependencies ship prebuilt 
   Known gaps: the display stays awake protection during long exports is Windows-only (your Mac can
   sleep mid-export), and double-clicking a RAF in Finder does not hand it to the app yet (open photos
   from the app's own file explorer).
-- **A local `.app` + DMG** can be built with `packaging/build_mac.sh` (PyInstaller; produces
-  `dist/FilmRawstery.app` and `FilmRawstery-vX.Y.Z-macos-arm64.dmg`, Apple Silicon only, macOS 15+ —
-  PySide6 6.10 and newer ship binaries built for macOS 15, which sets that floor).
-  There is no prebuilt macOS download on the Releases page yet — a public build needs an Apple
-  Developer ID certificate and notarization, without which macOS refuses to open it unless the user
-  allows it by hand in System Settings › Privacy & Security.
+#### Download the macOS build (experimental)
+
+`FilmRawstery-vX.Y.Z-macos-arm64.dmg` on the [Releases](https://github.com/lim8701/FilmRawstery/releases)
+page. It needs **Apple Silicon** (M1 or newer — check  → About This Mac → Chip) and
+**macOS 15 Sequoia or newer**; PySide6 6.10 and later ship binaries built for macOS 15, which sets that
+floor. Intel Macs are not supported.
+
+The build is **signed but not notarized** — notarization needs a paid Apple Developer membership, and
+this is a donation-funded hobby project, so macOS blocks the first launch. Opening it is a one-time
+detour:
+
+1. Open the DMG and drag **FilmRawstery** into **Applications** (the shortcut is right there in the window).
+2. Double-click it once. macOS says it *"cannot verify … is free of malware"* — click **Done**.
+3. Open **System Settings › Privacy & Security**, scroll down to the **Security** section, and click
+   **Open Anyway** on the FilmRawstery line, then confirm with Touch ID or your password.
+4. It launches — and every launch after that is normal. You do this once per version.
+
+If you prefer the terminal, this replaces steps 2–4:
+```bash
+xattr -dr com.apple.quarantine /Applications/FilmRawstery.app
+```
+⚠️ macOS 15 removed the old Control-click → **Open** shortcut, so the System Settings route above is the
+only click-through way. Verify the download against the SHA256 published in the release notes if you
+want to be careful (`shasum -a 256 <file>.dmg`) — that is the check a signature would otherwise do for you.
+
+**Uninstall**: drag the app to the Trash. Per-user data — settings, recipes, added fonts and the
+downloaded AI models — lives in `~/Library/Application Support/FilmRawstery` and can be deleted separately.
+
+**Building it yourself** (no membership needed): `packaging/build_mac.sh` produces the same
+`dist/FilmRawstery.app` + DMG from source.
 
 ---
 
