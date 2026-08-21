@@ -55,8 +55,13 @@ Components and licenses
 4. PySide6 / Qt 6
    GNU LGPL v3. Copyright (c) The Qt Company Ltd.
    https://www.qt.io  ·  License text: https://www.gnu.org/licenses/lgpl-3.0.html
-   Relinking (LGPL §4): this is an onedir build — the Qt/PySide6 DLLs are
-   separate files under lib/ and may be replaced by the recipient.
+   Relinking (LGPL §4): this is an onedir build — the Qt/PySide6 libraries are
+   separate files (Windows: lib/ ; macOS: FilmRawstery.app/Contents/Frameworks/)
+   and may be replaced by the recipient.
+   On macOS, replacing a library invalidates the application's code signature,
+   so the relinked bundle must be re-signed before it will launch:
+       codesign --force --deep --sign - FilmRawstery.app
+   (ad-hoc signing; no Apple developer account or certificate is required).
 
 5. LibRaw  (RAW decoding, via rawpy)
    LGPL-2.1 or CDDL-1.0. See THIRD_PARTY_LICENSES/LibRaw-LGPL-2.1.txt
