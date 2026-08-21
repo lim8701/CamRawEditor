@@ -39,3 +39,6 @@ luts/sepia.cube
 # OS
 Thumbs.db
 .DS_Store
+
+# Claude Code 로컬 설정(권한 허용 목록 등 — 머신별). .claude/commands 는 추적 유지.
+.claude/settings.local.json
