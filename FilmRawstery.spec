@@ -145,9 +145,16 @@ coll = COLLECT(
 #   폴더를 스캔한다. Desktop/Documents/Downloads/외장볼륨은 TCC 보호 대상이라 문구가 없으면
 #   정체불명 동의 다이얼로그가 뜬다. SD 카드에서 RAF 를 여는 것이 주 사용 흐름이므로
 #   NSRemovableVolumesUsageDescription 은 사실상 필수.
-# ⚠️LSMinimumSystemVersion 은 휠 하한(numpy/scipy/onnxruntime = macosx_14_0)에서 왔다.
-#   실제 하한은 **빌드에 쓴 파이썬의 배포 타깃**이 결정하니(Homebrew 파이썬은 호스트 OS)
-#   배포 빌드는 python.org 설치본으로 할 것.
+# ⚠️LSMinimumSystemVersion 은 **번들 Mach-O 의 minos 최대값**을 그대로 적은 것이다(측정:
+#   `vtool -show-build` 를 517개 바이너리에 돌려 최대 15.0). 휠 태그를 믿으면 안 된다 —
+#   PySide6 6.11.2 는 `macosx_13_0_universal2` 태그인데 바인딩(`QtCore.abi3.so`,
+#   `libpyside6`, `libshiboken6`)의 minos 가 **15.0** 이다(Qt CI 가 6.10 부터 macOS 15 에서
+#   배포 타깃 없이 빌드한다. shiboken6 실측: 6.9.1=12.0 / 6.10.0=15.0 / 6.11.2=15.0).
+#   ⚠️여기를 실제 minos 보다 낮게 적으면 Finder 가 실행을 허용한 뒤 dyld 오류로 죽는다 —
+#   낮게 적어서 지원 범위가 늘어나지는 않는다.
+#   하한을 macOS 14 로 내리려면 **둘 다** 필요하다: PySide6 6.9.x 고정(그 위 하한은
+#   numpy/scipy/onnxruntime 의 14.0) + python.org 파이썬(Homebrew 파이썬의 libpython·
+#   libmpdec 가 15.0). Qt 버전이 Windows 빌드와 갈라지는 대가를 치를 값인지 판단할 것.
 if IS_MAC:
     app = BUNDLE(
         coll,
@@ -160,7 +167,7 @@ if IS_MAC:
             "CFBundleDisplayName": "Film Rawstery",
             "CFBundleShortVersionString": APP_VERSION,
             "CFBundleVersion": APP_VERSION,
-            "LSMinimumSystemVersion": "14.0",
+            "LSMinimumSystemVersion": "15.0",   # = 번들 minos 최대값(위 주석)
             "LSApplicationCategoryType": "public.app-category.photography",
             "NSHighResolutionCapable": True,
             "NSRequiresAquaSystemAppearance": False,   # 앱 UI 가 다크 전제

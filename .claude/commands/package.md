@@ -56,8 +56,9 @@ packaging/build_mac.sh
 - `--sign "Developer ID Application: … (TEAMID)" --notarize` for a public build; without a Developer ID
   certificate the default ad-hoc signature is `spctl`-rejected and users must allow it in System
   Settings (macOS 15 removed the Ctrl-click bypass) — say which one you produced.
-- ⚠️ Build a *distributable* from a **python.org** Python venv (`VENV=… packaging/build_mac.sh`):
-  Homebrew Python targets the host OS, so its bundle dies with dyld errors on older macOS.
+- ⚠️ The Homebrew Python this repo's venv uses targets the host OS. That is fine while the floor is
+  macOS 15 (PySide6 sets it — see the `minos` check below), but if the floor is ever lowered, the
+  distributable must be built from a **python.org** Python venv (`VENV=… packaging/build_mac.sh`).
 
 If either throws, read the error / smoke output and fix (often a missing data file or hidden import), then re-run.
 
@@ -73,6 +74,11 @@ lipo -info dist/FilmRawstery.app/Contents/Frameworks/PySide6/Qt/lib/QtCore.frame
 codesign --verify --strict dist/FilmRawstery.app
 find dist/FilmRawstery.app \( -name '*.dylib' -o -name '*.so' \) | xargs -n1 otool -L | grep -c '@rpath/QtWebEngine'   # must be 0
 ```
+⚠️ **Re-measure the OS floor whenever a dependency is upgraded** — wheel tags lie (PySide6 6.11.2 is
+tagged `macosx_13_0` but its bindings are `minos 15.0`). Walk every Mach-O in the bundle with
+`vtool -show-build`, take the maximum `minos`, and make `LSMinimumSystemVersion` in the spec equal to
+it. Declaring less does not widen support; it just turns a clean "requires macOS X" dialog into a dyld
+crash.
 Then mount the DMG and launch the app from the read-only volume for a few seconds — that is what catches anything writing inside the bundle. Report the `.app` and DMG sizes (457 MB / 169 MB at v1.9.0; a sudden jump usually means the WebEngine filter stopped matching).
 
 Windows installer (`dist/FilmRawstery-v<ver>-setup.exe`): confirm it exists and its size is plausible (same order as the zip — solid LZMA2 usually comes out smaller). The installer just wraps `dist/FilmRawstery/` (contents are decided solely by the spec — `.iss` re-enumerates nothing), so no separate content check is needed. Do NOT bump or reuse the `AppId` GUID in `packaging/FilmRawstery.iss` — it is the upgrade identity across versions.

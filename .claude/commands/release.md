@@ -45,9 +45,10 @@ Write `dist\RELEASE_NOTES_v<ver>.md` (English) summarizing `git log v<prev>..HEA
 The mac artifact is built on the Mac from the same tag — there is no cross-compiling. On that machine,
 after checking out `v<ver>`:
 ```
-VENV=<python.org venv> packaging/build_mac.sh --sign "Developer ID Application: … (TEAMID)" --notarize
+packaging/build_mac.sh --sign "Developer ID Application: … (TEAMID)" --notarize
 ```
-Produces `dist/FilmRawstery-v<ver>-macos-arm64.dmg` (arm64 only; macOS 14+). Skip this step for a
+Produces `dist/FilmRawstery-v<ver>-macos-arm64.dmg` (arm64 only; macOS 15+ — the floor is measured,
+not guessed: see the `minos` check in the `package` command). Skip this step for a
 Windows-only release and say so in the report — do not block the release on it.
 ⚠️ An ad-hoc-signed DMG is `spctl`-rejected: only publish one if the release notes tell users how to
 allow it (System Settings › Privacy & Security — macOS 15 removed the Ctrl-click bypass).

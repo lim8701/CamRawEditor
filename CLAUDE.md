@@ -449,10 +449,18 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   `@loader_path/.dylibs/libavcodec…` 를 **로드타임 링크**한다(Windows 는 videoio 지연 로드).
   지우면 `import cv2` 자체가 실패한다. 그래서 mac 은 cv2 119MB 를 그대로 안고 간다(두 번째로
   큰 덩어리이고 줄일 방법이 없다).
-- ⚠️**빌드 파이썬이 배포 하한을 결정한다.** Homebrew 파이썬은 호스트 OS 타깃으로 빌드돼 있어
-  (`sysconfig.get_platform()` = `macosx-15.0-arm64`) 그걸로 만든 .app 은 구버전 macOS 에서
-  dyld 오류로 죽는다. **배포 빌드는 python.org 설치본**으로 만든 venv 에서(`VENV=... build_mac.sh`).
-  휠 하한은 numpy/scipy/onnxruntime `macosx_14_0` → 실질 하한 macOS 14(Info.plist 도 14.0).
+- ⚠️**하한은 휠 태그가 아니라 `minos` 실측으로 정한다 — 현재 macOS 15.** 번들 Mach-O 517개에
+  `vtool -show-build` 를 돌린 최대값이 하한이고, 그 값을 `LSMinimumSystemVersion` 에 적는다.
+  낮게 적으면 지원 범위가 늘지 않고 **Finder 가 실행을 허용한 뒤 dyld 오류로 죽는다**.
+  실측 분포: PySide6 바인딩(`QtCore.abi3.so`/`libpyside6`/`libshiboken6`) **15.0** ·
+  Homebrew libpython·libmpdec 15.0 · numpy/scipy/onnxruntime 14.0 · Qt 프레임워크 13.0 ·
+  cv2 13.0 · rawpy 11.0.
+  ⚠️**휠 태그는 거짓말이다** — PySide6 6.11.2 는 `macosx_13_0_universal2` 태그인데 minos 15.0
+  이다(Qt CI 가 6.10 부터 macOS 15 에서 배포 타깃 없이 빌드. shiboken6 실측 **6.9.1=12.0 /
+  6.10.0=15.0 / 6.11.2=15.0**). 처음엔 'Homebrew 파이썬(타깃 15) 때문'이라 보고 python.org
+  파이썬 교체를 계획했는데, **측정해 보니 PySide6 가 진짜 원인**이어서 파이썬만 바꾸면 하한이
+  안 내려간다. 하한을 14 로 내리려면 **PySide6 6.9.x 고정 + python.org 파이썬** 둘 다 필요하고,
+  Qt 버전이 Windows 빌드와 갈라지는 대가를 치를 값인지 판단해야 한다(현재는 15 를 받아들였다).
 - ⚠️**arm64 전용 빌드만 현실적**이다. PySide6 만 universal2 이고 numpy/scipy/onnxruntime/
   opencv/rawpy 는 arm64 전용 휠이다. spec 의 `target_arch="arm64"` 가 Qt 프레임워크를 thin
   시킨다(Qt/lib 322→103MB). Intel 지원은 `arch -x86_64` 별도 venv·별도 DMG 가 필요.

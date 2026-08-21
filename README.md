@@ -260,7 +260,8 @@ Runs from source with the common setup above — all dependencies ship prebuilt 
   sleep mid-export), and double-clicking a RAF in Finder does not hand it to the app yet (open photos
   from the app's own file explorer).
 - **A local `.app` + DMG** can be built with `packaging/build_mac.sh` (PyInstaller; produces
-  `dist/FilmRawstery.app` and `FilmRawstery-vX.Y.Z-macos-arm64.dmg`, Apple Silicon only, macOS 14+).
+  `dist/FilmRawstery.app` and `FilmRawstery-vX.Y.Z-macos-arm64.dmg`, Apple Silicon only, macOS 15+ —
+  PySide6 6.10 and newer ship binaries built for macOS 15, which sets that floor).
   There is no prebuilt macOS download on the Releases page yet — a public build needs an Apple
   Developer ID certificate and notarization, without which macOS refuses to open it unless the user
   allows it by hand in System Settings › Privacy & Security.
