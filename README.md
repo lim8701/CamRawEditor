@@ -276,6 +276,15 @@ first launch, and opening it is a one-time detour:
    **Open Anyway** on the FilmRawstery line, then confirm with Touch ID or your password.
 4. It launches — and every launch after that is normal. You do this once per version.
 
+<p align="center">
+  <img src="docs/macos_gatekeeper_block.png" alt="Step 2 — macOS refuses to open FilmRawstery: a dialog saying Apple cannot verify the app is free of malware, with Done and Move to Trash buttons" width="41%">
+  <img src="docs/macos_open_anyway.png" alt="Step 3 — System Settings, Privacy &amp; Security: the Security section shows that FilmRawstery was blocked, with an Open Anyway button, and the confirmation sheet that follows it" width="57%">
+</p>
+
+<p align="center"><sub>Left: step 2. Right: step 3 and the confirmation that follows it. Shown on a
+Korean-language macOS — the buttons read <b>Done</b>, <b>Open Anyway</b> and <b>Move to Trash</b> in
+English.</sub></p>
+
 If you prefer the terminal, this replaces steps 2–4:
 ```bash
 xattr -dr com.apple.quarantine /Applications/FilmRawstery.app
