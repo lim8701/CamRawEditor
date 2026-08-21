@@ -262,13 +262,13 @@ Runs from source with the common setup above — all dependencies ship prebuilt 
 #### Download the macOS build (experimental)
 
 `FilmRawstery-vX.Y.Z-macos-arm64.dmg` on the [Releases](https://github.com/lim8701/FilmRawstery/releases)
-page. It needs **Apple Silicon** (M1 or newer — check  → About This Mac → Chip) and
+page. It needs **Apple Silicon** (M1 or newer — Apple menu → About This Mac → Chip) and
 **macOS 15 Sequoia or newer**; PySide6 6.10 and later ship binaries built for macOS 15, which sets that
 floor. Intel Macs are not supported.
 
-The build is **signed but not notarized** — notarization needs a paid Apple Developer membership, and
-this is a donation-funded hobby project, so macOS blocks the first launch. Opening it is a one-time
-detour:
+The build carries only an ad-hoc signature and is **not notarized by Apple** — notarization needs a paid
+Apple Developer membership, and this is a donation-funded hobby project. macOS therefore blocks the
+first launch, and opening it is a one-time detour:
 
 1. Open the DMG and drag **FilmRawstery** into **Applications** (the shortcut is right there in the window).
 2. Double-click it once. macOS says it *"cannot verify … is free of malware"* — click **Done**.
