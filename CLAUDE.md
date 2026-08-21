@@ -473,6 +473,12 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   (`xcrun notarytool store-credentials` 로 키체인 프로필 저장 선행, 엔타이틀먼트는
   `packaging/entitlements.plist`). ⚠️zip 은 **`ditto -c -k --keepParent`** 로 만들어야 서명이
   보존된다.
+- **Hardened Runtime 은 검증됨** — 공증에 필수인 `--options runtime` +
+  `packaging/entitlements.plist`(library validation off, dyld 환경변수 허용)를 ad-hoc 서명에
+  걸어도(`flags=0x10002 adhoc,runtime`) 앱이 정상 실행된다(14초 스모크, 라이브러리 검증/dyld
+  오류 0). PyInstaller 앱이 하드닝에서 죽는 경우가 흔한데 이 앱은 해당 없음 — 인증서를 산 뒤에
+  발견하지 않도록 미리 재 봤다. ad-hoc 에도 같은 플래그를 걸 수 있으므로 엔타이틀먼트를
+  바꿨으면 이 방법으로 먼저 확인할 것.
 - ⚠️**스모크 테스트는 `exec` 로 띄울 것** — `( cd /tmp && app ) &` 의 `$!` 는 서브셸 PID 라
   kill 이 앱을 남기고, 다음 실행이 단일 인스턴스 가드에 걸려 '이미 실행 중'으로 즉시 종료된다
   (실측으로 걸렸다). `build.ps1` 이 개발 인스턴스까지 죽이는 것과 같은 계열의 함정.
