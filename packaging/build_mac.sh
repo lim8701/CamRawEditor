@@ -111,6 +111,18 @@ if [[ "$MAKE_DMG" == 1 ]]; then
   hdiutil create -volname "Film Rawstery" -srcfolder "$STAGE" \
                  -fs HFS+ -format UDZO -quiet "$DMG"
   rm -rf "$STAGE"
+  # 사용자가 실제로 받는 것은 DMG 다 — 그것도 서명·공증·스테이플해야 다운로드 직후
+  # (오프라인 포함) 경고 없이 열린다. .app 은 위에서 이미 스테이플됐고, 여기서 DMG 를 한 번 더
+  # 공증한다(라운드트립 2회. Apple 권장 흐름이고 각각 보통 수 분).
+  if [[ "$IDENTITY" != "-" ]]; then
+    codesign --force --timestamp --sign "$IDENTITY" "$DMG"
+    if [[ "$NOTARIZE" == 1 ]]; then
+      xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+      xcrun stapler staple "$DMG"
+      xcrun stapler validate "$DMG"
+      spctl -a -vvv --type install "$DMG" || true      # 기대: accepted / Notarized Developer ID
+    fi
+  fi
 else
   echo "[6/6] --no-dmg — DMG 생략."
 fi
