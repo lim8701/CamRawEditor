@@ -887,14 +887,18 @@ ApplicationWindow {
         hslLumSlider.value = win.hslL[win.hslBand]
         vignetteSlider.value = _ev(p, "vignette", win.lookDef("vignette"))
         // 미스트 — 폴백은 공장 기본값(이 키가 없던 사이드카는 미스트 없음으로 열려야 한다).
-        mistAmtSlider.value = _ev(p, "mistAmt", win.lookDef("mistAmt")); mistCharSlider.value = _ev(p, "mistChar", win.lookDef("mistChar"))
+        // ⚠️Amount 는 **맨 나중에** 밀고, 먼저 requestMistField 로 키를 맞춘다 — 먼저 밀면
+        //   onValueChanged → setMistAmount 가 아직 **이전 사진의 Radius/Highlight** 가 남은 상태에서
+        //   워커를 시작시켜(프록시 3× 가우시안 ~0.5s) 곰바로 seq 불일치로 버려진다.
+        mistCharSlider.value = _ev(p, "mistChar", win.lookDef("mistChar"))
         mistRadiusSlider.value = _ev(p, "mistRadius", win.lookDef("mistRadius")); mistHiSlider.value = _ev(p, "mistHi", win.lookDef("mistHi"))
         // ⚠️한때 폴백만 0.0(공장값 0.5) 으로 뒀는데, 그러면 룩 지문이 성립하지 않는다 —
         //   **한 키에 기본값은 하나**여야 한다(presets.LOOK_DEFAULTS 주석). 0.5 로 통일했고,
         //   그 대가는 이 키가 없던 시절 사이드카가 Color 0.5 로 열린다는 것뿐이다.
         mistColorSlider.value = _ev(p, "mistColor", win.lookDef("mistColor"))
         controller.requestMistField(mistRadiusSlider.value, mistHiSlider.value,
-                                   mistAmtSlider.value)   // 복원은 즉시 1회
+                                   _ev(p, "mistAmt", win.lookDef("mistAmt")))   // 복원은 즉시 1회
+        mistAmtSlider.value = _ev(p, "mistAmt", win.lookDef("mistAmt"))   // uniform 갱신(키는 위에서 맞췄다)
         grainSlider.value = _ev(p, "grainAmt", win.lookDef("grainAmt")); grainSizeSlider.value = _ev(p, "grainSize", win.lookDef("grainSize"))
         grainRoughSlider.value = _ev(p, "grainRough", win.lookDef("grainRough"))
         grainColorSlider.value = _ev(p, "grainColor", win.lookDef("grainColor"))
@@ -1080,9 +1084,9 @@ ApplicationWindow {
 
     // ===== 레시피 프리셋 =====
     property var presetItems: []          // controller.presetList() 캐시(배지 그리드 모델)
-    // 배지 재평가 트리거. ⚠️단일 지문을 캐시할 수 없다 — 레시피마다 '지정한 키 집합'이 다르고
-    // (프리셋 키가 늘어난 뒤 저장된 레시피와 그 전 레시피), 비교는 그 집합에서만 성립한다.
-    // 그래서 값 자체는 badgeOn 이 매번 계산하고, 여기서는 '언제 다시 계산할지'만 알린다.
+    // 배지 재평가 트리거. 지문은 항상 `_PRESET_KEYS` **전체**로 계산된다(main.lookHash 주석)
+    // — 레시피마다 비교 집합을 좁히던 예전 방식은 버렸으므로, 커밋당 지문은 **한 번**이면 된다.
+    // 여기서는 '언제 다시 계산할지'만 알린다.
     property int lookRev: 0
     // 편집이 커밋될 때만 계산한다(histPush/histReset/applySnapshot + refreshPresets).
     // ⚠️`lookRev` 카운터만 올리고 delegate 에서 badgeOn 을 호출하는 방식이었는데 **스로틀이
@@ -1096,10 +1100,9 @@ ApplicationWindow {
         var out = []
         if (controller.imagePath !== "") {
             var ep = win.editParams()          // 한 번만 만든다
-            for (var i = 0; i < win.presetItems.length; i++) {
-                var it = win.presetItems[i]
-                out.push(controller.lookHash(ep) === it.lookHash)
-            }
+            var h = controller.lookHash(ep)    // ⚠️루프 밖으로 — 레시피와 무관한 값이다
+            for (var i = 0; i < win.presetItems.length; i++)
+                out.push(h === win.presetItems[i].lookHash)
         }
         win.recipeOn = out
     }
@@ -1129,6 +1132,13 @@ ApplicationWindow {
         var a = win.presetItems.slice()
         a.splice(to, 0, a.splice(from, 1)[0])
         win.presetItems = a                        // 화면은 즉시 새 순서
+        // ⚠️recipeOn 은 **위치 대응 배열**이라 같이 옴기지 않으면 앞버 테두리가 다른 레시피에
+        // 남는다(다음 편집 커밋 전까지). 다시 계산할 것이 없으므로 같은 순서로 섮어만 준다.
+        if (win.recipeOn.length === a.length) {
+            var b = win.recipeOn.slice()
+            b.splice(to, 0, b.splice(from, 1)[0])
+            win.recipeOn = b
+        }
         var keys = []
         for (var i = 0; i < a.length; i++) keys.push(a[i].orderKey)
         controller.setPresetOrder(keys)             // 저장(prefs.json)
@@ -3145,12 +3155,18 @@ ApplicationWindow {
         readonly property bool nameOk: presetNameInput.text.trim() !== ""
         // 같은 이름으로 저장하면 그 레시피를 덮어쓴다(파일명이 내부 name 에서 파생되므로).
         // 조용히 덮어쓰면 데이터 손실이라 버튼 라벨과 안내로 드러낸다.
+        // ⚠️수정(이름 변경)에서도 반드시 말해야 한다 — 다른 레시피의 이름으로 바꾸면
+        // 파일명이 그 레시피와 같아져 **그쪽을 덮어쓰고** 원래 파일은 지워진다(editPreset).
+        // 경고 없이는 레시피 하나가 조용히 사라진다. 자기 자신과의 충돌만 제외한다.
         readonly property bool willOverwrite: {
-            if (presetSaveDialog.editing) return false
             var n = presetNameInput.text.trim()
             if (n === "") return false
-            for (var i = 0; i < win.presetItems.length; i++)
-                if (win.presetItems[i].name === n) return true
+            for (var i = 0; i < win.presetItems.length; i++) {
+                var it = win.presetItems[i]
+                if (it.name !== n) continue
+                if (presetSaveDialog.editing && it.file === presetSaveDialog.editFile) continue
+                return true
+            }
             return false
         }
 
@@ -3236,10 +3252,12 @@ ApplicationWindow {
                 }
                 Label {
                     Layout.fillWidth: true
-                    text: presetSaveDialog.editing
-                          ? "The look stays as saved \u2014 name, colour, description, camera and lens are editable."
-                          : (presetSaveDialog.willOverwrite
-                             ? "A recipe with this name already exists \u2014 saving replaces its look and origin."
+                    text: presetSaveDialog.willOverwrite
+                          ? (presetSaveDialog.editing
+                             ? "Another recipe already has this name \u2014 saving replaces that recipe."
+                             : "A recipe with this name already exists \u2014 saving replaces its look and origin.")
+                          : (presetSaveDialog.editing
+                             ? "The look stays as saved \u2014 name, colour, description, camera and lens are editable."
                              : "A recipe stores the look only \u2014 not white balance, crop or masks.")
                     color: presetSaveDialog.willOverwrite ? "#E0A226" : "#9a9a9a"
                     font.pixelSize: 13
@@ -3487,8 +3505,9 @@ ApplicationWindow {
                                ? "#f0b945" : "#E0A226"
                         Label {
                             anchors.centerIn: parent
-                            text: presetSaveDialog.editing ? "Update"
-                                  : (presetSaveDialog.willOverwrite ? "Overwrite" : "Save")
+                            text: presetSaveDialog.willOverwrite
+                                  ? (presetSaveDialog.editing ? "Replace" : "Overwrite")
+                                  : (presetSaveDialog.editing ? "Update" : "Save")
                             color: "#1a1a1a"; font.pixelSize: 13; font.bold: true
                         }
                         MouseArea {

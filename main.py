@@ -4246,7 +4246,8 @@ class Controller(QObject):
         else:
             # 워커가 QImage 까지 다 만들어 온다(인코딩은 무겁다 — 메인 스레드 금지).
             imgs, mean = res
-            self._mist_provider.set_images(imgs)
+            if self._mist_provider is not None:   # 실패 분기와 같은 방어(프로바이더 없는 구성도 있다)
+                self._mist_provider.set_images(imgs)
             self._mist_mean = mean
             self._mist_field = field_key
             self._mist_ready = True
@@ -4268,9 +4269,15 @@ class Controller(QObject):
             return                       # 같은 키로 이미 계산 중
         self._mist_field = self._mist_want
         self._mist_seq += 1
-        threading.Thread(target=self._mist_worker,
-                         args=(self._mist_seq, self._mist_want[0], self._mist_want[1]),
-                         daemon=True).start()
+        try:
+            threading.Thread(target=self._mist_worker,
+                             args=(self._mist_seq, self._mist_want[0], self._mist_want[1]),
+                             daemon=True).start()
+        except Exception as exc:                 # 스레드 생성 실패(RuntimeError 등)
+            # ⚠️키를 되돌려 놓지 않으면 위의 '같은 키로 이미 계산 중' 분기에 영영 걸려
+            #   그 이미지는 미스트가 다시는 안 나온다(saveGrab 과 같은 방어).
+            self._mist_field = None
+            print(f"[mist] 워커 시작 실패(미스트 무동작): {exc}")
 
     @Slot(float)
     def setMistAmount(self, amt: float) -> None:  # noqa: N802 (QML 슬롯)
