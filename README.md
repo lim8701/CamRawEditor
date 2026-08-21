@@ -35,186 +35,77 @@ Any Fujifilm body works out of the box (everything is driven by per-file metadat
 
 ## Features
 
+The short version. The full reference — screenshots, every control, and the reasoning behind each
+model — is in [`docs/features.md`](docs/features.md).
+
 ### Develop
-- **Scene-linear + filmic** tone pipeline — physically-grounded base render with a single highlight-rolloff tone curve (no per-scene heuristics)
-- **White balance** — absolute Kelvin + tint via the Planckian locus, with as-shot estimation for off-locus illuminants
-- **Light** — exposure (scene-linear stops), contrast, highlights / shadows / whites / blacks (Lightroom-style local tone zones)
-- **Tone curve** — Catmull-Rom editor with **per-channel RGB** curves (master + R/G/B) for color grading
-- **HSL color mixer** — 8 hue bands × hue / saturation / luminance
-- **Color** — vibrance & saturation
-- **Detail** — texture, clarity, dehaze, and **sharpening** (amount / radius / detail / masking)
-- **Noise reduction** — edge-preserving luminance NR (guided filter) + color NR, with an optional **AI denoise** base (NAFNet, auto-downloaded ~117 MB; GPU-accelerated via DirectML when available, with a confirm prompt before falling back to the much slower CPU path)
-- **Effects** — **film grain** (emulsion model — see below) and vignette
-- **Highlight reconstruction** — hue-aware desaturation that neutralizes clipped-highlight color casts (e.g. a fire core) while preserving saturated colored light sources (neon, signs)
+Scene-linear + filmic base render, absolute-Kelvin white balance via the Planckian locus,
+Lightroom-style tone zones, per-channel tone curves, an 8-band HSL mixer, texture / clarity / dehaze /
+sharpening, edge-preserving noise reduction with an optional **AI denoise** base (NAFNet), and
+hue-aware highlight reconstruction.
 
-#### Film grain
-
-Grain is modelled on what film emulsion actually does, not sprinkled on as noise:
-
-- **Tone-dependent amplitude** — visible tone fluctuation is grain density × the slope of the
-  characteristic curve, so grain peaks in the midtones and disappears from blown highlights and
-  crushed blacks. Uniform-amplitude grain speckling a white sky is the main thing that reads as
-  "digital"; the middle panel below is the previous behaviour, the right one is this model, both at
-  the same maximum Grain setting (σ 6.6 against 12.2/255 on that crop). This curve is
-  **fitted to real film** — 11,512 flat patches from 151 frames across four rolls of Noritsu-scanned
-  negative, the fitted constant agreeing to within 5.5% between rolls.
-- **Multi-octave** — real emulsion has a crystal size distribution and clumping, so its Wiener
-  spectrum is broad rather than single-scale (`Roughness`).
-- **Three dye layers** — colour film has no separate luminance grain: the R/G/B layers develop
-  independently and the luminance fluctuation is their *sum*, which is why colour film speckles in
-  colour (`Colour`). The layers are **not identical**: the blue-sensitive layer needs a fast emulsion,
-  which means large silver-halide crystals and therefore the coarsest dye clouds, while the
-  red-sensitive layer is the finest — so the colour speckle lands mostly on the blue–yellow axis, and
-  coarse, which is exactly where the eye is least able to resolve it. Set `Colour` to 0 to drop chroma.
-
-`Roughness` and `Colour` change the **texture only** — the grain's strength is normalised so it
-stays put as you dial them, and both are saved per photo. ⚠️ Judge grain at 1:1 zoom; fit-to-screen
-averages it away.
-
-<p align="center">
-  <img src="docs/grain_overview.png" alt="Film Rawstery — film grain: grain off, the previous uniform model, and the current emulsion model, both at the same maximum Grain setting" width="100%">
-</p>
-
-Four controls — Amount, Size, Roughness and **Colour** — where Lightroom's Effects panel exposes
-three and has no colour-grain axis. More to the point, the tone behaviour is automatic and fitted
-to measurement: at the same settings, amplitude runs ×0.20 in a blown highlight, ×0.99 in the
-midtones and ×0.85 in shadow, while skewness runs −0.92 (dark specks) to +0.51 (bright specks).
-Even the blown highlight keeps a fifth of the midtone amplitude, because measured film does.
-
-<p align="center">
-  <img src="docs/grain_controls.png" alt="The four grain control axes: Amount, Size, Roughness and Colour" width="100%">
-</p>
-
-This reproduces those statistical behaviours but is **not a physical simulation** — the noise
-primitive is lattice value-noise rather than a stochastic model of discrete silver-halide crystals,
-and it is applied after the tone curve rather than as a density fluctuation before it. The model,
-the measurements, and the full list of what is *not* physical are in
-[`docs/film_grain.md`](docs/film_grain.md).
+### Looks
+- **Film simulations** — Fujifilm looks as 3D LUTs (Provia, Velvia, Astia, Classic Chrome, Classic
+  Negative, Nostalgic Neg, PRO Neg Hi/Std, Eterna, Reala Ace, Bleach Bypass) with adjustable strength.
+- **Film grain** — an emulsion model rather than sprinkled noise: amplitude follows the
+  characteristic curve, so grain peaks in the midtones and fades out of blown highlights, and the
+  three dye layers speckle in colour. Fitted to 11,512 patches from four rolls of scanned negative.
+  → [`docs/film_grain.md`](docs/film_grain.md)
+- **Mist filter** — a diffusion filter modelled as scattering, so fine detail stays sharp while
+  highlights bloom around it. White mist through black mist on one axis.
+  → [`docs/mist_filter.md`](docs/mist_filter.md)
+- **Film date stamp** — a quartz date-back imprint that exposes the same emulsion as the photo:
+  additive blend, the photo's own grain, halation, and segment / dot / typewriter fonts (bring your
+  own too). → [`docs/date_stamp.md`](docs/date_stamp.md)
+- **Recipe presets** — save a look and put it on another photo, with the camera and lens it came from
+  recorded. Applying one keeps that photo's own white balance, crop and masks.
 
 ### Masking (local adjustments)
-- **AI selection, three families** — a **Scene** tab (SegFormer-B2 / ADE20K), a **Face** tab, and a **Depth** tab; models auto-download on first use
-  - **Scene** — tick any combination of **Sky / Vegetation / Building / Ground / Water / Mountain / Person**
-  - **Face** — pixel-precise face parts: **Skin / Nose / Eyes / Brows / Glasses / Lips / Mouth / Ears / Hair / Hat / Neck**
-  - **Depth** — select by **distance** instead of by what a thing is: a Near/Far range with adjustable feather, from a monocular depth estimate (Depth Anything V3 Small). This is the axis semantic segmentation can't reach — *the front leaves of the same bush*, *everything behind the subject*, *only the far end of a receding wall*. Ticking it on **seeds the range from that photo's own distance histogram** and starts on the background, because a fixed default can't work: the distance distribution differs from shot to shot even after normalization. The red overlay stays on while you drag so you can see the range land. Distance is **relative per photo**, so the same Near/Far falls differently on another shot — pasted edits may need a nudge.
-- **Pick which face** — the Face tab shows a thumbnail of every detected face (up to the 5 largest); click one to include or exclude it. Defaults to the largest face alone, so someone walking past in the background never gets your subject's skin correction. The choice is per layer, so one layer can brighten person A while another warms person B.
-- **Composite** — the mask is the union of everything ticked across both tabs, recomposed live from cached inference (switching parts is instant; no re-inference)
-- **Up to 5 layers** — create and delete mask layers, each with its own mask *and* its own adjustments (e.g. sky brighter, skin warmer, mountains darker in one photo)
-- **Edge-refined soft mask** — guided-filter refinement against image luminance for clean branch/hairline boundaries, plus invert and a red mask overlay
-- **Per-mask develop** — Exposure / Temp / Tint / Contrast / Highlights / Shadows / Texture / Clarity / Dehaze / Saturation, applied only to the masked region in both preview and export
-- Masks persist per-image (regenerated from the saved classes on reopen)
+AI selection in three families — **Scene** (sky / vegetation / building / ground / water / mountain /
+person), **Face** (19 parts, and you choose which face), and **Depth** (select by *distance* instead
+of by what a thing is). Paint on top with an add / subtract **brush**. Up to 5 layers, each with its
+own mask *and* its own develop settings — sky brighter, skin warmer, mountains darker in one photo.
+→ [`docs/sky_masking.md`](docs/sky_masking.md) · [`docs/depth_masking.md`](docs/depth_masking.md)
 
-#### Face masking
+### Browse a whole folder
+On-device English captions (Florence-2, downloaded only after an explicit opt-in), caption **search**
+over the file explorer, resumable background indexing, and a **Photo tags** view that sizes each
+keyword by how many photos carry it. → [`docs/folder_index_search.md`](docs/folder_index_search.md)
 
-Face masking is two models working together: **YuNet** locates faces (232 KB), then **SegFormer-B5
-trained on CelebAMask-HQ** parses each face crop into 19 classes. The detector only decides where to
-crop — boundary precision comes from parsing plus the guided filter, so masks follow the real hairline
-and jaw rather than a box. Opening the Face tab runs detection alone (~60 ms) so the thumbnails appear
-before the 340 MB parser is ever fetched; only the faces you actually select are parsed (~0.8 s each),
-and part toggles after that are ~10 ms.
-
-<p align="center">
-  <img src="docs/masking_face_seg.jpg" alt="Film Rawstery — face masking: one portrait parsed into selectable parts, each shown as a red mask overlay — skin, nose, eyes, brows, lips, ears, hair, and neck" width="100%">
-</p>
-
-#### Depth masking
-
-Depth masking runs at ~0.75 s per photo (GPU via DirectML; ~1.2 s on CPU), and after that dragging
-the Near/Far range updates continuously at ~100 ms because only the band-pass is recomputed — the
-depth map itself is estimated once and cached per image. See
-[`docs/depth_masking.md`](docs/depth_masking.md).
-
-<p align="center">
-  <img src="docs/masking_depth.png" alt="Film Rawstery — depth masking: the same scene selected by distance. Left: Near 0.00–Far 0.57 masks the foreground objects (red overlay); right: Near 0.85–Far 1.00 masks only the far wall behind them" width="100%">
-</p>
-
-### AI Caption
-- **On-device English captions** — Microsoft **Florence-2** running locally via ONNX (MIT-licensed model); no cloud, no account
-- Captions generate automatically when a photo finishes loading and appear in a bar under the preview (toggle with `C`)
-- Three detail levels — **Short / Detailed / Paragraph** — switch via the combo; each level is generated once and cached in the folder sidecar (`.filmrawsterycaptions.json`)
-- The ~1.1 GB model never downloads silently: the bar offers a one-time **click-to-download opt-in**, and captions stay automatic afterwards
-- ⚠️ Small-model honesty: object/people **counts can be off by one** and long captions may embellish details — treat it as a browsing aid, not ground truth
-
-<p align="center">
-  <img src="docs/screenshot3.png" alt="Film Rawstery — AI caption: on-device Florence-2 description bar under the preview, with detail-level selector (Short / Detailed / Paragraph)" width="100%">
-</p>
-
-### Folder search & Photo tags
-Turns the on-device captions into a way to **browse a whole folder by content**:
-- **Caption search** — a search box over the file explorer filters the folder by caption **keywords** (the content words behind the captions — hashtag-style, with stopwords / numbers / very short tokens dropped). Terms are prefix-matched and AND-combined.
-- **Background indexing** — one click on **⚙ Index** captions the whole folder in the background (**CPU-only**, so it never contends with the GPU preview/edit and can't crash it), **resumable** (already-captioned photos are skipped), with a live coverage bar. Browsing and editing stay responsive throughout, and progress stays tied to the folder it started on if you navigate away.
-- **Photo tags** (`H`, or the 🏷 button) — an immersive, frosted-glass **tag view** of the folder: each keyword's size scales with how many photos carry it (a single-hue sequential ramp), with a separate **♥ In liked photos** group. Hover a tag to preview its photos in a grid on the right; **click a tag** (or any preview thumbnail) to filter the explorer to it. A header line summarizes the folder — photos · indexed · unique tags · liked.
-
-Captions are stored once as their raw text, so the search and tag rules are derived at query time — changing them needs no re-indexing.
-
-<p align="center">
-  <img src="docs/screenshot5.png" alt="Film Rawstery — Photo tags: frosted-glass tag view of a folder, keyword sizes scaled by how many photos carry each tag, with a live photo preview grid; click a tag to filter the folder" width="100%">
-</p>
-
-### Film Simulations
-Fujifilm looks as 3D LUTs: Provia, Velvia, Astia, Classic Chrome, Classic Negative, Nostalgic Neg, PRO Neg. Hi/Std, Eterna, Reala Ace, Bleach Bypass — with adjustable strength. The list is driven by the `.cube` files present in `luts/`, so any known LUT you drop in (e.g. B&W ACROS / Monochrome / Sepia) appears automatically, and missing ones are hidden. See [`luts/README.md`](luts/README.md) for the key filenames and where to get the B&W LUTs.
-
-### Film date stamp
-Reproduces a film **quartz date-back** — not text pasted on top, but a simulation of the LED imprint that exposed the *same emulsion* as the photo:
-- **Additive (screen) blend** — the imprint adds light the way the LED exposes film: it glows over dark areas and washes out over bright highlights, instead of sitting on top like a sticker (mixed with a touch of source-over so highlights don't erase it entirely)
-- **Same-emulsion grain** — the stamp carries the photo's film grain (linked to the Grain amount), so it's never cleanly digital
-- **Halation** — hot-core → amber → red-orange bloom, the way bright light scatters in the emulsion
-- **Segment / dot / text fonts** — DSEG seven-/fourteen-segment (Regular / Bold, upright / italic), a round-dot matrix (Doto), plus typewriter (Courier Prime), terminal (VT323) and condensed (Oswald) — all SIL OFL. **Add your own** `.ttf`/`.otf` from anywhere, including the Windows font folder; the file is copied into your user data folder so the recipe keeps working if the original moves.
-- **Colour, glow brightness and glow area** — one colour drives the whole hot-core → halo ramp, so a neutral colour gives a white imprint that suits black-and-white frames. Glow brightness dials the bloom from crisp to heavy; glow area widens it without moving the digits.
-- **Frame-relative placement** — imprinted in the sensor's bottom-right corner via EXIF orientation, so portrait shots rotate it into the matching corner
-- **Your settings are remembered** — font, size, margin, colour, glow and the on/off state carry over to the next photo that has no saved edits, so a whole roll doesn't need setting up again. Photos you already edited still open exactly as you saved them. Its own panel tab (`Ctrl+4`); toggle the stamp with `D`.
-- The date defaults to the EXIF capture date and is editable.
-- **Preview vs saved file** — over bright areas, a strongly coloured imprint looks a little stronger on screen than in the saved file. **The saved file is the accurate one**; white or grey looks identical in both. (Why: the imprint is light, and light washes out over highlights — the live preview can't reproduce that exactly. Numbers and the reason it can't be fixed without changing the export: [`docs/date_stamp.md`](docs/date_stamp.md).)
-
-See [`docs/date_stamp.md`](docs/date_stamp.md) for the physical model and implementation.
-
-<p align="center">
-  <img src="docs/screenshot4.png" alt="Film Rawstery — film date stamp: quartz date-back imprint (seven-segment) screen-blended into the photo, with style / size / margin controls" width="100%">
-</p>
-
-### Geometry
-Crop (aspect-ratio presets + free drag), rotate / straighten, flip, and perspective (vertical / horizontal keystone + scale) — applied identically in preview and export.
-
-### Lens Corrections
-Distortion, vignetting, and chromatic aberration — applied from the **per-shot correction tables Fujifilm embeds in every RAF** (focus/aperture-aware, works for any body and lens, fixed or interchangeable). No profile database needed; files without the tags are simply left uncorrected.
+### Geometry & optics
+Crop, rotate / straighten, flip and perspective — plus distortion, vignetting and chromatic
+aberration corrected from the **per-shot tables Fujifilm embeds in every RAF**, so no profile database
+is needed for any body or lens.
 
 ### Workflow
-- **Before / After compare** — toggle the unedited original (button or `\` key)
-- **Undo / redo** — snapshot history of all adjustments (`Ctrl+Z` / `Ctrl+Shift+Z`)
-- **Non-destructive, per-image persistence** — edits autosave to a `.filmrawsteryedits/<file>.json` sidecar and restore when you reopen the image
-- **File explorer** with RAF thumbnails and a likes/favorites filter
-- **Live histogram** reflecting current adjustments
-- **Full-resolution export** to JPEG / PNG / TIFF (background-threaded, UI stays responsive)
-- **AI Models screen** — the left panel footer shows what has been downloaded; open it to see each model's size and status, pre-download anything missing instead of waiting on first use, and spot files no longer claimed by any feature
+Before / after compare, undo / redo, a **Zone System overlay**, a live histogram, non-destructive
+per-image sidecars, a file explorer with RAF thumbnails and a likes filter, full-resolution export to
+JPEG / PNG / TIFF, and an **AI Models** screen showing what has been downloaded.
 
 ---
 
 ## How it works
 
-```
-RAF ──rawpy──► camera-native proxy (≤2560px, headroom-encoded)
-                     │
-       QML ShaderEffect pipeline (GPU, proxy-resolution FBO → scaled to screen)
-       headroom-decode → WB → cam→sRGB matrix → ×2^exposure → filmic
-       → tone zones → texture/clarity/dehaze → sharpen → film-sim LUT
-       → vibrance/sat → HSL mixer → contrast → tone curve → mask local adjust → vignette → grain
-                     │
-   live preview (GPU)        Export: pipeline.py (full-res numpy, same steps)
-```
+RAW is decoded to a camera-native proxy; a QML `ShaderEffect` pipeline develops it on the GPU at a
+fixed proxy resolution, and `pipeline.py` reproduces the same steps in numpy at full resolution for
+export. Same formulas, same strength coefficients from a single `coeffs.py` injected as shader
+uniforms — so **what you see is what you get**.
 
-Key design decisions:
-- **Processing resolution ≠ display resolution** — the pipeline always renders at a fixed proxy resolution and scales to screen, so GPU load is independent of monitor size.
-- **Preview = Export parity** — the GLSL shaders (`shaders/adjust.frag`) and the numpy export (`pipeline.py`) implement the same steps and formulas; strength coefficients live in a single `coeffs.py`, injected into the shader as uniforms so a change updates preview and export together.
-- **Color science first, look-matching second** — algorithms are physically/colorimetrically correct; strengths and curves are then tuned to feel like Adobe Lightroom.
+The pipeline diagram, the design decisions behind it and a map of every module are in
+[`docs/architecture.md`](docs/architecture.md).
 
 ---
 
 ## Requirements
 
-- Python 3.13 (3.11+ should work)
-- `PySide6`, `rawpy`, `numpy`, `scipy`, `exifread`, `opencv-python-headless`, `onnxruntime-directml` (Windows; plain `onnxruntime` elsewhere — see [`requirements.txt`](requirements.txt))
-  - ⚠️ OpenCV must be **`headless` and 5.0+**: the full package ships its own Qt plugins and clashes with PySide6, and 4.x pins `numpy<2.3` so it would downgrade the project's numpy. It is used only for face detection and mask resampling.
-- A GPU/driver supporting the Qt RHI (OpenGL / Direct3D / Metal / Vulkan)
-- AI models download on first use into a per-user data folder that survives app updates (`%LOCALAPPDATA%\FilmRawstery\models` on Windows, `~/Library/Application Support/FilmRawstery/models` on macOS) — needs an internet connection the first time. Scene masking (SegFormer-B2, ~105 MB), face masking (YuNet + SegFormer-B5, ~341 MB), depth masking (Depth Anything V3 Small, ~105 MB) and AI denoise (NAFNet, ~117 MB) fetch automatically when you first use the feature; the caption model (Florence-2, ~1.1 GB) **only after an explicit in-app opt-in**. The **AI Models** screen (left panel footer) shows what is installed and lets you pre-download any of them (see [`models/README.md`](models/README.md))
+- Python 3.13 (3.11+ should work), and a GPU/driver supporting the Qt RHI (OpenGL / Direct3D / Metal / Vulkan)
+- `PySide6`, `rawpy`, `numpy`, `scipy`, `exifread`, `opencv-python-headless`, `onnxruntime-directml`
+  (Windows; plain `onnxruntime` elsewhere) — see [`requirements.txt`](requirements.txt).
+  ⚠️ OpenCV must be **`headless` and 5.0+**: the full package ships its own Qt plugins and clashes
+  with PySide6, and 4.x would downgrade the project's numpy.
+- AI models download on first use (~105–341 MB each) into a per-user folder that survives app updates;
+  the 1.1 GB caption model only after an explicit in-app opt-in. The **AI Models** screen lists what is
+  installed and can pre-download the rest. See [`models/README.md`](models/README.md).
 
 ## Install & Run
 
@@ -246,82 +137,25 @@ The primary development/test platform. A prebuilt installer (no Python required)
 
 ### macOS
 
-Runs from source with the common setup above — all dependencies ship prebuilt macOS wheels (Apple Silicon included), so no Xcode/compiler is needed. Notes:
-
-- macOS ships an older system `python3`; create the venv with an explicit `python3.13` (from [python.org](https://www.python.org/downloads/)) as shown above.
-- No `git`? Either accept the Command Line Tools popup when first running `git`, or use **Code → Download ZIP** on GitHub instead.
-- Shaders are precompiled with Metal (MSL) included; if a recompile is triggered, the `pyside6-qsb` tool installed with PySide6 handles it automatically.
-- Display color management (preview-only monitor-profile correction) is Windows-only and silently disabled on macOS — everything else works the same.
-- AI denoise uses the CoreML execution provider (included in the standard `onnxruntime` macOS wheel, Apple Silicon included) and falls back to CPU — with a confirm prompt — if unavailable.
-- **Status**: runs on Apple Silicon (M1 Pro, macOS 15) — the Qt RHI picks Metal, the precompiled
-  shaders load without a recompile, and `xplat_check.py` reproduces the numpy export pipeline here.
-  Windows is still the primary development/test platform, so the mac side sees far less mileage: [feedback is very welcome](https://github.com/lim8701/FilmRawstery/issues).
-  Known gaps: the display stays awake protection during long exports is Windows-only (your Mac can
-  sleep mid-export), and double-clicking a RAF in Finder does not hand it to the app yet (open photos
-  from the app's own file explorer).
-#### Download the macOS build (experimental)
-
-`FilmRawstery-vX.Y.Z-macos-arm64.dmg` on the [Releases](https://github.com/lim8701/FilmRawstery/releases)
-page. It needs **Apple Silicon** (M1 or newer — Apple menu → About This Mac → Chip) and
-**macOS 15 Sequoia or newer**; PySide6 6.10 and later ship binaries built for macOS 15, which sets that
-floor. Intel Macs are not supported.
-
-The build carries only an ad-hoc signature and is **not notarized by Apple** — notarization needs a paid
-Apple Developer membership, and this is a donation-funded hobby project. macOS therefore blocks the
-first launch, and opening it is a one-time detour:
-
-1. Open the DMG and drag **FilmRawstery** into **Applications** (the shortcut is right there in the window).
-2. Double-click it once. macOS says it *"cannot verify … is free of malware"* — click **Done**.
-3. Open **System Settings › Privacy & Security**, scroll down to the **Security** section, and click
-   **Open Anyway** on the FilmRawstery line, then confirm with Touch ID or your password.
-4. It launches — and every launch after that is normal. You do this once per version.
-
-If you prefer the terminal, this replaces steps 2–4:
-```bash
-xattr -dr com.apple.quarantine /Applications/FilmRawstery.app
-```
-⚠️ macOS 15 removed the old Control-click → **Open** shortcut, so the System Settings route above is the
-only click-through way. Verify the download against the SHA256 published in the release notes if you
-want to be careful (`shasum -a 256 <file>.dmg`) — that is the check a signature would otherwise do for you.
-
-**Uninstall**: drag the app to the Trash. Per-user data — settings, recipes, added fonts and the
-downloaded AI models — lives in `~/Library/Application Support/FilmRawstery` and can be deleted separately.
-
-**Building it yourself** (no membership needed): `packaging/build_mac.sh` produces the same
-`dist/FilmRawstery.app` + DMG from source.
+Runs from source with the common setup above, and there is an experimental prebuilt DMG on the
+[Releases](https://github.com/lim8701/FilmRawstery/releases) page (Apple Silicon, macOS 15+, not
+notarized — it needs a one-time unblock). Setup notes, the unblock steps and the current status:
+[`docs/install_macos.md`](docs/install_macos.md).
 
 ---
 
-## Project structure
+## Documentation
 
-| Path | Role |
-|------|------|
-| `main.py` | App entry point, controller, image providers (raw / lut / curve / stamp / thumb) |
-| `raw_loader.py` | RAW → display proxy (X-Trans-safe / Bayer-AHD decode, headroom encoding, lens correction) |
-| `pipeline.py` | Full-resolution export — numpy reproduction of the shader pipeline |
-| `sky_seg.py` | Scene masking engine — ONNX SegFormer multi-class segmentation → composite soft mask |
-| `face_seg.py` | Face masking engine — YuNet detection (OpenCV DNN) + ONNX SegFormer face parsing → per-part soft mask |
-| `depth.py` | Depth masking engine — ONNX Depth Anything V3 Small → log-depth distance map → Near/Far band mask |
-| `ai_denoise.py` | AI denoise engine — ONNX NAFNet tiled inference, DirectML-accelerated (luminance NR base) |
-| `caption.py` | AI caption engine — ONNX Florence-2 on-device English captions (self-contained BPE tokenizer) |
-| `app_dirs.py` | Per-OS user-data model store (survives updates; migrates legacy downloads by copy) |
-| `coeffs.py` | Single source of truth for adjustment strength coefficients (shader uniforms + pipeline) |
-| `wb.py` | White balance (Kelvin/tint), cam→sRGB matrix, filmic curve, auto-exposure |
-| `lens.py` | Lens corrections from RAF-embedded per-shot metadata (distortion / vignetting / CA) |
-| `lut.py`, `make_luts.py` | `.cube` 3D LUT loading / baking |
-| `date_stamp.py`, `exif_info.py` | Film date-back rendering / EXIF extraction |
-| `ui/*.qml` | UI (Main / CurveEditor / PreviewWindow / Splash / FilmStrip) |
-| `shaders/adjust.frag` | Main develop pipeline (fragment shader) |
-| `shaders/blur.frag`, `shaders/convert.frag` | Separable blur (local contrast) / display-space base |
-| `luts/*.cube` | Film-simulation LUTs |
+[`docs/`](docs/README.md) — the full feature reference, the architecture, and the working notes behind
+each model: what was measured, what was rejected, and why.
 
 ---
 
 ## Support / 후원
 
-**Donations go toward buying a MacBook.** Development happens on Windows only; the macOS side is written to match but has never been properly tested. I'd like to raise a little toward doing macOS development right. Development continues regardless, of course. :)
+**Donations go toward buying a MacBook.** Development happens on Windows; the macOS side has only had brief testing, so it sees far less mileage. I'd like to raise a little toward doing macOS development right. Development continues regardless, of course. :)
 
-**후원금은 맥북을 구입하는 데 사용하려 합니다.** 개발은 Windows에서만 진행하고 있으며 macOS는 코드만 맞춰놨을 뿐 한 번도 제대로 테스트해 보지 못하였습니다. 제대로 된 mac용 개발을 위해 조금의 모금을 해보려 합니다. 물론 이와 상관없이 개발은 그대로 계속 이어집니다. :)
+**후원금은 맥북을 구입하는 데 사용하려 합니다.** 개발은 Windows에서 진행하고 있고, macOS 쪽은 짧게 확인해 본 정도라 검증이 많이 부족합니다. 제대로 된 mac용 개발을 위해 조금의 모금을 해보려 합니다. 물론 이와 상관없이 개발은 그대로 계속 이어집니다. :)
 
 [![KakaoPay](https://img.shields.io/badge/KakaoPay-donate%20%C2%B7%20%ED%9B%84%EC%9B%90-FFCD00?style=flat-square&logo=kakaotalk&logoColor=3C1E1E)](https://qr.kakaopay.com/281006011121697761001224)
 
