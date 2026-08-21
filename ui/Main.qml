@@ -24,6 +24,41 @@ ApplicationWindow {
                         || it instanceof ComboBox)
     }
 
+                    // 아이콘 버튼(우측 패널 공용) — ♥/☑/태그/위로가기와 같은 커스텀 패턴.
+    // ⚠️네이티브 Button 을 쓰지 않는다: macOS 스타일이 **베젤을 아이템 안에서 치우쳐** 그린다
+    //   (실측 26x26 은 y 5.0~24.5 로 2.25px 아래, 26x32 는 pill 이 x +7px 밀림). 스타일의
+    //   비대칭 padding(13/12)이 그 보정값이라 padding 을 건드리면 아이콘이 어긋나고, 보정값을
+    //   박아도 실행 상태에 따라 pill 위치가 변해 안정적이지 않다. 크롬을 직접 그리면 위치가
+    //   우리 손에 있고 Windows 와도 동일하다. 아이콘은 SVG(assets/icons/, 잉크가 viewBox 정중앙).
+    component IconBtn: Rectangle {
+        property alias icon: img.source
+        property bool active: true      // false = 비활성(흐리게 + 클릭 무시)
+        property string tip: ""
+        signal clicked()
+        Layout.preferredWidth: 26; Layout.preferredHeight: 26
+        Layout.alignment: Qt.AlignVCenter
+        radius: 5
+        color: hov.hovered && active ? "#3a3f4b" : "transparent"
+        border.color: "#555555"; border.width: 1
+        opacity: active ? 1.0 : 0.4
+        ToolTip.visible: hov.hovered && tip !== ""
+        ToolTip.text: tip
+        Image {
+            id: img
+            anchors.centerIn: parent
+            width: 16; height: 16
+            sourceSize.width: 32; sourceSize.height: 32   // HiDPI 선명도
+            smooth: true
+        }
+        HoverHandler { id: hov }
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            enabled: parent.active
+            onClicked: parent.clicked()
+        }
+    }
+
     // === 종료 확인 ===
     // X/Alt+F4 로 닫을 때 한 번 확인. allowClose 가 true 면(확인 후) 그대로 닫힘.
     property bool allowClose: false
@@ -3979,12 +4014,20 @@ ApplicationWindow {
                         radius: 4
                         color: idxHover.hovered ? "#33373f" : "transparent"
                         border.color: idxRow.indexingHere ? "#ff8080" : "#555"; border.width: 1
-                        Text {
+                        // 이 폴더 인덱싱 중=✕, 다른 폴더 인덱싱 중=⋯(정보), 유휴=⚙
+                        // ⚠️글리프 대신 SVG — 기존 pixelSize 9 는 macOS 폴백 폰트에서 특히 작고
+                        //   얇아 잘 안 보였다(Windows 의 Segoe UI Symbol 기준으로 맞춰진 값).
+                        //   옆 태그 버튼과 같은 13px 로 통일한다. ⋯ 는 흰색 파일을 재사용하고
+                        //   '다른 폴더 진행 중'의 흐린 톤은 opacity 로 낸다(#888 상당).
+                        Image {
                             anchors.centerIn: parent
-                            // 이 폴더 인덱싱 중=✕, 다른 폴더 인덱싱 중=⋯(정보), 유휴=⚙
-                            text: idxRow.indexingHere ? "✕" : (controller.indexBusy ? "⋯" : "⚙")
-                            color: idxRow.indexingHere ? "#ff8080" : (controller.indexBusy ? "#888" : "#cfcfcf")
-                            font.pixelSize: idxRow.indexingHere ? 9 : (controller.indexBusy ? 12 : 9)
+                            source: idxRow.indexingHere ? "../assets/icons/close.svg"
+                                    : (controller.indexBusy ? "../assets/icons/more.svg"
+                                                            : "../assets/icons/gear.svg")
+                            opacity: (!idxRow.indexingHere && controller.indexBusy) ? 0.55 : 1.0
+                            width: 14; height: 14
+                            sourceSize.width: 28; sourceSize.height: 28   // HiDPI 선명도
+                            smooth: true
                         }
                         HoverHandler { id: idxHover }
                         ToolTip.visible: idxHover.hovered
@@ -4011,7 +4054,14 @@ ApplicationWindow {
                         radius: 4
                         color: cloudHover.hovered ? "#33373f" : "transparent"
                         border.color: "#555"; border.width: 1
-                        Text { anchors.centerIn: parent; text: "🏷"; color: "#cfcfcf"; font.pixelSize: 12 }
+                        // ⚠️U+1F3F7 은 macOS 에서 Apple Color Emoji 로만 그려져(단색 글리프 없음,
+                        //   VS15 도 무효) color 지정이 무시되고 회색 툴바에 주황 이모지가 박혔다.
+                        //   → SVG 아이콘으로 교체(양 OS 동일, 색은 파일에 #cfcfcf 로 고정).
+                        Image { anchors.centerIn: parent
+                                source: "../assets/icons/tag.svg"
+                                width: 14; height: 14                          // 좌측 인덱스 버튼과 동일 크기
+                                sourceSize.width: 28; sourceSize.height: 28   // HiDPI 선명도
+                                smooth: true }
                         HoverHandler { id: cloudHover }
                         ToolTip.visible: cloudHover.hovered
                         ToolTip.text: "Photo tags (H) — click a word to filter"
@@ -4340,7 +4390,8 @@ ApplicationWindow {
                             padding: 10
                             modal: false
                             closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-                            background: Rectangle { color: "#2b2b2b"; border.color: "#555"; border.width: 1; radius: 6 }
+                            // 위 exportOptPopup 과 같은 비모달 인라인 팝업 — 시인성 톤 통일
+                            background: Rectangle { color: "#2f3238"; border.color: "#6f737a"; border.width: 1; radius: 8 }
                             contentItem: ColumnLayout {
                                 spacing: 8
                                 RowLayout {
@@ -6271,50 +6322,43 @@ ApplicationWindow {
                     spacing: 12
 
                 // 편집 도구 줄(맨 위): Undo/Redo(좌) — 스페이서 — Reset/복사붙여넣기(우)
+                // ⚠️네 버튼 모두 네이티브 Button 을 쓰지 않는다 — ♥/☑/태그/위로가기와 같은
+                //   커스텀 패턴(투명 배경 + #555 테두리 + 호버 강조)이다. 이유:
+                //   ①macOS 네이티브 스타일은 26px 버튼의 **베젤을 아이템 안에서 아래로 치우쳐**
+                //     그린다(실측 y 5.0~24.5 = 높이 19.5px, 중심이 2.25px 아래). 그래서 라벨을
+                //     아이템 중앙에 맞추면 눈에는 베젤 위로 2px 뜬 것처럼 보인다.
+                //   ②베젤 모양 자체가 Windows 와 달라 네이티브를 쓰는 한 '양 OS 동일'이 불가능하다.
+                //   아이콘도 텍스트 글리프가 아니라 **SVG**(assets/icons/) — 글리프는 OS 마다 폴백
+                //   폰트가 달라 잉크가 제각각 앉지만(macOS 실측: ↶/↷ 2.7px 위, ↺/⋯ 중앙), SVG 는
+                //   잉크를 viewBox 정중앙·같은 크기(12/16)로 맞춰 두어 플랫폼 분기가 필요 없다.
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 6
-                    Button {
-                        text: "↶"
-                        Layout.preferredWidth: 26; Layout.preferredHeight: 26
-                        Layout.alignment: Qt.AlignVCenter; padding: 0; font.pixelSize: 14
-                        enabled: win.canUndo
-                        ToolTip.visible: hovered; ToolTip.text: "Undo (Ctrl+Z)"
+                    IconBtn {
+                        icon: "../assets/icons/undo.svg"
+                        active: win.canUndo
+                        tip: "Undo (Ctrl+Z)"
                         onClicked: win.undo()
                     }
-                    Button {
-                        text: "↷"
-                        Layout.preferredWidth: 26; Layout.preferredHeight: 26
-                        Layout.alignment: Qt.AlignVCenter; padding: 0; font.pixelSize: 14
-                        enabled: win.canRedo
-                        ToolTip.visible: hovered; ToolTip.text: "Redo (Ctrl+Shift+Z)"
+                    IconBtn {
+                        icon: "../assets/icons/redo.svg"
+                        active: win.canRedo
+                        tip: "Redo (Ctrl+Shift+Z)"
                         onClicked: win.redo()
                     }
                     Item { Layout.fillWidth: true }      // 좌(이력) ↔ 우(초기화/기타) 분리 스페이서
-                    Button {
+                    IconBtn {
                         id: resetBtn
-                        text: "↺"                       // Reset 아이콘(조절 초기화)
-                        Layout.preferredWidth: 26
-                        Layout.preferredHeight: 26       // 작은 정사각
-                        Layout.alignment: Qt.AlignVCenter
-                        padding: 0
-                        font.pixelSize: 14
-                        ToolTip.visible: hovered
-                        ToolTip.text: "Reset (clear adjustments — including geometry)"
+                        icon: "../assets/icons/reset.svg"
+                        tip: "Reset (clear adjustments — including geometry)"
                         onClicked: win.resetAndClearEdits()   // 모든 편집 초기화 + 사이드카 삭제(파일명 앰버 해제)
                     }
                     // 편집 복사/붙여넣기 메뉴(이미지 간) — Reset 우측 "⋯" 드롭다운.
-                    Button {
+                    IconBtn {
                         id: editClipBtn
-                        text: "⋯"
-                        Layout.preferredWidth: 26
-                        Layout.preferredHeight: 26
-                        Layout.alignment: Qt.AlignVCenter
-                        padding: 0
-                        font.pixelSize: 14
-                        enabled: controller.imagePath !== ""
-                        ToolTip.visible: hovered
-                        ToolTip.text: "Copy / paste edits (between images)"
+                        icon: "../assets/icons/more.svg"
+                        active: controller.imagePath !== ""
+                        tip: "Copy / paste edits (between images)"
                         onClicked: editClipMenu.popup(0, height)
                         Menu {
                             id: editClipMenu
@@ -6343,31 +6387,52 @@ ApplicationWindow {
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 6
-                    Button {
+                    // 주 동작 버튼 — 옆 옵션 버튼(IconBtn)과 같은 커스텀 톤. 네이티브 Button 을
+                    // 쓰면 macOS 에서 베젤이 아이템 안에서 치우쳐 그려져(IconBtn 주석 참조) 옆
+                    // 버튼과 높이·정렬이 어긋나고, 흰 pill 이라 어두운 패널에서 톤도 튄다.
+                    // 보조(옵션)는 투명+테두리, 주 동작은 채움으로 위계를 준다.
+                    Rectangle {
                         id: exportMainBtn
-                        text: "Export…"
                         Layout.fillWidth: true
-                        enabled: controller.imagePath !== "" && !controller.exporting
-                        onClicked: {
-                            // 기본 파일명 = '<원본이름>_exported.<마지막 사용 형식>' (원본과 같은 폴더)
-                            var u = controller.suggestedExportUrl()
-                            if (u != "") saveDialog.selectedFile = u
-                            // 필터도 같은 형식으로 맞춘다 — 안 맞추면 대화상자에 이전 필터가
-                            // 남아 '필터 JPEG / 이름 .png' 같은 모순 상태로 열린다.
-                            var k = saveDialog.filterExts.indexOf(controller.exportExt)
-                            if (k >= 0 && saveDialog.selectedNameFilter.index !== k)
-                                saveDialog.selectedNameFilter.index = k
-                            saveDialog.open()
+                        Layout.preferredHeight: 32
+                        radius: 5
+                        readonly property bool ready: controller.imagePath !== "" && !controller.exporting
+                        color: !ready ? "#2f333a"
+                               : (expMainMa.pressed ? "#33373f"
+                                  : (expMainHover.hovered ? "#4a5060" : "#3a3f4b"))
+                        border.color: "#5a5f6b"; border.width: 1
+                        opacity: ready ? 1.0 : 0.45
+                        Text {
+                            anchors.centerIn: parent
+                            text: "Export…"
+                            color: "#e6e6e6"
+                            font.pixelSize: 13
+                        }
+                        HoverHandler { id: expMainHover }
+                        MouseArea {
+                            id: expMainMa
+                            anchors.fill: parent
+                            enabled: exportMainBtn.ready
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                // 기본 파일명 = '<원본이름>_exported.<마지막 사용 형식>' (원본과 같은 폴더)
+                                var u = controller.suggestedExportUrl()
+                                if (u != "") saveDialog.selectedFile = u
+                                // 필터도 같은 형식으로 맞춘다 — 안 맞추면 대화상자에 이전 필터가
+                                // 남아 '필터 JPEG / 이름 .png' 같은 모순 상태로 열린다.
+                                var k = saveDialog.filterExts.indexOf(controller.exportExt)
+                                if (k >= 0 && saveDialog.selectedNameFilter.index !== k)
+                                    saveDialog.selectedNameFilter.index = k
+                                saveDialog.open()
+                            }
                         }
                     }
-                    Button {
+                    IconBtn {
                         id: exportOptBtn
-                        text: "▾"                       // Export 옵션 토글(펼치기)
+                        icon: "../assets/icons/chevron_down.svg"
                         Layout.preferredWidth: 26
                         Layout.preferredHeight: exportMainBtn.height   // Export 버튼과 높이 동일하게 고정
-                        padding: 0; font.pixelSize: 14
-                        ToolTip.visible: hovered
-                        ToolTip.text: "Export options (resolution · render · 16-bit)"
+                        tip: "Export options (resolution · render · 16-bit)"
                         onClicked: exportOptPopup.opened ? exportOptPopup.close() : exportOptPopup.open()
                         Popup {
                             id: exportOptPopup
@@ -6377,7 +6442,18 @@ ApplicationWindow {
                             padding: 10
                             modal: false
                             closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
-                            background: Rectangle { color: "#2b2b2b"; border.color: "#555"; border.width: 1; radius: 6 }
+                            // 시인성 — 기존 #2b2b2b/#555 는 패널(#1a1a1a) 과 명도 차이가 작아 경계가
+                            // 흐렸다. 채움을 한 단 올리고(#2f3238) 테두리를 밝게(#6f737a) 해 패널
+                            // 위에서 윤곽이 끊기지 않게 한다. 모달 대화상자는 dim 오버레이가 이 역할을
+                            // 하지만 이 팝업은 비모달이라 스스로 경계를 세워야 한다.
+                            // ⚠️MultiEffect 드롭섀도를 시도했으나 무효라 제거했다 — 배경 Item 이
+                            //   팝업 크기에 정확히 맞아 바깥으로 그릴 여유가 없다(실측: 캡처의
+                            //   반투명 픽셀이 코너 안티에일리어싱뿐인 0.2%).
+                            background: Rectangle {
+                                radius: 8
+                                color: "#2f3238"
+                                border.color: "#6f737a"; border.width: 1
+                            }
                             contentItem: ColumnLayout {
                                 spacing: 10
                                 RowLayout {
