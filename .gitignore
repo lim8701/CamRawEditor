@@ -24,6 +24,11 @@ luts/acros_ye.cube
 luts/monochrome.cube
 luts/sepia.cube
 
+# 앱이 만드는 사진별 사이드카 — 저장소 루트의 테스트 이미지(_xplat_src.png)를 앱으로 열면
+# 여기에 생긴다. 실수로 커밋되지 않게 무시한다(사진 폴더 옆에 두는 것이 정상 위치).
+.filmrawsteryedits/
+.filmrawsterycaptions.json
+
 # 패키징 산출물 (FilmRawstery.spec 빌드 레시피는 추적 유지)
 /build/
 /dist/
