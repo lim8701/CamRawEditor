@@ -281,9 +281,7 @@ first launch, and opening it is a one-time detour:
   <img src="docs/macos_open_anyway.png" alt="Step 3 — System Settings, Privacy &amp; Security: the Security section shows that FilmRawstery was blocked, with an Open Anyway button, and the confirmation sheet that follows it" width="57%">
 </p>
 
-<p align="center"><sub>Left: step 2. Right: step 3 and the confirmation that follows it. Shown on a
-Korean-language macOS — the buttons read <b>Done</b>, <b>Open Anyway</b> and <b>Move to Trash</b> in
-English.</sub></p>
+<p align="center"><sub>Left: step 2. Right: step 3 and the confirmation that follows it.</sub></p>
 
 If you prefer the terminal, this replaces steps 2–4:
 ```bash
