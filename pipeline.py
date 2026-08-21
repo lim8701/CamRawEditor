@@ -1060,11 +1060,14 @@ MAG_FACES = {
              ["Arial Narrow", "Bahnschrift Condensed", "Segoe UI"],
              MAG_RUST, 0.015, True, 1.08),
     # 한글: 대문자화·자간 확대는 한글에 의미가 없어 끄고, 줄높이만 조금 넉넉하게.
-    "serif_ko": (["Noto Serif KR", "Batang", "Gungsuh"],
-                 ["Noto Serif KR", "Batang", "Gungsuh"],
+    # ⚠️뒤쪽 두 개는 macOS 폰트다 — 앞의 Windows 후보가 macOS 에 **하나도 없어서**
+    #   _pick_family 가 마지막 후보(없는 폰트)를 그대로 돌려주고, Qt 가 임의로 대체한
+    #   서체로 한글이 나가고 있었다(실측). Windows 우선순위는 그대로 두고 뒤에만 덧붙인다.
+    "serif_ko": (["Noto Serif KR", "Batang", "Gungsuh", "Nanum Myeongjo", "AppleMyungjo"],
+                 ["Noto Serif KR", "Batang", "Gungsuh", "Nanum Myeongjo", "AppleMyungjo"],
                  MAG_INK, 0.0, False, 1.18),
-    "sans_ko": (["Noto Sans KR", "Malgun Gothic", "Dotum"],
-                ["Noto Sans KR", "Malgun Gothic", "Dotum"],
+    "sans_ko": (["Noto Sans KR", "Malgun Gothic", "Dotum", "Nanum Gothic", "Apple SD Gothic Neo"],
+                ["Noto Sans KR", "Malgun Gothic", "Dotum", "Nanum Gothic", "Apple SD Gothic Neo"],
                 MAG_RUST, 0.0, False, 1.14),
 }
 
