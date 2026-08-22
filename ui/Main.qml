@@ -2003,6 +2003,29 @@ ApplicationWindow {
         onTriggered: controller.setWb(tempSlider.value, tintSlider.value)
     }
 
+    // 필름시뮬 보정 노출 재계산 요청(강도 드래그용 디바운스 — solve 가 표본 2.8k px × 12회라
+    // ~20ms 다. 프레임마다 돌리면 드래그가 무거워진다).
+    Timer {
+        id: simEvTimer
+        interval: 120
+        onTriggered: win.pushFilmSim()
+    }
+    function pushFilmSim() {
+        var i = simCombo.currentIndex
+        var k = (i > 0 && i < win.simKeys.length) ? win.simKeys[i] : "identity"
+        controller.setFilmSim(k, simStrengthSlider.value)
+    }
+    // now=true(시뮬 교체·프로그램 대입)면 즉시 — 한 프레임이라도 보정 전 룩이 보이면 번쩍인다.
+    function syncFilmSim(now) {
+        simEvTimer.stop()
+        if (now) win.pushFilmSim(); else simEvTimer.start()
+    }
+    // 보정 노출이 확정되면 히스토그램도 다시(먼저 그려진 것은 보정 전 분포다).
+    Connections {
+        target: controller
+        function onSimExpEVChanged() { win.refreshHistogram() }
+    }
+
     // 톤커브 배경 히스토그램 재계산(스로틀). 드래그 중 주기적 갱신(메인 스레드 부담 완화).
     Timer {
         id: histTimer
@@ -4738,6 +4761,10 @@ ApplicationWindow {
                         property real stampOn: 0.0   // 스탬프는 셰이더(원본 코너)가 아니라 cropClip 위 stampOverlay 가 최종 프레임 기준으로 그림
                         property real stampStrength: 0.92
                         property real exposure: expSlider.value
+                        // 필름시뮬 보정 노출 — LUT 에 든 후지 톤커브가 filmic 위에 두 번 걸리는
+                        // 것을 상쇄(pipeline.film_sim_ev). 이미지×시뮬 상수라 슬라이더가 아니다.
+                        // ⚠️pipe/pipeFull/pipeline 세 곳 동일해야 함(프리뷰=Export).
+                        property real simExpEV: controller.simExpEV
                         property real contrast: conSlider.value
                         property real highlights: hiSlider.value
                         property real shadows: shSlider.value
@@ -5123,6 +5150,10 @@ ApplicationWindow {
                         property real stampOn: 0.0   // 스탬프는 셰이더(원본 코너)가 아니라 cropClip 위 stampOverlay 가 최종 프레임 기준으로 그림
                         property real stampStrength: 0.92
                         property real exposure: expSlider.value
+                        // 필름시뮬 보정 노출 — LUT 에 든 후지 톤커브가 filmic 위에 두 번 걸리는
+                        // 것을 상쇄(pipeline.film_sim_ev). 이미지×시뮬 상수라 슬라이더가 아니다.
+                        // ⚠️pipe/pipeFull/pipeline 세 곳 동일해야 함(프리뷰=Export).
+                        property real simExpEV: controller.simExpEV
                         property real contrast: conSlider.value
                         property real highlights: hiSlider.value
                         property real shadows: shSlider.value
@@ -6883,6 +6914,8 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     currentIndex: 0
                     onActivated: win.refreshHistogram()
+                    // 시뮬이 바뀌면 보정 노출 재계산(프로그램 복원 포함 → currentIndexChanged).
+                    onCurrentIndexChanged: win.syncFilmSim(true)
                     // 드롭다운 닫히면 포커스 해제(단축키 복구 — captionLevelCombo 와 동일)
                     Connections {
                         target: simCombo.popup
@@ -6947,6 +6980,8 @@ ApplicationWindow {
                     id: simStrengthSlider
                     Layout.fillWidth: true
                     onMoved: win.refreshHistogram()
+                    // 강도도 보정 노출에 들어간다(강도 0 = 보정 0). 드래그 중에만 스로틀.
+                    onValueChanged: win.syncFilmSim(!pressed)
                     from: 0.0; to: 1.0; value: 1.0
                     enabled: simCombo.currentIndex !== 0   // None 이면 비활성
                     property real defaultValue: 1.0

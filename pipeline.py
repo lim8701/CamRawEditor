@@ -216,6 +216,60 @@ def _apply_lut3d(c, lut, n):
     return c0 * (1 - fb) + c1 * fb
 
 
+FILM_SIM_EV_EDGE = 64   # 보정 노출 solve 표본의 긴 변(px) — 프리뷰/export 공통
+
+
+def film_sim_ev(scene, lut_arr, lut_n, strength=1.0):
+    """필름시뮬 LUT 을 얹어도 렌더 중앙값이 유지되도록 하는 보정 노출(EV, scene-linear).
+
+    번들 LUT(abpy/FujifilmCameraProfiles)은 '룩'만이 아니라 **후지 톤커브 전체**를 담고 있다
+    (실측 그레이 전달: 0.484→0.664 = 중간톤 +1스톱 리프트 + 숄더 + 섀도 크러시). 우리
+    프론트엔드는 이미 filmic() 으로 scene→display 를 끝낸 뒤 그 위에 LUT 을 걸므로 톤커브가
+    두 번 적용된다 — 필름시뮬을 켜기만 해도 중앙값이 +0.8~1.4EV 뜬다(사용자 보고 "필름
+    시뮬레이션을 적용하니 너무 밝아진다", X100V 실측 재현).
+
+    베이스(None) 중앙값은 auto_exposure_gain 이 임베드 JPEG(=카메라 현상본)에 맞춰 둔 값이므로,
+    **LUT 통과 후 중앙값을 베이스 중앙값으로 되돌리면** 필름시뮬 렌더가 카메라 JPEG 밝기에
+    안착한다(일반 이미지는 자기 자신의 중앙값 보존 — 같은 규칙). 실측: 카메라가 실제로 쓴
+    필름시뮬로 렌더했을 때 임베드 JPEG 분포와의 rms 가 0.14~0.17 → 0.03~0.05 로 내려간다.
+
+    ⚠️앵커에는 LUT 앞의 hlDesat/톤영역을 넣지 않는다 — 슬라이더와 무관한 이미지×시뮬 상수로
+    두어야 드래그마다 밝기가 흔들리지 않고, 중앙값에 미치는 영향도 사실상 0 이다(hlDesat 이
+    건드리는 화소는 실측 0.02%).
+
+    scene: scene-linear sRGB 표본(as-shot WB, 유저 편집 전 — filmic 직전 값). 내부에서 긴 변
+           FILM_SIM_EV_EDGE 로 다시 서브샘플하므로 프리뷰(프록시)/export(풀해상도) 표본이
+           달라도 결과가 같다(실측 차 ≤0.005EV).
+    반환: 노출 지수에 더할 EV(음수). LUT 없음/강도 0 이면 0.0.
+    """
+    if lut_arr is None or strength <= 0.0:
+        return 0.0
+    s = np.asarray(scene, np.float32)
+    if s.ndim != 3 or s.shape[-1] != 3 or s.size == 0:
+        return 0.0
+    k = max(1, max(s.shape[:2]) // FILM_SIM_EV_EDGE)
+    s = s[::k, ::k]
+    base = float(np.median(wb.filmic(s) @ LUMA))
+
+    def med(ev):
+        c = wb.filmic(s * np.float32(2.0 ** ev))
+        looked = _apply_lut3d(c, lut_arr, lut_n)
+        return float(np.median((c * (1.0 - strength) + looked * strength) @ LUMA))
+
+    lo, hi = -4.0, 2.0            # 탐색 범위(단조 증가) — 밖이면 경계로 클램프
+    if not np.isfinite(base) or med(lo) >= base:
+        return lo
+    if med(hi) <= base:
+        return hi
+    for _ in range(12):           # 6EV/2^12 = 0.0015EV — 표본 오차보다 훨씬 작다
+        m = 0.5 * (lo + hi)
+        if med(m) < base:
+            lo = m
+        else:
+            hi = m
+    return 0.5 * (lo + hi)
+
+
 def _downscale_to_edge(rgb16, out_edge):
     """rgb16 (uint16) 을 긴 변 = out_edge 로 비율 유지 다운스케일(안티에일리어싱).
     out_edge<=0 이거나 이미 작으면 원본 반환."""
@@ -497,6 +551,13 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     #   hi/sh 톤영역 마스크는 이 '장면 구조' 휘도로 계산해야 프리뷰=Export(노출 무관 마스크).
     neutral_disp = wb.filmic((nat * wb.rel_gain(cam, ref, as_shot, as_shot_tint).astype(np.float32))
                              @ M.T).astype(np.float32)
+    # 필름시뮬 보정 노출(film_sim_ev 주석 참조) — LUT 에 들어있는 후지 톤커브가 filmic 위에 두 번
+    # 걸리는 것을 상쇄한다. 앵커는 **유저 편집 전 as-shot 베이스**라 슬라이더와 무관(이미지×시뮬
+    # 상수) → 프리뷰(main.Controller._update_sim_ev)와 같은 함수·같은 앵커, 표본만 다르다.
+    _k = max(1, max(nat.shape[:2]) // 128)
+    _sim_ev = film_sim_ev((nat[::_k, ::_k]
+                           * wb.rel_gain(cam, ref, as_shot, as_shot_tint).astype(np.float32)) @ M.T,
+                          lut_arr, lut_n, float(p.get("lutStrength", 1.0)))
     # 1) 미스트(디퓨전) 필터 — 셰이더 1단계 == mist.apply. **유저 WB/매트릭스/노출보다 앞**:
     #    그 셋은 픽셀마다 같은 선형 연산이라 블러와 정확히 교환되므로 결과는 같으면서 산란 필드가
     #    세 슬라이더와 무관해진다(프리뷰가 이미지당 1회 계산해 캐시할 수 있는 이유).
@@ -514,7 +575,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     nat = nat * wb.rel_gain(cam, ref, kelvin, tint).astype(np.float32)   # 유저 WB(카메라공간)
     # 노출 = scene-linear 배수. 마스크 노출(skyExp)은 전역과 같은 지수에 합산(셰이더 0단계 동일)
     # → 마스크 영역도 진짜 stop + filmic 하이라이트 롤오프로 반응.
-    _base_exp = float(p.get("exposure", 0.0))
+    _base_exp = float(p.get("exposure", 0.0)) + _sim_ev
     if isinstance(exp_add, np.ndarray):
         expo_gain = np.exp2(_base_exp + exp_add)[..., None]
     else:

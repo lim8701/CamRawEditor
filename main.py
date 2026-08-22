@@ -1020,6 +1020,7 @@ class Controller(QObject):
     stampFontsChanged = Signal()      # 폰트 목록(사용자 추가/삭제) 갱신 알림
     editsReady = Signal()       # 새 파일 디코딩 완료 -> QML 이 저장 편집 복원(또는 기본값 리셋)
     histogramChanged = Signal()  # 톤커브 배경 히스토그램 갱신 알림
+    simExpEVChanged = Signal()   # 필름시뮬 보정 노출(EV) 갱신 알림 — 셰이더 simExpEV 유니폼
     lensChanged = Signal()       # 렌즈 보정 on/off 변경 알림
     busyChanged = Signal()       # 디코딩(렌즈 보정 포함) 진행 중 표시
     folderChanged = Signal()     # 좌측 file explorer 현재 폴더/파일목록 갱신 알림
@@ -1246,6 +1247,9 @@ class Controller(QObject):
         self._histogram = []        # 256-bin 휘도 히스토그램(0..1 정규화)
         self._proxy_small = None    # 히스토그램 재계산용 축소 프록시(float32 0..1)
         self._lut_cache = {}        # simKey -> (lut_arr, n)
+        self._sim_key = "identity"  # 현재 필름시뮬 키(QML setFilmSim 이 알려줌)
+        self._sim_strength = 1.0    # 현재 필름시뮬 강도
+        self._sim_exp_ev = 0.0      # 필름시뮬 보정 노출(EV) — pipeline.film_sim_ev
         self._lens = True           # 렌즈 보정 on/off (RAF 내장 샷별 프로파일)
         self._busy = False          # 디코딩 진행 중(스피너)
         self._render_seq = 0        # 비동기 렌더 순번(오래된 결과 폐기용)
@@ -3426,6 +3430,43 @@ class Controller(QObject):
                 self._lut_cache[key] = (None, 0)
         return self._lut_cache[key]
 
+    @Slot(str, float)
+    def setFilmSim(self, key: str, strength: float) -> None:  # noqa: N802 (QML 슬롯)
+        """QML 이 필름시뮬 선택/강도를 알려준다 → 보정 노출 재계산(pipeline.film_sim_ev)."""
+        key = key or "identity"
+        if key == self._sim_key and abs(float(strength) - self._sim_strength) < 1e-6:
+            return
+        self._sim_key = key
+        self._sim_strength = float(strength)
+        self._update_sim_ev()
+
+    def _update_sim_ev(self) -> None:
+        """필름시뮬 보정 노출 재계산 — 이미지/시뮬/강도가 바뀔 때만(다른 슬라이더와 무관).
+
+        번들 LUT 이 담고 있는 후지 톤커브가 filmic 위에 두 번 걸리는 것을 상쇄한다
+        (pipeline.film_sim_ev 주석 참조 — 그게 없으면 필름시뮬만 켜도 +0.8~1.4EV 밝아진다).
+        ⚠️앵커는 유저 편집 전 as-shot 베이스(`_proxy_small`)라 export(render_full)가 스스로
+        계산하는 값과 표본만 다르다(실측 차 ≤0.005EV) — 프리뷰=Export 가 유지된다."""
+        ev = 0.0
+        if (self._proxy_small is not None and self._sim_key not in ("", "identity")
+                and self._sim_strength > 0.0):
+            try:
+                import pipeline
+                arr, n = self._get_lut(self._sim_key)
+                ev = pipeline.film_sim_ev(self._proxy_small, arr, n, self._sim_strength)
+            except Exception as exc:                 # 보정 실패는 룩만 놓칠 뿐 — 로드를 막지 않는다
+                print(f"[filmsim] 보정 노출 계산 실패(무시): {exc}")
+                ev = 0.0
+        if abs(ev - self._sim_exp_ev) > 1e-4:
+            self._sim_exp_ev = ev
+            self.simExpEVChanged.emit()
+
+    def _get_sim_exp_ev(self) -> float:
+        return self._sim_exp_ev
+
+    # 셰이더 uniform(pipe/pipeFull simExpEV). export 는 render_full 이 자체 계산한다.
+    simExpEV = Property(float, _get_sim_exp_ev, notify=simExpEVChanged)
+
     @Slot("QVariantMap")
     def updateHistogram(self, params) -> None:  # noqa: N802 (QML 슬롯)
         """현재 조절값을 축소 프록시에 numpy 로 적용해 '조절 반영' 히스토그램을 재계산.
@@ -3451,7 +3492,7 @@ class Controller(QObject):
                            float(params.get("mistHi", 0.8)), max(c.shape[:2]),
                            color=float(params.get("mistColor", 0.5)))
         # 노출 = scene-linear 배수 → filmic(단일 톤커브) → display. (셰이더/export 와 동일 순서)
-        c = wb.filmic(c * (2.0 ** float(params.get("exposure", 0.0))))
+        c = wb.filmic(c * (2.0 ** (float(params.get("exposure", 0.0)) + self._sim_exp_ev)))
         c = np.maximum(pipeline._tone_zones(
             c, float(params.get("highlights", 0)), float(params.get("shadows", 0)),
             float(params.get("whites", 0)), float(params.get("blacks", 0))), 0.0)
@@ -5281,6 +5322,7 @@ class Controller(QObject):
             self._layer_mask_strokes = [[] for _ in range(5)]
         self._update_stamp_layer()       # 날짜 스탬프 프리뷰 레이어(프록시, 우하단)
         self._compute_histogram(img)     # 톤커브 배경 히스토그램(디코딩된 프록시)
+        self._update_sim_ev()            # 새 표본(_proxy_small) 기준 필름시뮬 보정 노출
         print(f"[load] {self._path}  ({img.width()}x{img.height()})  "
               f"kelvin={self._kelvin} tint={self._tint:.2f} as_shot={as_shot}")
         # 새 파일의 첫 디코딩이 끝났을 때만 복원 트리거(WB 커밋 등 재디코딩에는 발화 안 함).

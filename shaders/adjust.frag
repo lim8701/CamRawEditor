@@ -10,6 +10,10 @@ layout(std140, binding = 0) uniform buf {
     mat4  qt_Matrix;
     float qt_Opacity;
     float exposure;     // 노출 (stop)
+    // 필름시뮬 보정 노출(stop, 음수). 번들 LUT 은 룩이 아니라 후지 톤커브 전체를 담고 있어
+    // filmic 위에 얹으면 톤커브가 두 번 걸린다(+0.8~1.4EV) — 그만큼 되돌린다. 이미지×시뮬
+    // 상수로 CPU(pipeline.film_sim_ev)가 풀어 주고, 유저 Exposure 슬라이더와 별개다.
+    float simExpEV;
     float contrast;     // 대비 (1.0=무변화)
     float wbR;          // WB 프리뷰 게인 (커밋되면 1)
     float wbG;
@@ -471,7 +475,7 @@ void main() {
     }
 
     cam *= vec3(ubuf.wbR, ubuf.wbG, ubuf.wbB);
-    vec3 lin = applyCamMat(cam) * pow(2.0, ubuf.exposure
+    vec3 lin = applyCamMat(cam) * pow(2.0, ubuf.exposure + ubuf.simExpEV
                  + ubuf.skyA0.x * skyM0 + ubuf.skyA1.x * skyM1 + ubuf.skyA2.x * skyM2
                  + ubuf.skyA3.x * skyM3 + ubuf.skyA4.x * skyM4);
     vec3 rgb = filmic(lin);                                  // → display sRGB[0,1]
