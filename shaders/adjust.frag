@@ -105,6 +105,7 @@ layout(std140, binding = 0) uniform buf {
     float nrChroma;      // 1=nrBase 가 AI RGB 베이스(크로마 유효) → 컬러 NR 이 AI 크로마 사용
     float zoneShow;      // [프리뷰 전용] 1=존 시스템 오버레이(휘도를 존 0..X 로 양자화 표시). export=0.
     float hlDesat;       // 하이라이트 디새추 강도: 1=RAW(센서클립 색끼 제거), 0=일반 이미지 입력
+    float clipLevel;     // 센서 포화 레벨(카메라네이티브 scene-linear). hlDesat 게이트 기준(raw_loader.clip_level)
     // 미스트(디퓨전) 필터 — 1단계. 모델/계수는 mist.py + coeffs.MIST_* (docs/mist_filter.md).
     // 커널 합성은 여기서 하지 않는다 — `mistfield.frag` 패스가 산란 필드 3장을 Character 무게로
     // 섞어 `mistScat`(프록시 해상도 RGBA16F)에 굽고, 여기서는 그것 하나만 섞는다.
@@ -452,6 +453,9 @@ void main() {
     //    src 는 헤드룸 인코딩(code=oetf(L/H)) 카메라네이티브 → ×H 로 scene-linear 복원.
     //    마스크 노출(skyExp)도 여기서 합산 — 전역 노출과 동일한 진짜 stop(filmic 롤오프 적용).
     vec3 cam = srgbToLinear(texture(src, uv).rgb) * PROXY_HEADROOM;
+    // 센서 클립 근접도 — **미스트/WB/노출보다 앞**의 원본 카메라네이티브 값으로 잰다(파일의 성질이지
+    // 슬라이더의 함수가 아니다). 아래 0.5 단계 hlDesat 게이트가 쓴다.
+    float clipProx = smoothstep(0.90, 1.0, max(cam.r, max(cam.g, cam.b)) / max(ubuf.clipLevel, 1e-6));
 
     // 1) 미스트(디퓨전) 필터 — **WB/매트릭스/노출보다 앞**(카메라네이티브 scene-linear).
     //    그 셋은 픽셀마다 같은 선형 연산이라 블러와 정확히 교환되므로 결과는 같으면서 산란
@@ -483,14 +487,16 @@ void main() {
     // 0.5) 하이라이트 디새추레이션: near-clip 센서클립 색끼(예: 불꽃 코어 청록) 제거 → 중성.
     //      ⚠️쿨(청/녹 우세) 하이라이트만 중성화 — 밝은 빨강/주황 광원(네온·간판)은 보존.
     //      max(G,B)-R 게이트(따뜻한 색은 음수→0). filmic 뒤 display 공간.
+    //      ⚠️밝기 게이트는 **display 값이 아니라 센서 클립 근접도(clipProx)** 다. display 로 재면
+    //      자동노출 게인(+1.3~2.5EV)과 filmic 숄더 때문에 **센서 포화의 17~45% 밖에 안 되는 멀쩡한
+    //      파란 하늘**이 0.95 를 넘어 흰색으로 날아간다(X-T5 실측 화면의 17.4%, 그중 실제 클립 0개 —
+    //      철탑 주변 흰 후광의 정체였다. 정작 노려야 할 부분클립 화소는 한 번도 안 물었다).
     //      ⚠️hlDesat=0(일반 이미지 입력)이면 통째로 끈다 — 센서 클립이 없는 display-referred
-    //      소스에선 밝은 파랑/청록이 '정상 색'이라 이 단계가 하늘·네온을 흰색으로 날린다
-    //      (실측: 실사진 최대 11 code / 채도 높은 파랑은 흰색까지). pipeline._dehaze 옆 동일 게이트.
+    //      소스에선 밝은 파랑/청록이 '정상 색'이다. pipeline 의 동일 게이트와 함께 고칠 것.
     if (ubuf.hlDesat > 0.0) {
         float mx = max(rgb.r, max(rgb.g, rgb.b));
         float cool = max(rgb.g, rgb.b) - rgb.r;
-        rgb = mix(rgb, vec3(mx), ubuf.hlDesat
-                  * smoothstep(0.95, 1.0, mx) * smoothstep(0.05, 0.35, cool));
+        rgb = mix(rgb, vec3(mx), ubuf.hlDesat * clipProx * smoothstep(0.05, 0.35, cool));
     }
 
     // 3) 톤 영역별 — hi/sh 마스크 = 중성 dispSrc(claBlur) 국소 평균 휘도(노출 무관, 장면 구조 기준).

@@ -169,7 +169,7 @@ def scene_linear(path: str, out_edge: int = 0):
 
 
 def load_proxy(path: str, max_edge: int = 2560, lens_correct: bool = True):
-    """일반 이미지 -> (QImage(8bit), as_shot, as_shot_tint, cam_xyz(9), ref(3), cam2srgb(9)).
+    """일반 이미지 -> (QImage(8bit), as_shot, as_shot_tint, cam_xyz(9), ref(3), cam2srgb(9), clip).
 
     lens_correct 는 계약 일치를 위한 자리만 지킨다(일반 이미지엔 샷별 렌즈 프로파일이 없음).
     """
@@ -196,6 +196,8 @@ def load_full(path: str, lens_correct: bool = True):
 
 
 def _result(img: QImage):
+    # 마지막 원소는 센서 포화 레벨(raw_loader 계약) — display-referred 소스엔 센서 클립이 없고
+    # hlDesat 도 0 이라 쓰이지 않는다. 계약을 맞추기 위해 중성값 1.0.
     cam, ref, as_shot, as_shot_tint = meta()
     return (img, int(as_shot), float(as_shot_tint), cam.flatten().tolist(),
-            ref.tolist(), wb.cam_to_srgb_matrix(cam).flatten().tolist())
+            ref.tolist(), wb.cam_to_srgb_matrix(cam).flatten().tolist(), 1.0)

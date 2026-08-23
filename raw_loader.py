@@ -22,6 +22,17 @@ PROXY_HEADROOM = 4.0
 LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
 
 
+def clip_level(auto_gain: float) -> float:
+    """센서 포화(=디코드 상한)가 나타나는 scene-linear 값 — 하이라이트 디새추 게이트 기준.
+
+    디코드는 카메라네이티브 1.0 = 센서 포화이고 거기에 자동노출 게인 g 를 곱하므로 포화 레벨은 g 다.
+    ⚠️PROXY_HEADROOM 으로 상한을 둔다 — 프록시 인코딩이 L/H 를 [0,1] 로 클램프하므로 g>H 인 사진
+    (후지에선 흔하다: +2.4EV = 5.4배)은 포화 화소가 H 에서 잘려 g 에 도달하지 못한다. export(pipeline)도
+    같은 상한을 쓴다 — 프리뷰=Export 정합.
+    """
+    return float(min(max(auto_gain, 1e-6), PROXY_HEADROOM))
+
+
 def _embedded_jpeg_lum(raw):
     """RAW 임베드 JPEG(카메라 현상본)의 휘도(0..1) 1D 배열. 실패 시 None.
     이미지별 자동 노출의 '목표 밝기'(카메라의 샷별 측광/톤 의도)를 통계로 쓴다."""
@@ -115,7 +126,7 @@ def _decode_native(path: str, bayer_ahd: bool = False):
 
 
 def _encode_headroom(rgb16, cam_xyz, ref, as_shot, target_median, lens_profile):
-    """카메라네이티브 16bit -> (렌즈) -> 선형 -> 자동노출 -> 헤드룸 인코딩(disp float[0,1]).
+    """카메라네이티브 16bit -> (렌즈) -> 선형 -> 자동노출 -> (헤드룸 인코딩 disp float[0,1], 클립레벨).
 
     code = oetf(L/H): scene-linear L 을 H 로 나눠 [0,1] 감마로 인코딩(셰이더가 ×H 복원).
     ⚠️렌즈 보정을 현상 전 카메라네이티브에 먼저 적용해야 export(render_full)와 정합(자동노출이
@@ -124,13 +135,15 @@ def _encode_headroom(rgb16, cam_xyz, ref, as_shot, target_median, lens_profile):
     if lens_profile is not None:
         rgb16 = np.clip(lens.apply(rgb16, lens_profile), 0.0, 65535.0).astype(np.uint16)
     lin = _srgb2lin_lut()[rgb16]                         # (H,W,3) float32 선형(카메라네이티브)
-    lin *= auto_exposure_gain(target_median, cam_xyz, ref, as_shot, lin)
+    g = auto_exposure_gain(target_median, cam_xyz, ref, as_shot, lin)
+    lin *= g
     idx = (np.clip(lin * (1.0 / PROXY_HEADROOM), 0.0, 1.0) * 65535.0 + 0.5).astype(np.uint16)
-    return _lin2srgb_lut()[idx]                          # float32 [0,1] 헤드룸 인코딩(카메라네이티브)
+    # float32 [0,1] 헤드룸 인코딩(카메라네이티브) + 센서 포화 레벨(하이라이트 디새추 게이트용)
+    return _lin2srgb_lut()[idx], clip_level(g)
 
 
 def load_proxy(path: str, max_edge: int = 2560, lens_correct: bool = True):
-    """RAW 를 디코딩해 (QImage(8bit), as_shot, as_shot_tint, cam_xyz(9), ref(3), cam2srgb(9)) 반환.
+    """RAW 를 디코딩해 (QImage(8bit), as_shot, as_shot_tint, cam_xyz(9), ref(3), cam2srgb(9), clip_level) 반환.
 
     프록시는 카메라 네이티브 RGB(매트릭스 미적용)를 TREF WB 베이크 + 헤드룸 감마 인코딩(8bit).
     셰이더가 [선형화→WB 상대게인→cam2srgb 매트릭스→filmic] 로 변환한다.
@@ -151,7 +164,7 @@ def load_proxy(path: str, max_edge: int = 2560, lens_correct: bool = True):
         rgb16 = np.clip(x + 0.5, 0.0, 65535.0).astype(np.uint16)
 
     prof = lens.load_profile(path) if lens_correct else None
-    disp = _encode_headroom(rgb16, cam_xyz, ref, as_shot, target_median, prof)
+    disp, clip = _encode_headroom(rgb16, cam_xyz, ref, as_shot, target_median, prof)
     dth = _dither(disp.shape)               # ±0.5 LSB 디더(8bit 양자화 밴딩 제거)
     rgb = np.clip(disp * 255.0 + 0.5 + dth, 0.0, 255.0).astype(np.uint8)
     rgb = np.ascontiguousarray(rgb)
@@ -159,7 +172,7 @@ def load_proxy(path: str, max_edge: int = 2560, lens_correct: bool = True):
     img = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
     cam2srgb = cam_to_srgb_matrix(cam_xyz)
     return (img, int(as_shot), float(as_shot_tint), cam_xyz.flatten().tolist(),
-            ref.tolist(), cam2srgb.flatten().tolist())
+            ref.tolist(), cam2srgb.flatten().tolist(), clip)
 
 
 def load_full(path: str, lens_correct: bool = True):
@@ -169,7 +182,7 @@ def load_full(path: str, lens_correct: bool = True):
     """
     rgb16, cam_xyz, ref, as_shot, as_shot_tint, target_median = _decode_native(path, bayer_ahd=True)
     prof = lens.load_profile(path) if lens_correct else None
-    disp = _encode_headroom(rgb16, cam_xyz, ref, as_shot, target_median, prof)
+    disp, clip = _encode_headroom(rgb16, cam_xyz, ref, as_shot, target_median, prof)
     code = (np.clip(disp, 0.0, 1.0) * 65535.0 + 0.5).astype(np.uint16)
     h, w, _ = code.shape
     rgba = np.empty((h, w, 4), np.uint16)
@@ -179,4 +192,4 @@ def load_full(path: str, lens_correct: bool = True):
     img = QImage(rgba.data, w, h, 8 * w, QImage.Format.Format_RGBA64).copy()
     cam2srgb = cam_to_srgb_matrix(cam_xyz)
     return (img, int(as_shot), float(as_shot_tint), cam_xyz.flatten().tolist(),
-            ref.tolist(), cam2srgb.flatten().tolist())
+            ref.tolist(), cam2srgb.flatten().tolist(), clip)

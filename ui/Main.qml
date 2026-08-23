@@ -4765,6 +4765,9 @@ ApplicationWindow {
                         // 것을 상쇄(pipeline.film_sim_ev). 이미지×시뮬 상수라 슬라이더가 아니다.
                         // ⚠️pipe/pipeFull/pipeline 세 곳 동일해야 함(프리뷰=Export).
                         property real simExpEV: controller.simExpEV
+                        // 센서 포화 레벨 — 하이라이트 디새추를 '진짜 클립'에서만 걸리게 하는 게이트
+                        // 기준(raw_loader.clip_level). ⚠️pipe/pipeFull/comparePipe/pipeline 네 곳 동일.
+                        property real clipLevel: controller.clipLevel
                         property real contrast: conSlider.value
                         property real highlights: hiSlider.value
                         property real shadows: shSlider.value
@@ -5019,6 +5022,9 @@ ApplicationWindow {
                         // pipe/pipeFull 과 동일한 게이트 — 이 값이 어긋나면 Compare original 이
                         // 편집하지 않은 차이를 보여준다(displaycm.frag 주석 참조).
                         property real hlDesat: controller.isDisplayImage ? 0.0 : 1.0
+                        // 디새추 게이트가 센서 클립 근접도라 원본(카메라네이티브) 프록시가 필요하다.
+                        property variant rawSrc: srcImage
+                        property real clipLevel: controller.clipLevel
                         fragmentShader: "../shaders/displaycm.frag.qsb"
                     }
 
@@ -5154,6 +5160,9 @@ ApplicationWindow {
                         // 것을 상쇄(pipeline.film_sim_ev). 이미지×시뮬 상수라 슬라이더가 아니다.
                         // ⚠️pipe/pipeFull/pipeline 세 곳 동일해야 함(프리뷰=Export).
                         property real simExpEV: controller.simExpEV
+                        // 센서 포화 레벨 — 하이라이트 디새추를 '진짜 클립'에서만 걸리게 하는 게이트
+                        // 기준(raw_loader.clip_level). ⚠️pipe/pipeFull/comparePipe/pipeline 네 곳 동일.
+                        property real clipLevel: controller.clipLevel
                         property real contrast: conSlider.value
                         property real highlights: hiSlider.value
                         property real shadows: shSlider.value

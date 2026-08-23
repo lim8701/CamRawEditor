@@ -471,6 +471,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         # 축소는 display 코드 공간에서(프록시와 동일) → filmic⁻¹ → scene-linear.
         # 자동노출/렌즈 프로파일 없음(auto_exposure_gain(None)=1.0 과 동치).
         nat = image_loader.scene_linear(path, int(p.get("outEdge", 0) or 0))
+        _auto_gain = 1.0                 # display-referred: 자동노출 없음(센서 클립도 없음)
     else:
         with rawpy.imread(path) as raw:
             cam = np.array(raw.rgb_xyz_matrix)[:3, :3]
@@ -495,7 +496,8 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         # 카메라네이티브 감마 -> 선형화 -> 자동노출(중앙값). 여기서 float32 로 승격하는 위치는
         # 예전 그대로다(디코드 직후부터 float 로 들고 가면 26MP 에서 150MB 를 더 오래 문다).
         nat = wb.srgb_to_linear(rgb16.astype(np.float32) / 65535.0)
-        nat *= wb.auto_exposure_gain(target_median, cam, ref, as_shot, nat)
+        _auto_gain = wb.auto_exposure_gain(target_median, cam, ref, as_shot, nat)
+        nat *= _auto_gain
         del rgb16
     _prog(0.30)   # 디코드 + 다운스케일 + 렌즈 보정 완료(가장 큰 단일 비용)
 
@@ -558,6 +560,17 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     _sim_ev = film_sim_ev((nat[::_k, ::_k]
                            * wb.rel_gain(cam, ref, as_shot, as_shot_tint).astype(np.float32)) @ M.T,
                           lut_arr, lut_n, float(p.get("lutStrength", 1.0)))
+    # 하이라이트 디새추(0.5 단계) 게이트 = **센서 클립 근접도**(셰이더 clipProx 와 동일 수식).
+    # ⚠️여기서, 즉 미스트/유저 WB/노출보다 **앞**에서 잰다 — 파일의 성질이지 슬라이더의 함수가
+    # 아니다. nat 은 자동노출 게인이 곱해진 값이라 포화 레벨이 clip_level(g) 이고(셰이더의 cam 과
+    # 같은 단위), 프록시가 L/H 를 [0,1] 로 클램프하므로 H 로 잘라 프리뷰와 같은 값을 얻는다.
+    _hld = float(p.get("hlDesat", 1.0))
+    _clip_prox = None
+    if _hld > 0.0:
+        _lv = raw_loader.clip_level(_auto_gain)
+        _clip_prox = _smoothstep(0.90, 1.0,
+                                 np.minimum(nat.max(axis=2, keepdims=True),
+                                            raw_loader.PROXY_HEADROOM) * (1.0 / _lv)).astype(np.float32)
     # 1) 미스트(디퓨전) 필터 — 셰이더 1단계 == mist.apply. **유저 WB/매트릭스/노출보다 앞**:
     #    그 셋은 픽셀마다 같은 선형 연산이라 블러와 정확히 교환되므로 결과는 같으면서 산란 필드가
     #    세 슬라이더와 무관해진다(프리뷰가 이미지당 1회 계산해 캐시할 수 있는 이유).
@@ -586,14 +599,16 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     # 하이라이트 디새추레이션: near-clip 센서클립 색끼(예: 불꽃 코어 청록) 제거 → 중성(흰색).
     # ⚠️쿨(청/녹 우세) 하이라이트만 중성화한다 — 밝은 빨강/주황 광원(예: 네온·간판)은
     # 보존해야 하므로 max(G,B)-R 로 게이트(따뜻한 색은 음수→게이트 0). filmic 뒤 display 공간.
+    # ⚠️밝기 게이트는 **display 값이 아니라 센서 클립 근접도**(_clip_prox, 위에서 계산)다. display 로
+    # 재면 자동노출 게인과 filmic 숄더 때문에 센서 포화의 17~45% 밖에 안 되는 파란 하늘이 흰색으로
+    # 날아간다(X-T5 실측 17.4%, 그중 실제 클립 0개). 셰이더 0.5 단계와 동일해야 한다.
     # ⚠️hlDesat=0(일반 이미지 입력)이면 통째로 끈다 — 센서 클립이 없는 display-referred 소스에선
-    # 밝은 파랑/청록이 '정상 색'이라 이 단계가 하늘·네온을 흰색으로 날린다. 셰이더 0.5 단계와 동일.
-    _hld = float(p.get("hlDesat", 1.0))
-    if _hld > 0.0:
+    # 밝은 파랑/청록이 '정상 색'이다.
+    if _hld > 0.0 and _clip_prox is not None:
         _mx = disp.max(axis=2, keepdims=True)
         _cool = np.maximum(disp[..., 1:2], disp[..., 2:3]) - disp[..., 0:1]
-        disp = disp + (_mx - disp) * (_hld * _smoothstep(0.95, 1.0, _mx)
-                                      * _smoothstep(0.05, 0.35, _cool))
+        disp = disp + (_mx - disp) * (_hld * _clip_prox * _smoothstep(0.05, 0.35, _cool))
+        del _clip_prox, _mx, _cool       # 26MP 공간단계 피크 전에 해제
 
     hi, sh = float(p.get("highlights", 0)), float(p.get("shadows", 0))
     wh, bl = float(p.get("whites", 0)), float(p.get("blacks", 0))

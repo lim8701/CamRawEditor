@@ -1021,6 +1021,7 @@ class Controller(QObject):
     editsReady = Signal()       # 새 파일 디코딩 완료 -> QML 이 저장 편집 복원(또는 기본값 리셋)
     histogramChanged = Signal()  # 톤커브 배경 히스토그램 갱신 알림
     simExpEVChanged = Signal()   # 필름시뮬 보정 노출(EV) 갱신 알림 — 셰이더 simExpEV 유니폼
+    clipLevelChanged = Signal()  # 센서 포화 레벨 갱신 알림 — 셰이더 clipLevel 유니폼
     lensChanged = Signal()       # 렌즈 보정 on/off 변경 알림
     busyChanged = Signal()       # 디코딩(렌즈 보정 포함) 진행 중 표시
     folderChanged = Signal()     # 좌측 file explorer 현재 폴더/파일목록 갱신 알림
@@ -1250,6 +1251,7 @@ class Controller(QObject):
         self._sim_key = "identity"  # 현재 필름시뮬 키(QML setFilmSim 이 알려줌)
         self._sim_strength = 1.0    # 현재 필름시뮬 강도
         self._sim_exp_ev = 0.0      # 필름시뮬 보정 노출(EV) — pipeline.film_sim_ev
+        self._clip_level = 1.0      # 센서 포화 레벨(scene-linear) — raw_loader.clip_level
         self._lens = True           # 렌즈 보정 on/off (RAF 내장 샷별 프로파일)
         self._busy = False          # 디코딩 진행 중(스피너)
         self._render_seq = 0        # 비동기 렌더 순번(오래된 결과 폐기용)
@@ -3467,6 +3469,13 @@ class Controller(QObject):
     # 셰이더 uniform(pipe/pipeFull simExpEV). export 는 render_full 이 자체 계산한다.
     simExpEV = Property(float, _get_sim_exp_ev, notify=simExpEVChanged)
 
+    def _get_clip_level(self) -> float:
+        return self._clip_level
+
+    # 센서 포화 레벨(scene-linear) — 하이라이트 디새추가 '진짜 클립'에서만 걸리게 하는 게이트 기준.
+    # 셰이더 uniform(pipe/pipeFull/comparePipe). export 는 render_full 이 자체 계산한다.
+    clipLevel = Property(float, _get_clip_level, notify=clipLevelChanged)
+
     @Slot("QVariantMap")
     def updateHistogram(self, params) -> None:  # noqa: N802 (QML 슬롯)
         """현재 조절값을 축소 프록시에 numpy 로 적용해 '조절 반영' 히스토그램을 재계산.
@@ -5221,13 +5230,16 @@ class Controller(QObject):
             self._set_load_error(err or "Cannot open this file (unsupported or corrupt RAW).")
             return
         self._set_load_error("")
-        img, as_shot, as_shot_tint, cam, ref, cam2srgb = res
+        img, as_shot, as_shot_tint, cam, ref, cam2srgb, clip_level = res
         if self._kelvin is None:
             self._kelvin = as_shot          # as-shot 으로 디코딩됨 -> 현재값 동기화
             self._tint = as_shot_tint       # as-shot tint 도 함께 동기화(새 파일)
         self._cam = cam
         self._ref = ref
         self._cam2srgb = cam2srgb
+        if abs(float(clip_level) - self._clip_level) > 1e-6:
+            self._clip_level = float(clip_level)     # 하이라이트 디새추 게이트(셰이더 uniform)
+            self.clipLevelChanged.emit()
         if as_shot != self._asshot or as_shot_tint != self._asshot_tint:
             self._asshot = as_shot
             self._asshot_tint = as_shot_tint

@@ -13,10 +13,20 @@ layout(std140, binding = 0) uniform buf {
     float displayCM;    // 1=색관리 적용
     float cmLutSize;    // CM LUT 한 변 N (0=미적용)
     float hlDesat;      // 하이라이트 디새추 강도: 1=RAW / 0=일반 이미지 입력(adjust.frag 와 동일 의미)
+    float clipLevel;    // 센서 포화 레벨(카메라네이티브 scene-linear) — adjust.frag 와 동일 게이트 기준
 } ubuf;
 
 layout(binding = 1) uniform sampler2D src;     // display sRGB 입력(dispPre)
 layout(binding = 2) uniform sampler2D cmLut;   // sRGB→모니터 LUT 아틀라스
+// ⚠️하이라이트 디새추 게이트가 **센서 클립 근접도**라 원본(카메라네이티브 감마) 프록시가 필요하다.
+//   dispPre 는 이미 display 라 그 정보가 없다(adjust.frag 는 같은 텍스처를 binding 1 로 읽는다).
+layout(binding = 3) uniform sampler2D rawSrc;  // 카메라네이티브 헤드룸 인코딩 프록시(=adjust.frag src)
+
+const float PROXY_HEADROOM = 4.0;              // ⚠️raw_loader/adjust.frag 와 동일해야 함
+vec3 srgbToLinear(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
 
 // adjust.frag 의 cm_texel/apply_cm_lut 와 동일 좌표 규약(트라이리니어).
 vec3 cm_texel(float ri, float gi, float bi, float N) {
@@ -56,10 +66,12 @@ void main() {
     //   여기만 디새추가 살아 있으면 Compare original 창만 밝은 파랑을 흰색으로 날려
     //   '있지도 않은 편집 차이'를 보여준다(실측 최대 250/255).
     if (ubuf.hlDesat > 0.0) {
+        vec3 cam = srgbToLinear(texture(rawSrc, qt_TexCoord0).rgb) * PROXY_HEADROOM;
+        float clipProx = smoothstep(0.90, 1.0,
+                                    max(cam.r, max(cam.g, cam.b)) / max(ubuf.clipLevel, 1e-6));
         float mx = max(rgb.r, max(rgb.g, rgb.b));
         float cool = max(rgb.g, rgb.b) - rgb.r;
-        rgb = mix(rgb, vec3(mx), ubuf.hlDesat
-                  * smoothstep(0.95, 1.0, mx) * smoothstep(0.05, 0.35, cool));
+        rgb = mix(rgb, vec3(mx), ubuf.hlDesat * clipProx * smoothstep(0.05, 0.35, cool));
     }
 
     if (ubuf.displayCM > 0.5 && ubuf.cmLutSize > 1.5) {
