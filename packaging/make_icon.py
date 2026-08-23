@@ -189,6 +189,18 @@ def make_icns(family, out_dir):
           f"sizes: {sorted({px for _, px in _ICONSET})})")
 
 
+def make_badge(family, proj):
+    """UI 안에서 쓰는 소형 아이콘 → assets/icons/edited.png (썸네일 '편집됨' 배지).
+
+    타이틀바와 **같은 소형 아트**(R + 홀 3개)다 — 배지를 따로 디자인하지 않는다.
+    48px 로 굽는다: 화면 표시는 16px 라 200% 배율에서도 축소만 하면 된다(업스케일 없음)."""
+    from PIL import Image
+    out = os.path.join(proj, "assets", "icons", "edited.png")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    _to_pil(render_small(family)).resize((48, 48), Image.LANCZOS).save(out, format="PNG")
+    print(f"OK -> {out}  ({os.path.getsize(out)} B)")
+
+
 def main():
     app = QGuiApplication([])                                        # noqa: F841 (렌더에 필요)
     family = _font_black()
@@ -197,13 +209,16 @@ def main():
     args = sys.argv[1:]
     want_ico = "--ico" in args or (not args and sys.platform == "win32")
     want_icns = "--icns" in args or (not args and sys.platform == "darwin")
-    if not (want_ico or want_icns):
-        raise SystemExit("사용법: make_icon.py [--ico] [--icns]")
+    want_badge = "--badge" in args
+    if not (want_ico or want_icns or want_badge):
+        raise SystemExit("사용법: make_icon.py [--ico] [--icns] [--badge]")
     print(f"font: {family}")
     if want_ico:
         make_ico(family, out_dir)
     if want_icns:
         make_icns(family, out_dir)
+    if want_badge:
+        make_badge(family, PROJ)
 
 
 if __name__ == "__main__":

@@ -118,6 +118,27 @@ ApplicationWindow {
     property bool showExplorer: true
     Shortcut { sequence: "B"; enabled: !win._typing; onActivated: win.showExplorer = !win.showExplorer }
 
+    // 컨택트 시트(폴더 격자) 모드. ★규칙은 **두 줄뿐**이다:
+    //   ① G 키(또는 상단 표시줄 ▦ 버튼)로 켜고 끈다.  ② 아직 사진을 안 열었으면 켜져 있다.
+    // ⚠️예전에는 '다른 폴더로 이동하면 자동으로 켜기'까지 있었는데 **켜지고 꺼지는 상황이
+    //   경우마다 달라 혼란스럽다**는 보고를 받고 걷어냈다(폴더를 옮겨도 편집 중인 사진은 그대로).
+    //   조건을 하나 더 붙이고 싶어지면 이 보고를 먼저 떠올릴 것.
+    property bool gridPinned: false
+    Shortcut { sequence: "G"; enabled: !win._typing; onActivated: win.gridPinned = !win.gridPinned }
+    // **다른 사진을 열면** 격자를 닫는다(격자/탐색기/프리뷰 어디서 열든 동일).
+    // ⚠️경로 비교 없이 imageChanged 만 보면 WB 커밋 같은 재디코딩에도 닫혀 '왜 꺼졌지'가 된다.
+    property string _gridLastPath: ""
+    Connections {
+        target: controller
+        function onImageChanged() {
+            if (controller.imagePath !== win._gridLastPath) {
+                win._gridLastPath = controller.imagePath
+                win.gridPinned = false
+            }
+        }
+    }
+
+
     // 원본 비교(Before/After): true 면 프리뷰가 무편집 현상(dispPre)으로 전환. 버튼/\ 키로 토글.
     property bool compareOn: false
     Shortcut { sequence: "\\"; onActivated: win.compareOn = !win.compareOn }
@@ -4264,6 +4285,10 @@ ApplicationWindow {
                                     Rectangle {
                                         visible: !modelData.isDir && !win.showPairedImages
                                                  && modelData.pair !== undefined
+                                        // ⚠️이것만 **칸 모서리** 기준으로 남긴다. 셋 다 사진 사각형에
+                                        //   붙였더니 세로 사진(사진 폭 37px)에서 아래 줄의 +JPG(22px)와
+                                        //   ♥(14px)가 겹쳤다. 좌하단에 남겨 두면 ♥ 가 사진 오른쪽 끝으로
+                                        //   와도 22px 이상 벌어진다(세로 1:3 극단에서도 안전).
                                         anchors.left: parent.left
                                         anchors.bottom: parent.bottom
                                         anchors.margins: 1
@@ -4283,19 +4308,34 @@ ApplicationWindow {
                                     }
                                     // 좋아요(셀렉트) 하트 배지 — likeRevision 참조로 토글/폴더변경 시 갱신
                                     Text {
-                                        anchors.right: parent.right
-                                        anchors.bottom: parent.bottom
-                                        anchors.margins: 1
+                                        // 사진이 그려진 사각형 기준(편집 배지와 같은 규칙) — 칸 기준이면
+                                        // 가로/세로 사진에서 붙는 자리가 달라 보인다(사용자 보고).
+                                        x: (parent.width + thumbImg.paintedWidth) / 2 - width - 1
+                                        y: (parent.height + thumbImg.paintedHeight) / 2 - height - 1
                                         text: "♥"
                                         color: "#ff6b6b"
                                         style: Text.Outline
                                         styleColor: "#000000"
                                         font.pixelSize: 14
+                                        // 로드 전에는 감춘다(편집 배지와 같은 이유 — 위치가 사진
+                                        // 기준이라 paintedWidth=0 이면 칸 한가운데로 간다).
                                         visible: {
                                             controller.likeRevision
-                                            return !modelData.isDir
+                                            return thumbImg.status === Image.Ready
+                                                   && !modelData.isDir
                                                    && controller.isLiked(modelData.path)
                                         }
+                                    }
+                                    // 편집됨 배지(우상단) — 파일명 앰버만으로는 약하다는 피드백.
+                                    // 도안·근거는 EditedBadge.qml 주석.
+                                    EditedBadge {
+                                        // ⚠️**사진이 그려진 사각형** 기준. 칸 모서리에 붙이면 가로
+                                        //   사진은 사진 위, 세로 사진은 사진 밖(빈 칸)에 놓여 같은
+                                        //   배지가 사진마다 다르게 붙은 것처럼 보인다(사용자 보고).
+                                        x: (parent.width + thumbImg.paintedWidth) / 2 - width - 1
+                                        y: (parent.height - thumbImg.paintedHeight) / 2 + 1
+                                        ready: thumbImg.status === Image.Ready
+                                        path: modelData.isDir ? "" : modelData.path
                                     }
                                     // 배치 선택 체크박스(선택 모드에서만, 파일 전용) — 좌상단
                                     Rectangle {
@@ -4906,10 +4946,47 @@ ApplicationWindow {
                         color: "#cfcfcf"
                         font.pixelSize: 12
                         elide: Text.ElideMiddle
-                        width: parent.width - 20
+                        width: parent.width - 20 - (gridToggle.visible ? gridToggle.width + 8 : 0)
                         text: controller.imagePath !== ""
                               ? controller.imagePath
                               : "No file open"
+                    }
+                    // 격자 토글 — ⚠️예전에는 캔버스 좌하단에 떠 있는 버튼이었는데 **사진 위에
+                    // 떠 있는 게 어색하다**는 보고로 여기(창 크롬)로 옮겼다. 자리가 고정이고
+                    // 사진을 가리지 않는다. 탐색기 툴바(♥/⧉/☑) 옆은 통계 문구 폭 예산이 이미
+                    // 버튼 3개 기준이라 넣지 않았다(위 '버튼 3개 기준 가용 160px' 주석).
+                    Rectangle {
+                        id: gridToggle
+                        visible: contactSheet.photos.length > 0
+                        anchors.right: parent.right
+                        anchors.rightMargin: 6
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 22; height: 20; radius: 4
+                        color: win.gridPinned ? "#2a3340"
+                             : (gtHover.hovered ? "#3a3f4b" : "transparent")
+                        border.color: win.gridPinned ? "#7fb3e0" : "#555555"
+                        border.width: 1
+                        ToolTip.visible: gtHover.hovered
+                        ToolTip.text: "Browse this folder as a grid (G)"
+                        // ⚠️글리프(▦ 등) 대신 사각형 4개로 직접 그린다 — 폰트에 그 문자가 없으면
+                        //   두부(□)가 뜬다. 여기 아이콘은 폴백을 확인할 방법이 마땅치 않다.
+                        Grid {
+                            anchors.centerIn: parent
+                            columns: 2; spacing: 2
+                            Repeater {
+                                model: 4
+                                Rectangle {
+                                    width: 5; height: 4; radius: 1
+                                    color: win.gridPinned ? "#7fb3e0" : "#cfcfcf"
+                                }
+                            }
+                        }
+                        HoverHandler { id: gtHover }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: win.gridPinned = !win.gridPinned
+                        }
                     }
                 }
 
@@ -5718,17 +5795,224 @@ ApplicationWindow {
 
                     Text {
                         visible: srcImage.status !== Image.Ready
+                                 && contactSheet.photos.length === 0
                         anchors.centerIn: parent
                         color: "#888"
                         font.pixelSize: 16
                         text: "Double-click a RAW file in the explorer on the left to open it"
                     }
 
+                    // ---- 컨택트 시트 — 사진을 안 연 상태의 빈 캔버스에 현재 폴더를 격자로 ----
+                    // "폴더를 골랐는데 가운데가 텅 비어 어색하다, 사진이 나오고 그걸 누르면 바로
+                    // 열렸으면" 이라는 피드백. ⚠️첫 사진 자동 로드는 하지 않는다 — 시작 동작이
+                    // '폴더만 연다'인 것은 설계 결정이고(CLAUDE.md), 원하지도 않은 사진을 2~4초
+                    // 디코딩하게 된다. 고를 수 있게 **보여주기만** 한다. 모델·썸네일 모두 탐색기와
+                    // 같은 것을 쓴다(검색·좋아요 필터 그대로 반영, provider 캐시 공유).
+                    Item {
+                        id: contactSheet
+                        objectName: "contactSheet"     // 헤드리스 검증용(stampField 와 같은 용도)
+                        anchors.fill: parent
+                        // ⚠️'사진을 아직 안 열었을 때'만으로는 부족하다 — 사진을 한 장 연 뒤
+                        //   **다른 폴더로 이동하면** 캔버스에는 이전 폴더의 사진이 남아 있어서
+                        //   격자를 다시 볼 길이 없어진다(피드백의 상황이 정확히 그거다).
+                        //   그래서 '지금 열린 사진이 이 폴더의 사진이 아닐 때'도 격자를 보여준다.
+                        //   같은 폴더로 돌아오면 편집 화면으로 알아서 복귀한다.
+                        // ★두 줄 규칙(win.gridPinned 주석 참조): 켠 상태이거나, 아직 사진을 안 열었을 때.
+                        // ⚠️디코딩 중(busy)에는 감춘다 — 더블클릭 후 2~4초 동안 격자가 그대로
+                        //   떠 있으면 '눌렀는데 아무 일도 안 난' 것처럼 보인다.
+                        visible: photos.length > 0 && !controller.busy
+                                 && (win.gridPinned || controller.imagePath === "")
+
+                        // 폴더 항목은 뺀다(여기서 폴더 이동까지 하지는 않는다 — 탐색기의 몫).
+                        readonly property var photos: {
+                            var out = []
+                            var f = win.explorerFiles
+                            for (var i = 0; i < f.length; i++)
+                                if (!f[i].isDir) out.push(f[i])
+                            return out
+                        }
+                        // ⚠️썸네일 요청 크기 160 은 임의 값이 아니다 — ThumbProvider 는 160 이하면
+                        //   RAF 임베드 **EXIF 썸네일**(실측 1.4ms/장), 넘으면 임베드 풀 프리뷰
+                        //   축소 디코딩(**73.9ms/장**, 50배)으로 간다. 셀을 키우려면 그 비용을
+                        //   감당할 방법(선캐시 등)을 먼저 정할 것.
+                        readonly property int thumbEdge: 160
+                        property string selectedPath: ""      // 클릭=선택, 더블클릭=열기
+
+                        // ⚠️불투명 배경 필수 — 사진이 열린 채로 격자를 켜면(G) 이 Item 은 렌더
+                        //   트리보다 뒤(=위)에 그려지므로, 배경이 없으면 셀 사이로 편집 중인
+                        //   사진이 비친다. 창 배경과 같은 색.
+                        Rectangle { anchors.fill: parent; color: "#1a1a1a" }
+
+                        Label {
+                            id: sheetHint
+                            anchors.top: parent.top
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.margins: 14
+                            text: "Double-click a photo to open  ·  "
+                                  + contactSheet.photos.length
+                                  + (contactSheet.photos.length === 1 ? " photo" : " photos")
+                                  + "  ·  G closes this grid"
+                            color: "#8a8a8a"
+                            font.pixelSize: 12
+                        }
+
+                        GridView {
+                            id: sheetGrid
+                            objectName: "contactSheetGrid"
+                            anchors.top: sheetHint.bottom
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            anchors.margins: 10
+                            anchors.topMargin: 8
+                            clip: true
+                            // 썸네일 칸을 **정사각 160**으로 둔다 = 탐색기 호버 피크와 같은 크기
+                            // (피크도 `sourceSize.width: 160`). 세로/가로 어느 쪽이든 긴 변이 160.
+                            // ⚠️예전엔 160×112(가로 기준)라 **세로 사진만 75px 폭으로 쪼그라들어**
+                            //   "피크만큼 크게 해달라"는 보고가 나왔다. 가로 사진은 그때도 피크와
+                            //   같은 크기였다 — 문제는 세로였다.
+                            // ⚠️160 을 넘기면 썸네일 비용이 50배가 된다(위 ThumbProvider 절벽).
+                            cellWidth: 178
+                            cellHeight: 198
+                            model: contactSheet.photos
+                            onModelChanged: positionViewAtBeginning()   // 폴더가 바뀌면 맨 위로
+                            B.ScrollBar.vertical: B.ScrollBar {           // 탐색기 목록과 같은 스타일
+                                id: sheetVbar
+                                width: 10
+                                policy: B.ScrollBar.AsNeeded
+                                contentItem: Rectangle {
+                                    implicitWidth: 6
+                                    radius: 3
+                                    color: sheetVbar.pressed ? "#cfcfcf" : "#9a9a9a"
+                                }
+                                background: Rectangle { radius: 3; color: "#3a3a3a" }
+                            }
+
+                            delegate: Item {
+                                id: cell
+                                required property int index
+                                required property var modelData
+                                width: sheetGrid.cellWidth
+                                height: sheetGrid.cellHeight
+
+                                readonly property bool picked:
+                                    contactSheet.selectedPath === modelData.path
+
+                                Rectangle {
+                                    anchors.fill: parent
+                                    anchors.margins: 4
+                                    radius: 4
+                                    color: cell.picked ? "#2d4a6b"
+                                         : (cellMouse.containsMouse ? "#3a3f4b" : "transparent")
+                                    border.color: cell.picked ? "#8ab4f8"
+                                                : (cellMouse.containsMouse ? "#55606f" : "transparent")
+                                    border.width: cell.picked ? 2 : 1
+
+                                    Item {                    // 썸네일 영역(고정 높이 — 이름 자리 확보)
+                                        id: cellThumb
+                                        anchors.top: parent.top
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.margins: 5
+                                        height: 160          // 폭도 160(cellWidth 178 − 여백 18)
+
+                                        Rectangle {           // 로딩중/실패 placeholder(탐색기 행과 동일)
+                                            anchors.fill: parent
+                                            visible: cellImg.status !== Image.Ready
+                                            color: "#1e1e1e"; radius: 2
+                                        }
+                                        Image {
+                                            id: cellImg
+                                            anchors.fill: parent
+                                            fillMode: Image.PreserveAspectFit
+                                            asynchronous: true      // provider 가 워커 스레드에서 디코딩
+                                            cache: true
+                                            sourceSize.width: contactSheet.thumbEdge
+                                            source: "image://thumb/"
+                                                    + encodeURIComponent(cell.modelData.path)
+                                        }
+                                        Text {                // 임베드 프리뷰가 없는 RAW(일부 DNG 등)
+                                            visible: cellImg.status === Image.Error
+                                            anchors.centerIn: parent
+                                            text: "No preview"
+                                            color: "#888888"; font.pixelSize: 10
+                                        }
+                                        // ⚠️배지는 셀 모서리가 아니라 **사진이 실제로 그려진 사각형**
+                                        //   모서리에 붙인다 — 셀은 폭이 고정이라 세로 사진에서는
+                                        //   좌우가 크게 비고, 모서리에 붙이면 배지만 허공에 뜬다.
+                                        //   (탐색기 행은 칸이 작고 기존 ♥/+JPG 와 규칙을 맞춰야 해서
+                                        //    그대로 칸 모서리에 둔다.)
+                                        EditedBadge {
+                                            x: (cellThumb.width + cellImg.paintedWidth) / 2 - width - 2
+                                            y: (cellThumb.height - cellImg.paintedHeight) / 2 + 2
+                                            ready: cellImg.status === Image.Ready
+                                            path: cell.modelData.path
+                                        }
+                                        Text {                // 좋아요(셀렉트) — 탐색기 행과 같은 표기
+                                            x: (cellThumb.width + cellImg.paintedWidth) / 2
+                                               - width - 2
+                                            y: (cellThumb.height + cellImg.paintedHeight) / 2
+                                               - height - 2
+                                            text: "♥"
+                                            color: "#ff6b6b"
+                                            style: Text.Outline; styleColor: "#000000"
+                                            font.pixelSize: 14
+                                            visible: {
+                                                controller.likeRevision
+                                                return cellImg.status === Image.Ready
+                                                       && controller.isLiked(cell.modelData.path)
+                                            }
+                                        }
+                                    }
+                                    Label {
+                                        anchors.top: cellThumb.bottom
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.margins: 5
+                                        anchors.topMargin: 3
+                                        text: cell.modelData.name
+                                        // 편집됨 = 앰버(탐색기 파일명과 같은 규칙)
+                                        color: {
+                                            controller.editsRevision
+                                            return controller.hasEdits(cell.modelData.path)
+                                                   ? "#E0A226" : "#cfcfcf"
+                                        }
+                                        font.pixelSize: 11
+                                        elide: Text.ElideMiddle
+                                        horizontalAlignment: Text.AlignHCenter
+                                    }
+                                    MouseArea {
+                                        id: cellMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        // ⚠️한 번 클릭 = 열기로 뒀다가 되돌렸다 — 잘못 누르면
+                                        //   2~4초 디코딩을 그대로 기다려야 한다(사용자 보고).
+                                        //   탐색기 목록과 같은 규칙(클릭=선택 / 더블클릭=열기).
+                                        onClicked: {
+                                            contactSheet.selectedPath = cell.modelData.path
+                                            // 좌측 목록도 같은 항목으로(두 화면이 따로
+                                            // 노는 느낌 완화). focus=false — 격자에서 방향키를
+                                            // 쓰려는 게 아니라 목록 하이라이트만 맞추는 것.
+                                            win.selectInExplorer(cell.modelData.path, false)
+                                        }
+                                        // 격자를 닫는 것은 win 의 onImageChanged 한 곳이 맡는다
+                                        // (탐색기·프리뷰에서 열어도 같아야 하므로).
+                                        onDoubleClicked: controller.loadPath(cell.modelData.path)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // 원본 비교 버튼: 클릭(또는 \ 키)으로 원본↔편집본 토글(좌하단). 크롭 페이지에선 숨김.
                     // 하단 AI 캡션 패널(전체 폭)이 보이면 항상 그 위에 배치(일관 규칙).
                     Rectangle {
                         id: cmpBtn
+                        // ⚠️격자가 덮고 있으면 감춘다 — 안 보이는 사진의 원본 비교 버튼이다.
                         visible: controller.imagePath !== "" && win.activePanel === 0
+                                 && !contactSheet.visible
                         anchors.left: parent.left
                         anchors.bottom: parent.bottom
                         anchors.margins: 12
@@ -5810,8 +6094,9 @@ ApplicationWindow {
                     // Generating…) 표시.
                     Rectangle {
                         id: captionBar
+                        // ⚠️격자가 덮고 있으면 감춘다 — 안 보이는 사진의 캡션이 격자 위에 뜬다.
                         visible: win.captionOverlay && cropClip.visible
-                                 && controller.imagePath !== ""
+                                 && controller.imagePath !== "" && !contactSheet.visible
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
@@ -5900,8 +6185,9 @@ ApplicationWindow {
 
                     // 촬영정보 플로팅 패널 (I 키 토글) — 좌측 뷰 왼쪽 끝에 고정
                     Rectangle {
+                        // ⚠️격자가 덮고 있으면 감춘다(캡션 바와 같은 이유).
                         visible: win.infoOverlay && cropClip.visible
-                                 && controller.shootingInfo.length > 0
+                                 && controller.shootingInfo.length > 0 && !contactSheet.visible
                         anchors.left: parent.left
                         anchors.top: parent.top
                         anchors.margins: 12
