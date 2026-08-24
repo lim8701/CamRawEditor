@@ -1014,7 +1014,13 @@ class Controller(QObject):
     loadErrorChanged = Signal()        # 디코드 실패(미지원/손상 RAW) 사용자 안내 갱신 알림
     exportProgressChanged = Signal()   # CPU export 진행률(0..1) 갱신 알림(필름 카운터 오버레이용)
     exifChanged = Signal()      # 촬영정보(EXIF) 갱신 알림
-    stampChanged = Signal()     # 날짜 스탬프 오버레이 갱신 알림
+    stampChanged = Signal()     # 날짜 스탬프 **편집값**(텍스트/폰트/크기/색/글로우/영역/회전…) 변경
+    stampSpriteChanged = Signal()  # 스프라이트(url·wr·hr·bleed) 갱신 — ⚠️**편집이 아니다**
+    #   ⚠️둘을 합치지 말 것. QML `editSaveWatch` 가 스탬프 편집값들을 보고 자동저장을 예약하는데,
+    #   스프라이트는 워커에서 늦게 오므로(_stamp_worker) 같은 시그널로 알리면 **편집을 하나도
+    #   안 했는데 사이드카가 생기고**(로드 직후 edited 배지), **Reset 직후 다시 edited 가 된다**
+    #   (실측 재현: 동기 시절엔 안 생기고 비동기로 바꾼 뒤 생김). 파생 렌더 결과와 편집값은
+    #   서로 다른 알림이어야 한다.
     stampDefaultsChanged = Signal()   # 스탬프 '내 기본값' 갱신 알림
     exportOptsChanged = Signal()      # 기억된 export 옵션 갱신 알림
     stampFontsChanged = Signal()      # 폰트 목록(사용자 추가/삭제) 갱신 알림
@@ -3200,10 +3206,10 @@ class Controller(QObject):
     def _get_stamp_margin(self) -> float:
         return self._stamp_margin
 
-    stampUrl = Property(str, _get_stamp_url, notify=stampChanged)
+    stampUrl = Property(str, _get_stamp_url, notify=stampSpriteChanged)
     stampText = Property(str, _get_stamp_text, notify=stampChanged)
-    stampWRatio = Property(float, _get_stamp_wr, notify=stampChanged)   # 스프라이트 W/짧은변
-    stampHRatio = Property(float, _get_stamp_hr, notify=stampChanged)   # 스프라이트 H/짧은변
+    stampWRatio = Property(float, _get_stamp_wr, notify=stampSpriteChanged)   # 스프라이트 W/짧은변
+    stampHRatio = Property(float, _get_stamp_hr, notify=stampSpriteChanged)   # 스프라이트 H/짧은변
     stampRot = Property(int, _get_stamp_rot, notify=stampChanged)       # 촬영 방향 CW 회전(export 전달)
     stampCorner = Property(str, _get_stamp_corner, notify=stampChanged)  # 데이트백 코너(프리뷰 배치)
     stampFont = Property(str, _get_stamp_font, notify=stampChanged)       # 폰트 방식(STYLES 키)
@@ -3255,7 +3261,7 @@ class Controller(QObject):
     stampColor = Property(str, _get_stamp_color, notify=stampChanged)     # 각인 색(hex)
     stampGlow = Property(float, _get_stamp_glow, notify=stampChanged)     # 글로우 밝기 배율
     stampSpread = Property(float, _get_stamp_spread, notify=stampChanged) # 글로우 영역 배율
-    stampBleed = Property(float, _get_stamp_bleed, notify=stampChanged)   # 글로우 여유 변화분/짧은변
+    stampBleed = Property(float, _get_stamp_bleed, notify=stampSpriteChanged)  # 글로우 여유 변화분/짧은변
     stampColors = Property(list, _get_stamp_colors, constant=True)        # 색 팔레트
     stampFonts = Property(list, _get_stamp_fonts, notify=stampFontsChanged)   # 폰트 목록(번들+사용자)
     stampFontMissing = Property(bool, _get_stamp_font_missing, notify=stampChanged)
@@ -3636,6 +3642,7 @@ class Controller(QObject):
         except Exception:
             self._stamp_rot = 0
         self._stamp_text = date_stamp.stamp_text_from_date(self._exif_field("Date"))
+        self.stampChanged.emit()   # 새 파일의 날짜/회전 — 예전엔 _update_stamp_layer 가 대신 알렸다
         self.exifChanged.emit()
         # 좌측 file explorer 를 이 파일의 폴더로 동기화(다른 폴더 파일을 열어도 따라옴).
         parent = str(Path(path).parent)
@@ -3759,6 +3766,7 @@ class Controller(QObject):
         if text == self._stamp_text:      # 형제 슬롯들과 같은 동일값 가드 — 아래 주석 참조
             return
         self._stamp_text = text
+        self.stampChanged.emit()
         self._update_stamp_layer()
 
     @Slot(str)
@@ -3768,6 +3776,7 @@ class Controller(QObject):
         if style == self._stamp_font:
             return
         self._stamp_font = style
+        self.stampChanged.emit()
         self._update_stamp_layer()
 
     @Slot(float)
@@ -3780,6 +3789,7 @@ class Controller(QObject):
         if size_frac == self._stamp_size:
             return
         self._stamp_size = size_frac
+        self.stampChanged.emit()
         self._update_stamp_layer()
 
     @Slot(float)
@@ -3809,6 +3819,7 @@ class Controller(QObject):
         if color == self._stamp_color:
             return
         self._stamp_color = color
+        self.stampChanged.emit()
         self._update_stamp_layer()
 
     @Slot(float)
@@ -3818,6 +3829,7 @@ class Controller(QObject):
         if v == self._stamp_glow:
             return
         self._stamp_glow = v
+        self.stampChanged.emit()
         self._update_stamp_layer()
 
     @Slot(float)
@@ -3827,6 +3839,7 @@ class Controller(QObject):
         if v == self._stamp_spread:
             return
         self._stamp_spread = v
+        self.stampChanged.emit()
         self._update_stamp_layer()
 
     @Slot(float)
@@ -3915,7 +3928,7 @@ class Controller(QObject):
         self._stamp_provider.set_image(layer)
         self._stamp_counter += 1
         self._stamp_url = f"image://stamp/s?v={self._stamp_counter}"
-        self.stampChanged.emit()
+        self.stampSpriteChanged.emit()      # ⚠️stampChanged 가 아니다 — 위 시그널 정의 주석 참조
 
     # ---------- 시맨틱 마스킹 (ONNX SegFormer, 복합 클래스) ----------
     #   추론 1회로 150클래스 softmax 를 캐시(_seg_probs)해 두고, 체크된 클래스들을 합산해
