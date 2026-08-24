@@ -84,8 +84,9 @@ ApplicationWindow {
     property string stampFontError: ""    // 폰트 추가 실패 안내(빈 문자열=숨김)
     // 스탬프 '내 기본값' — 사진 여러 장을 연속 작업할 때 폰트·크기·여백을 매번 다시 잡지
     // 않도록 마지막 사용값을 기억한다(controller 가 사용자 데이터 폴더 JSON 으로 보존).
-    // ⚠️`_ev` 폴백과 `resetAllEdits` 가 **반드시 같은 이 함수**를 봐야 한다 — 한쪽만 보면
-    //   "적용 기본값 = 리셋 값" 불변식이 깨져 레시피 적용이 조용히 어긋난다.
+    // ⚠️`applyEdits` 의 `_ev` 폴백은 이 함수가 아니라 **`lookDef`(=공장 기본값)**를 쓴다.
+    //   Reset 버튼도 공장값이라(resetAllEdits(true)) 셋이 일치한다 —
+    //   "적용 기본값 = 리셋 값" 불변식은 그 세 곳을 같이 볼 것.
     function stampDef(key) {
         var d = controller.stampDefaults
         return (d && d[key] !== undefined) ? d[key]
@@ -1044,7 +1045,9 @@ ApplicationWindow {
     }
 
     // 전체 초기화(편집 + 지오메트리). 수동 Reset 버튼 & 저장본 없는 파일 로드에서 호출.
-    function resetAllEdits() {
+    // factoryStamp=true 면 스탬프 설정을 **공장 기본값**으로 되돌린다(Reset 버튼).
+    // 생략하면 '내 기본값' — 사이드카 없는 새 사진의 로드 경로가 그쪽이다(아래 주석).
+    function resetAllEdits(factoryStamp) {
         expSlider.value = 0.0; conSlider.value = 1.0
         hiSlider.value = 0.0; shSlider.value = 0.0; whSlider.value = 0.0; blSlider.value = 0.0
         texSlider.value = 0.0; claritySlider.value = 0.0; dehazeSlider.value = 0.0
@@ -1069,21 +1072,27 @@ ApplicationWindow {
         // 날짜 스탬프/렌즈 보정도 초기화 — 누락 시 이전 사진의 상태가 무편집 사진으로
         // 누수되고(editParams 는 저장하는데 reset 은 안 지움), Reset 버튼으로도 안 지워졌음.
         // 스탬프는 '내 기본값'으로 되돌린다(공장 기본값 아님). ⚠️이 함수는 Reset 버튼과
-        // **사이드카 없는 새 사진의 로드 경로**(onEditsReady 의 else)를 겸하는데, 후자가
-        // 이 기능의 목적 그 자체다. 그래서 여기만 내 기본값이고, 슬라이더 더블클릭과
-        // applyEdits 폴백은 공장 기본값이다(각각 그쪽 주석 참조 — 의도된 비대칭).
+        // 이 함수는 **사이드카 없는 새 사진의 로드 경로**(onEditsReady 의 else)를 겸한다 —
+        // 거기서는 '내 기본값'이 맞다(연속 작업에서 매번 다시 잡지 않는 것이 이 기능의 목적).
+        // ⚠️**Reset 버튼은 공장 기본값**이다(factoryStamp=true) — 스탬프 슬라이더는 놓을 때마다
+        //   그 값을 내 기본값으로 기억하므로, Reset 도 내 기본값이면 **방금 만진 값이 그대로
+        //   돌아와 Reset 이 무동작으로 보인다**(사용자 보고). 그러면 슬라이더 더블클릭·
+        //   applyEdits 의 `_ev` 폴백(둘 다 공장값)과도 어긋난다 — 이제 셋이 같다.
+        // ⚠️`dateStamp`(켜짐 여부)만 내 기본값을 따른다 — Reset 이 각인을 통째로 없애는 것은
+        //   보고된 문제가 아니고, 새 사진을 열었을 때와 켜짐 상태가 달라지면 더 혼란스럽다.
+        var _sd = function (k) { return factoryStamp === true ? win.lookDef(k) : win.stampDef(k) }
         win.dateStamp = win.stampDef("stampOn")
         stampField.text = controller.stampText
         controller.setStampText(stampField.text)
-        controller.setStampFont(win.stampDef("stampStyle"))
-        stampSizeSlider.value = win.stampDef("stampSize")
+        controller.setStampFont(_sd("stampStyle"))
+        stampSizeSlider.value = _sd("stampSize")
         controller.setStampSize(stampSizeSlider.value)
-        stampMarginSlider.value = win.stampDef("stampMargin")
+        stampMarginSlider.value = _sd("stampMargin")
         controller.setStampMargin(stampMarginSlider.value)
-        controller.setStampColor(win.stampDef("stampColor"))
-        stampGlowSlider.value = win.stampDef("stampGlow")
+        controller.setStampColor(_sd("stampColor"))
+        stampGlowSlider.value = _sd("stampGlow")
         controller.setStampGlow(stampGlowSlider.value)
-        stampSpreadSlider.value = win.stampDef("stampSpread")
+        stampSpreadSlider.value = _sd("stampSpread")
         controller.setStampSpread(stampSpreadSlider.value)
         lensCheck.checked = true
         controller.setLensCorrection(true)
@@ -1100,7 +1109,7 @@ ApplicationWindow {
     // paste/undo 와 동일하게 직접 반영. 리셋 상태는 undo 스텝으로 push(되돌리면 사이드카 복원).
     function resetAndClearEdits() {
         win._applying = true
-        win.resetAllEdits()
+        win.resetAllEdits(true)        // Reset 버튼 = 공장 기본값(위 주석)
         win._applying = false
         editSaveTimer.stop()                              // 보류 중 자동저장 취소(기본값 재생성 방지)
         controller.setWb(tempSlider.value, tintSlider.value)
