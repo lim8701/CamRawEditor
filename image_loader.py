@@ -196,8 +196,9 @@ def load_full(path: str, lens_correct: bool = True):
 
 
 def _result(img: QImage):
-    # 마지막 원소는 센서 포화 레벨(raw_loader 계약) — display-referred 소스엔 센서 클립이 없고
-    # hlDesat 도 0 이라 쓰이지 않는다. 계약을 맞추기 위해 중성값 1.0.
+    # 마지막 원소는 **자동노출 게인**(raw_loader 계약). display-referred 소스엔 자동노출이
+    # 없으므로 1.0 = 0EV 이고, 여기서 유도하는 clip_level 도 1.0 이 된다(센서 클립이 없고
+    # hlDesat 도 0 이라 어차피 안 쓰인다).
     cam, ref, as_shot, as_shot_tint = meta()
     return (img, int(as_shot), float(as_shot_tint), cam.flatten().tolist(),
             ref.tolist(), wb.cam_to_srgb_matrix(cam).flatten().tolist(), 1.0)

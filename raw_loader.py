@@ -126,7 +126,7 @@ def _decode_native(path: str, bayer_ahd: bool = False):
 
 
 def _encode_headroom(rgb16, cam_xyz, ref, as_shot, target_median, lens_profile):
-    """카메라네이티브 16bit -> (렌즈) -> 선형 -> 자동노출 -> (헤드룸 인코딩 disp float[0,1], 클립레벨).
+    """카메라네이티브 16bit -> (렌즈) -> 선형 -> 자동노출 -> (헤드룸 인코딩 disp float[0,1], 자동노출 게인).
 
     code = oetf(L/H): scene-linear L 을 H 로 나눠 [0,1] 감마로 인코딩(셰이더가 ×H 복원).
     ⚠️렌즈 보정을 현상 전 카메라네이티브에 먼저 적용해야 export(render_full)와 정합(자동노출이
@@ -135,15 +135,19 @@ def _encode_headroom(rgb16, cam_xyz, ref, as_shot, target_median, lens_profile):
     if lens_profile is not None:
         rgb16 = np.clip(lens.apply(rgb16, lens_profile), 0.0, 65535.0).astype(np.uint16)
     lin = _srgb2lin_lut()[rgb16]                         # (H,W,3) float32 선형(카메라네이티브)
+    # ⚠️디코드는 **항상** 자동노출을 적용한다. 끄기(Auto exposure 체크 해제)는 재디코드가 아니라
+    #   셰이더/pipeline 의 **노출 지수에서 −log2(g) 를 빼는 것**으로 처리한다 — 곱셈이라 수학적으로
+    #   같고 토글이 즉시 반응한다(재디코드는 2~4초). 유일한 차이는 프록시 헤드룸 클램프로 센서
+    #   H/g 이상이 뭉개지는 것인데 실측 0.000~0.388%(게인 +2EV 초과 파일만, 그것도 near-clip).
     g = auto_exposure_gain(target_median, cam_xyz, ref, as_shot, lin)
     lin *= g
     idx = (np.clip(lin * (1.0 / PROXY_HEADROOM), 0.0, 1.0) * 65535.0 + 0.5).astype(np.uint16)
-    # float32 [0,1] 헤드룸 인코딩(카메라네이티브) + 센서 포화 레벨(하이라이트 디새추 게이트용)
-    return _lin2srgb_lut()[idx], clip_level(g)
+    # float32 [0,1] 헤드룸 인코딩(카메라네이티브) + **자동노출 게인**(소비자가 clip_level()·EV 로 유도)
+    return _lin2srgb_lut()[idx], float(g)
 
 
 def load_proxy(path: str, max_edge: int = 2560, lens_correct: bool = True):
-    """RAW 를 디코딩해 (QImage(8bit), as_shot, as_shot_tint, cam_xyz(9), ref(3), cam2srgb(9), clip_level) 반환.
+    """RAW 를 디코딩해 (QImage(8bit), as_shot, as_shot_tint, cam_xyz(9), ref(3), cam2srgb(9), 자동노출게인) 반환.
 
     프록시는 카메라 네이티브 RGB(매트릭스 미적용)를 TREF WB 베이크 + 헤드룸 감마 인코딩(8bit).
     셰이더가 [선형화→WB 상대게인→cam2srgb 매트릭스→filmic] 로 변환한다.
@@ -164,7 +168,7 @@ def load_proxy(path: str, max_edge: int = 2560, lens_correct: bool = True):
         rgb16 = np.clip(x + 0.5, 0.0, 65535.0).astype(np.uint16)
 
     prof = lens.load_profile(path) if lens_correct else None
-    disp, clip = _encode_headroom(rgb16, cam_xyz, ref, as_shot, target_median, prof)
+    disp, gain = _encode_headroom(rgb16, cam_xyz, ref, as_shot, target_median, prof)
     dth = _dither(disp.shape)               # ±0.5 LSB 디더(8bit 양자화 밴딩 제거)
     rgb = np.clip(disp * 255.0 + 0.5 + dth, 0.0, 255.0).astype(np.uint8)
     rgb = np.ascontiguousarray(rgb)
@@ -172,7 +176,7 @@ def load_proxy(path: str, max_edge: int = 2560, lens_correct: bool = True):
     img = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
     cam2srgb = cam_to_srgb_matrix(cam_xyz)
     return (img, int(as_shot), float(as_shot_tint), cam_xyz.flatten().tolist(),
-            ref.tolist(), cam2srgb.flatten().tolist(), clip)
+            ref.tolist(), cam2srgb.flatten().tolist(), gain)
 
 
 def load_full(path: str, lens_correct: bool = True):
@@ -182,7 +186,7 @@ def load_full(path: str, lens_correct: bool = True):
     """
     rgb16, cam_xyz, ref, as_shot, as_shot_tint, target_median = _decode_native(path, bayer_ahd=True)
     prof = lens.load_profile(path) if lens_correct else None
-    disp, clip = _encode_headroom(rgb16, cam_xyz, ref, as_shot, target_median, prof)
+    disp, gain = _encode_headroom(rgb16, cam_xyz, ref, as_shot, target_median, prof)
     code = (np.clip(disp, 0.0, 1.0) * 65535.0 + 0.5).astype(np.uint16)
     h, w, _ = code.shape
     rgba = np.empty((h, w, 4), np.uint16)
@@ -192,4 +196,4 @@ def load_full(path: str, lens_correct: bool = True):
     img = QImage(rgba.data, w, h, 8 * w, QImage.Format.Format_RGBA64).copy()
     cam2srgb = cam_to_srgb_matrix(cam_xyz)
     return (img, int(as_shot), float(as_shot_tint), cam_xyz.flatten().tolist(),
-            ref.tolist(), cam2srgb.flatten().tolist(), clip)
+            ref.tolist(), cam2srgb.flatten().tolist(), gain)

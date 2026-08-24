@@ -496,6 +496,8 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         # 카메라네이티브 감마 -> 선형화 -> 자동노출(중앙값). 여기서 float32 로 승격하는 위치는
         # 예전 그대로다(디코드 직후부터 float 로 들고 가면 26MP 에서 150MB 를 더 오래 문다).
         nat = wb.srgb_to_linear(rgb16.astype(np.float32) / 65535.0)
+        # ⚠️디코드는 **항상** 자동노출을 적용한다(프록시와 동일). 끄기는 아래 _base_exp 에서
+        #   −log2(게인) 을 빼는 것으로 처리한다 — 셰이더 autoExpEV 와 같은 방식.
         _auto_gain = wb.auto_exposure_gain(target_median, cam, ref, as_shot, nat)
         nat *= _auto_gain
         del rgb16
@@ -556,8 +558,11 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     # 필름시뮬 보정 노출(film_sim_ev 주석 참조) — LUT 에 들어있는 후지 톤커브가 filmic 위에 두 번
     # 걸리는 것을 상쇄한다. 앵커는 **유저 편집 전 as-shot 베이스**라 슬라이더와 무관(이미지×시뮬
     # 상수) → 프리뷰(main.Controller._update_sim_ev)와 같은 함수·같은 앵커, 표본만 다르다.
+    # 자동노출 끄기 오프셋(셰이더 autoExpEV 와 동일) — 디코드는 게인을 적용했으므로 여기서 뺀다.
+    _auto_off = 0.0 if p.get("autoExposure", True) else -float(np.log2(max(_auto_gain, 1e-6)))
     _k = max(1, max(nat.shape[:2]) // 128)
-    _sim_ev = film_sim_ev((nat[::_k, ::_k]
+    # ⚠️필름시뮬 보정은 **오프셋이 걸린 베이스**에서 풀어야 한다(끄면 베이스가 그만큼 어둡다).
+    _sim_ev = film_sim_ev((nat[::_k, ::_k] * np.float32(2.0 ** _auto_off)
                            * wb.rel_gain(cam, ref, as_shot, as_shot_tint).astype(np.float32)) @ M.T,
                           lut_arr, lut_n, float(p.get("lutStrength", 1.0)))
     # 하이라이트 디새추(0.5 단계) 게이트 = **센서 클립 근접도**(셰이더 clipProx 와 동일 수식).
@@ -588,7 +593,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     nat = nat * wb.rel_gain(cam, ref, kelvin, tint).astype(np.float32)   # 유저 WB(카메라공간)
     # 노출 = scene-linear 배수. 마스크 노출(skyExp)은 전역과 같은 지수에 합산(셰이더 0단계 동일)
     # → 마스크 영역도 진짜 stop + filmic 하이라이트 롤오프로 반응.
-    _base_exp = float(p.get("exposure", 0.0)) + _sim_ev
+    _base_exp = float(p.get("exposure", 0.0)) + _sim_ev + _auto_off
     if isinstance(exp_add, np.ndarray):
         expo_gain = np.exp2(_base_exp + exp_add)[..., None]
     else:
@@ -600,8 +605,8 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     # ⚠️쿨(청/녹 우세) 하이라이트만 중성화한다 — 밝은 빨강/주황 광원(예: 네온·간판)은
     # 보존해야 하므로 max(G,B)-R 로 게이트(따뜻한 색은 음수→게이트 0). filmic 뒤 display 공간.
     # ⚠️밝기 게이트는 **display 값이 아니라 센서 클립 근접도**(_clip_prox, 위에서 계산)다. display 로
-    # 재면 자동노출 게인과 filmic 숄더 때문에 센서 포화의 17~45% 밖에 안 되는 파란 하늘이 흰색으로
-    # 날아간다(X-T5 실측 17.4%, 그중 실제 클립 0개). 셰이더 0.5 단계와 동일해야 한다.
+    # 재면 자동노출 게인과 filmic 숄더 때문에 센서 포화의 20~51% 밖에 안 되는 파란 하늘이 흰색으로
+    # 날아간다(X-T5 실측 14.0%, 그중 실제 클립 0개). 셰이더 0.5 단계와 동일해야 한다.
     # ⚠️hlDesat=0(일반 이미지 입력)이면 통째로 끈다 — 센서 클립이 없는 display-referred 소스에선
     # 밝은 파랑/청록이 '정상 색'이다.
     if _hld > 0.0 and _clip_prox is not None:

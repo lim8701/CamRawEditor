@@ -14,6 +14,9 @@ layout(std140, binding = 0) uniform buf {
     // filmic 위에 얹으면 톤커브가 두 번 걸린다(+0.8~1.4EV) — 그만큼 되돌린다. 이미지×시뮬
     // 상수로 CPU(pipeline.film_sim_ev)가 풀어 주고, 유저 Exposure 슬라이더와 별개다.
     float simExpEV;
+    // 자동노출 끄기 오프셋(stop, 보통 음수). 디코드는 **항상** 자동노출을 적용하므로 끄기는
+    // 여기서 −log2(게인) 을 도로 빼는 것으로 구현한다(곱셈이라 동일, 재디코드 없이 즉시 반응).
+    float autoExpEV;
     float contrast;     // 대비 (1.0=무변화)
     float wbR;          // WB 프리뷰 게인 (커밋되면 1)
     float wbG;
@@ -479,7 +482,7 @@ void main() {
     }
 
     cam *= vec3(ubuf.wbR, ubuf.wbG, ubuf.wbB);
-    vec3 lin = applyCamMat(cam) * pow(2.0, ubuf.exposure + ubuf.simExpEV
+    vec3 lin = applyCamMat(cam) * pow(2.0, ubuf.exposure + ubuf.simExpEV + ubuf.autoExpEV
                  + ubuf.skyA0.x * skyM0 + ubuf.skyA1.x * skyM1 + ubuf.skyA2.x * skyM2
                  + ubuf.skyA3.x * skyM3 + ubuf.skyA4.x * skyM4);
     vec3 rgb = filmic(lin);                                  // → display sRGB[0,1]
@@ -488,8 +491,8 @@ void main() {
     //      ⚠️쿨(청/녹 우세) 하이라이트만 중성화 — 밝은 빨강/주황 광원(네온·간판)은 보존.
     //      max(G,B)-R 게이트(따뜻한 색은 음수→0). filmic 뒤 display 공간.
     //      ⚠️밝기 게이트는 **display 값이 아니라 센서 클립 근접도(clipProx)** 다. display 로 재면
-    //      자동노출 게인(+1.3~2.5EV)과 filmic 숄더 때문에 **센서 포화의 17~45% 밖에 안 되는 멀쩡한
-    //      파란 하늘**이 0.95 를 넘어 흰색으로 날아간다(X-T5 실측 화면의 17.4%, 그중 실제 클립 0개 —
+    //      자동노출 게인(+0.9~2.1EV)과 filmic 숄더 때문에 **센서 포화의 20~51% 밖에 안 되는 멀쩡한
+    //      파란 하늘**이 0.95 를 넘어 흰색으로 날아간다(X-T5 실측 화면의 14.0%, 그중 실제 클립 0개 —
     //      철탑 주변 흰 후광의 정체였다. 정작 노려야 할 부분클립 화소는 한 번도 안 물었다).
     //      ⚠️hlDesat=0(일반 이미지 입력)이면 통째로 끈다 — 센서 클립이 없는 display-referred
     //      소스에선 밝은 파랑/청록이 '정상 색'이다. pipeline 의 동일 게이트와 함께 고칠 것.

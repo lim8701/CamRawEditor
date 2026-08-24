@@ -1022,6 +1022,7 @@ class Controller(QObject):
     histogramChanged = Signal()  # 톤커브 배경 히스토그램 갱신 알림
     simExpEVChanged = Signal()   # 필름시뮬 보정 노출(EV) 갱신 알림 — 셰이더 simExpEV 유니폼
     clipLevelChanged = Signal()  # 센서 포화 레벨 갱신 알림 — 셰이더 clipLevel 유니폼
+    autoExpChanged = Signal()    # 자동노출 on/off + 적용된 EV 갱신 알림
     lensChanged = Signal()       # 렌즈 보정 on/off 변경 알림
     busyChanged = Signal()       # 디코딩(렌즈 보정 포함) 진행 중 표시
     folderChanged = Signal()     # 좌측 file explorer 현재 폴더/파일목록 갱신 알림
@@ -1252,6 +1253,8 @@ class Controller(QObject):
         self._sim_strength = 1.0    # 현재 필름시뮬 강도
         self._sim_exp_ev = 0.0      # 필름시뮬 보정 노출(EV) — pipeline.film_sim_ev
         self._clip_level = 1.0      # 센서 포화 레벨(scene-linear) — raw_loader.clip_level
+        self._auto_exp = True       # 자동노출(임베드 JPEG 중앙값 매칭) on/off — 사진별
+        self._auto_ev = 0.0         # 실제로 적용된 자동노출(EV) — UI 표시용
         self._lens = True           # 렌즈 보정 on/off (RAF 내장 샷별 프로파일)
         self._busy = False          # 디코딩 진행 중(스피너)
         self._render_seq = 0        # 비동기 렌더 순번(오래된 결과 폐기용)
@@ -2862,6 +2865,8 @@ class Controller(QObject):
     def _do_full_decode(self, src_path: str) -> None:
         try:
             lens_on = bool(self._gpu_params.get("lensCorrection", True))
+            # ⚠️자동노출 토글은 여기가 아니라 **셰이더 uniform**(pipeFull autoExpEV)이 처리한다
+            #   — 디코드는 항상 게인을 적용한다(setAutoExposure 주석 참조).
             img, *_ = (image_loader.load_full(src_path, lens_on)
                        if image_loader.is_display_image(src_path)
                        else load_full(src_path, lens_on))
@@ -3455,7 +3460,11 @@ class Controller(QObject):
             try:
                 import pipeline
                 arr, n = self._get_lut(self._sim_key)
-                ev = pipeline.film_sim_ev(self._proxy_small, arr, n, self._sim_strength)
+                # ⚠️자동노출을 끈 상태면 베이스가 그만큼 어둡다 — 그 베이스에서 풀어야 맞는다.
+                off = self._get_auto_off_ev()
+                sample = (self._proxy_small if off == 0.0
+                          else self._proxy_small * float(2.0 ** off))
+                ev = pipeline.film_sim_ev(sample, arr, n, self._sim_strength)
             except Exception as exc:                 # 보정 실패는 룩만 놓칠 뿐 — 로드를 막지 않는다
                 print(f"[filmsim] 보정 노출 계산 실패(무시): {exc}")
                 ev = 0.0
@@ -3501,7 +3510,8 @@ class Controller(QObject):
                            float(params.get("mistHi", 0.8)), max(c.shape[:2]),
                            color=float(params.get("mistColor", 0.5)))
         # 노출 = scene-linear 배수 → filmic(단일 톤커브) → display. (셰이더/export 와 동일 순서)
-        c = wb.filmic(c * (2.0 ** (float(params.get("exposure", 0.0)) + self._sim_exp_ev)))
+        c = wb.filmic(c * (2.0 ** (float(params.get("exposure", 0.0)) + self._sim_exp_ev
+                                   + self._get_auto_off_ev())))
         c = np.maximum(pipeline._tone_zones(
             c, float(params.get("highlights", 0)), float(params.get("shadows", 0)),
             float(params.get("whites", 0)), float(params.get("blacks", 0))), 0.0)
@@ -3582,6 +3592,8 @@ class Controller(QObject):
         # 재디코딩되는 이중작업/기하 흔들림 방지(WB 프리시드와 동일 취지, 기본값 True).
         lc = e.get("lensCorrection")
         self._lens = bool(lc) if lc is not None else True
+        ae = e.get("autoExposure")           # 렌즈 보정과 같은 이유로 첫 디코드 전에 선설정
+        self._auto_exp = bool(ae) if ae is not None else True
         # 저장된 aiNr 이미지면 ORT 세션을 아래 _render() 디코드와 병렬로 미리 워밍 →
         # 로드 완료 직후 세션 초기화(GPU 점유) freeze 를 로드 대기 안으로 흡수(모델 있을 때만).
         if e.get("aiNr"):
@@ -5171,6 +5183,39 @@ class Controller(QObject):
 
     lensCorrection = Property(bool, _get_lens, notify=lensChanged)
 
+    @Slot(bool)
+    def setAutoExposure(self, on: bool) -> None:  # noqa: N802 (QML 슬롯)
+        """자동노출 on/off. 끄면 톤 가공 없는 선형 출발점(캡처원 Linear Response 와 같은 자리).
+
+        ⚠️**재디코드가 아니다** — 디코드는 항상 자동노출을 적용하고, 끄기는 셰이더/pipeline 의
+        노출 지수에서 −log2(게인) 을 빼는 것으로 처리한다(곱셈이라 수학적으로 동일, 토글 즉시
+        반응). 재디코드로 만들었다가 2~4초가 걸려 바꿨다.
+        ⚠️사진별 설정이고 **기본은 켬** — 후지 raw 는 하이라이트를 지키느라 낮게 노출돼 있어
+        끄면 0.9~2.2스톱 어둡게 열린다(실측, 렌즈 보정 포함 경로). 알고 쓰는 옵션이다."""
+        if self._auto_exp == on:
+            return
+        self._auto_exp = on
+        self.autoExpChanged.emit()
+        self._update_sim_ev()      # 필름시뮬 보정은 베이스 밝기 기준이라 오프셋이 바뀌면 다시 푼다
+
+    def _get_auto_exp(self) -> bool:
+        return self._auto_exp
+
+    def _get_auto_ev(self) -> float:
+        """화면에 표시할 '실제로 적용 중인' 자동노출(EV). 끄면 0(오프셋이 상쇄한다)."""
+        return self._auto_ev if self._auto_exp else 0.0
+
+    def _get_auto_off_ev(self) -> float:
+        """자동노출을 끌 때 노출 지수에 더할 오프셋(= −log2(게인)). 켜져 있으면 0.
+
+        디코드는 항상 게인을 적용하므로, 끄기는 여기서 도로 빼는 것으로 구현한다."""
+        return 0.0 if self._auto_exp else -self._auto_ev
+
+    autoExposure = Property(bool, _get_auto_exp, notify=autoExpChanged)
+    autoExposureEV = Property(float, _get_auto_ev, notify=autoExpChanged)
+    # 셰이더 uniform(pipe/pipeFull autoExpEV). export 는 render_full 이 자체 계산한다.
+    autoExposureOffsetEV = Property(float, _get_auto_off_ev, notify=autoExpChanged)
+
     def _get_busy(self) -> bool:
         return self._busy
 
@@ -5230,16 +5275,26 @@ class Controller(QObject):
             self._set_load_error(err or "Cannot open this file (unsupported or corrupt RAW).")
             return
         self._set_load_error("")
-        img, as_shot, as_shot_tint, cam, ref, cam2srgb, clip_level = res
+        img, as_shot, as_shot_tint, cam, ref, cam2srgb, auto_gain = res
         if self._kelvin is None:
             self._kelvin = as_shot          # as-shot 으로 디코딩됨 -> 현재값 동기화
             self._tint = as_shot_tint       # as-shot tint 도 함께 동기화(새 파일)
         self._cam = cam
         self._ref = ref
         self._cam2srgb = cam2srgb
-        if abs(float(clip_level) - self._clip_level) > 1e-6:
-            self._clip_level = float(clip_level)     # 하이라이트 디새추 게이트(셰이더 uniform)
+        # 디코드가 돌려준 자동노출 게인에서 둘을 유도한다: 하이라이트 디새추 게이트(셰이더
+        # uniform)와 화면에 보여줄 EV. ⚠️자동노출은 **보이지 않는 보정**이라 Exposure 가 0.00
+        # 인데 뒤에서 +2EV 가 걸려 있다 — 그게 "왜 내가 찍은 것보다 밝지"의 정체였다.
+        import math
+        import raw_loader                     # 지연 임포트 모듈(_load_heavy_modules 참조)
+        _clip = raw_loader.clip_level(float(auto_gain))
+        if abs(_clip - self._clip_level) > 1e-6:
+            self._clip_level = _clip
             self.clipLevelChanged.emit()
+        _ev = float(math.log2(max(float(auto_gain), 1e-6)))
+        if abs(_ev - self._auto_ev) > 1e-4:
+            self._auto_ev = _ev
+            self.autoExpChanged.emit()
         if as_shot != self._asshot or as_shot_tint != self._asshot_tint:
             self._asshot = as_shot
             self._asshot_tint = as_shot_tint

@@ -888,7 +888,8 @@ ApplicationWindow {
             "sharpenAmt": sharpAmtSlider.value, "sharpenRadius": sharpRadiusSlider.value,
             "sharpenDetail": sharpDetailSlider.value, "sharpenMask": sharpMaskSlider.value,
             "lumaNR": lumaNrSlider.value, "colorNR": colorNrSlider.value, "aiNr": aiNrCheck.checked,
-            "lensCorrection": lensCheck.checked, "dateStamp": win.dateStamp, "stampText": stampField.text,
+            "lensCorrection": lensCheck.checked, "autoExposure": autoExpCheck.checked,
+            "dateStamp": win.dateStamp, "stampText": stampField.text,
             "stampStyle": controller.stampFont, "stampSize": controller.stampSize,
             "stampMargin": controller.stampMargin, "stampColor": controller.stampColor,
             "stampGlow": controller.stampGlow, "stampSpread": controller.stampSpread,
@@ -993,7 +994,9 @@ ApplicationWindow {
         // `checked: controller.lensCorrection` 바인딩이 파괴되어, 이후 사이드카 복원이
         // 박스에 반영되지 않고 낡은 값이 자동저장으로 역전파되던 버그 방지.
         lensCheck.checked = _ev(p, "lensCorrection", true)
+        autoExpCheck.checked = _ev(p, "autoExposure", true)
         controller.setLensCorrection(lensCheck.checked)
+        controller.setAutoExposure(autoExpCheck.checked)   // 박스 대입만으론 슬롯이 안 불린다
         // ⚠️여기 `null` 도 **센티널**(=resetAll() 하라)이라 lookDefaults 를 쓰지 않는다.
         //   표는 그 결과인 identity 제어점을 갖는다(룩 지문 채우기 전용).
         var cp = _ev(p, "curves", null)
@@ -1084,6 +1087,8 @@ ApplicationWindow {
         controller.setStampSpread(stampSpreadSlider.value)
         lensCheck.checked = true
         controller.setLensCorrection(true)
+        autoExpCheck.checked = true
+        controller.setAutoExposure(true)
         curveEditor.resetAll()
         win.resetGeometry()
         win.resetSky()
@@ -1849,6 +1854,7 @@ ApplicationWindow {
             "stampMargin": controller.stampMargin, "stampColor": controller.stampColor,
             "stampGlow": controller.stampGlow, "stampSpread": controller.stampSpread,
             "outEdge": win.exportEdges[resCombo.currentIndex], "lensCorrection": lensCheck.checked,
+            "autoExposure": autoExpCheck.checked,
             "bitDepth": bitDepth16Check.checked ? 16 : 8,   // 16=TIFF/PNG 16bit(CPU 전용)
             // 지오메트리(현상 뒤 적용): 플립 -> 90° -> 스트레이튼(회전+채움줌) -> 종횡비 중앙크롭
             "flipH": flipHBtn.checked, "flipV": flipVBtn.checked,
@@ -4841,6 +4847,9 @@ ApplicationWindow {
                         // 것을 상쇄(pipeline.film_sim_ev). 이미지×시뮬 상수라 슬라이더가 아니다.
                         // ⚠️pipe/pipeFull/pipeline 세 곳 동일해야 함(프리뷰=Export).
                         property real simExpEV: controller.simExpEV
+                        // 자동노출 끄기 오프셋 — 재디코드 대신 노출 지수에서 뺀다.
+                        // ⚠️pipe/pipeFull/pipeline 세 곳 동일해야 함(프리뷰=Export).
+                        property real autoExpEV: controller.autoExposureOffsetEV
                         // 센서 포화 레벨 — 하이라이트 디새추를 '진짜 클립'에서만 걸리게 하는 게이트
                         // 기준(raw_loader.clip_level). ⚠️pipe/pipeFull/comparePipe/pipeline 네 곳 동일.
                         property real clipLevel: controller.clipLevel
@@ -5273,6 +5282,9 @@ ApplicationWindow {
                         // 것을 상쇄(pipeline.film_sim_ev). 이미지×시뮬 상수라 슬라이더가 아니다.
                         // ⚠️pipe/pipeFull/pipeline 세 곳 동일해야 함(프리뷰=Export).
                         property real simExpEV: controller.simExpEV
+                        // 자동노출 끄기 오프셋 — 재디코드 대신 노출 지수에서 뺀다.
+                        // ⚠️pipe/pipeFull/pipeline 세 곳 동일해야 함(프리뷰=Export).
+                        property real autoExpEV: controller.autoExposureOffsetEV
                         // 센서 포화 레벨 — 하이라이트 디새추를 '진짜 클립'에서만 걸리게 하는 게이트
                         // 기준(raw_loader.clip_level). ⚠️pipe/pipeFull/comparePipe/pipeline 네 곳 동일.
                         property real clipLevel: controller.clipLevel
@@ -7357,9 +7369,51 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     spacing: 12
 
-                Label {
-                    text: "Exposure:  " + expSlider.value.toFixed(2)
-                    color: "white"
+                // 노출 줄 — 라벨 왼쪽, 자동노출 토글은 **같은 줄 오른쪽 빈 공간**에 둔다.
+                // ⚠️슬라이더 밑에 별도 행으로 넣었다가 옮겼다 — Light 섹션의 행 간격(12)이
+                //   한 칸 벌어져 리듬이 깨졌다(사용자 지적). 체크박스는 padding 0 + 18px 로
+                //   줄여 라벨 높이를 넘지 않게 한다.
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    Label {
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0        // 좁아지면 이쪽이 줄어든다(체크박스 고정)
+                        elide: Text.ElideRight
+                        text: "Exposure:  " + expSlider.value.toFixed(2)
+                        color: "white"
+                    }
+                    Label {
+                        // ⚠️자동노출은 **보이지 않는 보정**이라 슬라이더가 0.00 인데 뒤에서
+                        //   +2EV 가 걸려 있을 수 있다 — "왜 내가 찍은 것보다 밝지"의 정체였다
+                        //   (커뮤니티 피드백). 적용된 값을 여기 붙여 둔다. 끄면 0 이라 사라진다.
+                        objectName: "autoExpLabel"
+                        text: "Auto" + (Math.abs(controller.autoExposureEV) >= 0.005
+                              ? " " + (controller.autoExposureEV >= 0 ? "+" : "")
+                                + controller.autoExposureEV.toFixed(2) + "EV" : "")
+                        color: "#9a9a9a"; font.pixelSize: 11
+                        elide: Text.ElideRight
+                        verticalAlignment: Text.AlignVCenter
+                        ToolTip.visible: autoExpLblHover.hovered
+                        ToolTip.delay: 600
+                        ToolTip.text: "Matches the render to the camera's own JPEG brightness.
+Turn it off for a linear starting point (no tone shaping) —
+RAW is exposed to protect highlights, so it opens 1-2 stops darker."
+                        HoverHandler { id: autoExpLblHover }
+                    }
+                    // ⚠️체크박스는 **줄의 맨 끝**(오른쪽 고정)이다. 글자 앞에 두면 켬/끔에 따라
+                    //   `Auto +0.91EV` ↔ `Auto` 로 폭이 달라져 **체크박스가 51px 좀우로 움직인다**
+                    //   — 연달아 껐다 켜기가 불편하다(사용자 지적, 실측 1459→1510). 늘었다 줄었다 하는
+                    //   것은 글자 쪽이어야 한다. 밀리는 폭은 fillWidth 인 Exposure 라벨이 흡수한다.
+                    CheckBox {
+                        id: autoExpCheck
+                        objectName: "autoExpCheck"      // 헤드리스 레이아웃 검증용
+                        padding: 0
+                        Layout.preferredWidth: 18
+                        Layout.preferredHeight: 18
+                        checked: controller.autoExposure
+                        onToggled: controller.setAutoExposure(checked)
+                    }
                 }
                 Slider {
                     id: expSlider
