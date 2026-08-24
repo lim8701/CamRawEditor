@@ -1075,6 +1075,7 @@ class Controller(QObject):
     _aiNrDlSig = Signal(object)      # (내부) AI 모델 다운로드 워커 -> 메인 (downloading, 진행률 0..1)
                                      #  ⚠️seq 없음 — 다운로드는 모델 전역(이미지 무관), finally 로 항상 해제
     _aiNrInitSig = Signal(bool)      # (내부) ORT 세션 초기화(GPU 점유) 오버레이 ON/OFF — 세션 전역
+    _stampSpriteSig = Signal(object)  # (내부) 스탬프 스프라이트 워커 -> 메인 (seq, layer, wr, hr)
     _updateSig = Signal(object)      # (내부) 업데이트 확인 워커 -> 메인 (새 버전 태그, 릴리스 URL)
     _folderScanSig = Signal(object)  # (내부) 폴더 스캔 워커 -> 메인 (seq, folder, items, likes, edited, force)
     _indexProgressSig = Signal(object)  # (내부) 폴더 배치 인덱싱 워커 -> 메인 (seq, done, total, status)
@@ -1232,6 +1233,9 @@ class Controller(QObject):
         self._stamp_counter = 0
         self._stamp_wr = 0.0        # 스프라이트 (W,H)/짧은변 비율 — QML 오버레이 크기 산출용
         self._stamp_hr = 0.0
+        self._stamp_seq = 0         # 스프라이트 워커 세대(늦게 온 결과 버리기)
+        self._stamp_busy = False    # 워커 1개만 — 그 사이 들어온 요청은 _stamp_job 으로 코얼레싱
+        self._stamp_job = None      # 대기 중인 최신 파라미터(None=없음)
         self._stamp_rot = 0         # 촬영 방향(센서→업라이트 CW 회전, 0/90/180/270) — 데이트백 배치
         self._stamp_font = "7c_bold"   # 데이트백 폰트 방식(date_stamp.STYLES 키)
         self._stamp_size = 0.032       # 데이트백 크기 = 숫자높이/짧은변 비율(슬라이더, date_stamp.DEFAULT_SIZE_FRAC)
@@ -1307,6 +1311,7 @@ class Controller(QObject):
         self._aiNrStatusSig.connect(self._on_ai_nr_status)
         self._aiNrDlSig.connect(self._on_ai_nr_dl)
         self._aiNrInitSig.connect(self._on_ai_nr_init)
+        self._stampSpriteSig.connect(self._on_stamp_sprite)
         self._updateSig.connect(self._on_update_found)
         self._folderScanSig.connect(self._on_folder_scanned)
         self._indexProgressSig.connect(self._on_index_progress)
@@ -3833,27 +3838,73 @@ class Controller(QObject):
     def _update_stamp_layer(self) -> None:
         """현재 _stamp_text 로 타이트 스프라이트 + 크기 비율을 갱신. 프록시 크기와 무관(비율 기반).
         QML 이 cropClip(=최종 프레임) 위에 source-over 오버레이로 표시 → 위치/크기 최종 사이즈 기준.
-        ⚠️GUI 스레드에서 date_stamp.sprite_layer 를 동기 실행한다(실측 2.5/21.3/60.3ms —
-        size_frac 0.012/0.032/0.050). 호출자 쪽에서 동일값 가드로 걸러줄 것."""
+
+        ⚠️**워커 스레드에서 굽는다.** `date_stamp.sprite_layer` 는 실측 2.5 / 20.2 / 56.5ms
+        (size_frac 0.012 / 0.032 / 0.050)로 크기 제곱에 비례하고, 비용의 대부분은 넓은 헤일로
+        블러다. GUI 스레드에서 돌리면 Size/Glow/Spread 를 끄는 동안 **입력이 그만큼 멈춘다**
+        (최대 3.4배 프레임 예산 초과 = 18fps). 픽셀은 워커에서도 비트 동일함을 확인했다
+        (동시 3워커까지 예외 없음, 최대차 0코드). 축소 렌더(드래프트)는 폰트가 정수 픽셀로
+        래스터돼 놓는 순간 4~11px 튀어서 기각했고, `_wide_blur` 근사를 기본 spread 로 넓히는
+        것은 **예전에 저장한 스탬프의 모습을 바꾸므로** 기각(그 함수 주석 참조).
+
+        결과는 `_stampSpriteSig` 로 GUI 스레드에 돌아온다. 소비자는 전부 `stampChanged` 를
+        보는 QML 프로퍼티(stampUrl/stampWRatio/stampHRatio)라 비동기여도 안전하다 —
+        **동기 완료를 기대하고 `_stamp_wr` 을 바로 읽는 호출부는 없다**(추가하지 말 것)."""
         if self._stamp_provider is None:
             return
-        if self._stamp_text:
+        if not self._stamp_text:
+            # 빈 텍스트 = 스탬프 끔. 1x1 투명이라 워커를 태울 이유가 없다(즉시 반영).
+            self._stamp_seq += 1          # 진행 중인 워커 결과를 무효화
+            self._stamp_job = None
+            layer = QImage(1, 1, QImage.Format.Format_ARGB32)
+            layer.fill(0)                 # 투명 1x1 — sampler/Image 항상 유효하게 유지
+            self._stamp_wr = self._stamp_hr = 0.0
+            self._publish_stamp_layer(layer)
+            return
+        # 워커에 넘길 스냅샷 — self 를 워커에서 읽지 않는다(끄는 중에 값이 바뀐다).
+        job = (self._stamp_text, self._stamp_rot, self._stamp_font, self._stamp_size,
+               self._stamp_grain_src, self._stamp_color, self._stamp_glow, self._stamp_spread,
+               self._cm_enabled, self._cm_dst)
+        if self._stamp_busy:
+            self._stamp_job = job         # 코얼레싱 — 중간 값은 버리고 **마지막 것만** 굽는다
+            return
+        self._start_stamp_worker(job)
+
+    def _start_stamp_worker(self, job) -> None:
+        self._stamp_seq += 1
+        self._stamp_busy = True
+        threading.Thread(target=self._stamp_worker, args=(self._stamp_seq, job),
+                         daemon=True).start()
+
+    def _stamp_worker(self, seq: int, job) -> None:
+        (text, rot, style, size, grain, color, glow, spread, cm_on, cm_dst) = job
+        try:
             layer, wr, hr = date_stamp.sprite_layer(
-                self._stamp_text, rot=self._stamp_rot,
-                style=self._stamp_font, size_frac=self._stamp_size,
-                grain_amt=self._stamp_grain_src, color=self._stamp_color,
-                glow=self._stamp_glow, spread=self._stamp_spread)
-            self._stamp_wr, self._stamp_hr = wr, hr
+                text, rot=rot, style=style, size_frac=size,
+                grain_amt=grain, color=color, glow=glow, spread=spread)
             # 프리뷰 스탬프도 사진과 동일한 디스플레이 색관리(광색역 보정)를 거치게 한다 —
             # 안 하면 사진만 보정되고 스탬프는 raw sRGB 라 프리뷰에서 스탬프 색감이 어긋난다.
             # export 는 표준 sRGB 라 stamp_export 는 미적용(원본 sRGB 유지).
-            if self._cm_enabled and self._cm_dst is not None:
+            if cm_on and cm_dst is not None:
                 import display_cm
-                display_cm.apply_display_cm(layer, self._cm_dst)
-        else:
-            layer = QImage(1, 1, QImage.Format.Format_ARGB32)
-            layer.fill(0)            # 투명 1x1 — sampler/Image 항상 유효하게 유지
-            self._stamp_wr = self._stamp_hr = 0.0
+                display_cm.apply_display_cm(layer, cm_dst)
+            self._stampSpriteSig.emit((seq, layer, wr, hr))
+        except Exception as exc:
+            print(f"[stamp] 스프라이트 렌더 실패: {exc}")
+            self._stampSpriteSig.emit((seq, None, 0.0, 0.0))
+
+    def _on_stamp_sprite(self, payload) -> None:
+        """워커 결과를 GUI 스레드에서 반영. 대기 중인 최신 요청이 있으면 이어서 굽는다."""
+        seq, layer, wr, hr = payload
+        self._stamp_busy = False
+        if seq == self._stamp_seq and layer is not None:
+            self._stamp_wr, self._stamp_hr = wr, hr
+            self._publish_stamp_layer(layer)
+        job, self._stamp_job = self._stamp_job, None
+        if job is not None:
+            self._start_stamp_worker(job)
+
+    def _publish_stamp_layer(self, layer) -> None:
         self._stamp_provider.set_image(layer)
         self._stamp_counter += 1
         self._stamp_url = f"image://stamp/s?v={self._stamp_counter}"
