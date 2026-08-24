@@ -3642,7 +3642,10 @@ class Controller(QObject):
         except Exception:
             self._stamp_rot = 0
         self._stamp_text = date_stamp.stamp_text_from_date(self._exif_field("Date"))
-        self.stampChanged.emit()   # 새 파일의 날짜/회전 — 예전엔 _update_stamp_layer 가 대신 알렸다
+        # ⚠️여기서 stampChanged 를 쏘지 말 것 — 아직 **디코드 전**이라 QML 의 `_ui_path` 는
+        #   여전히 **이전 사진**이고 `_applying` 도 꺼져 있다. 알리면 editSaveWatch 가 흔들려
+        #   자동저장이 예약되고, 500ms 뒤 **빠져나온 사진에 사이드카가 써진다**(편집을 하나도
+        #   안 했는데 edited). 새 파일의 날짜/회전 알림은 `_on_render_ready` 로 미룬다.
         self.exifChanged.emit()
         # 좌측 file explorer 를 이 파일의 폴더로 동기화(다른 폴더 파일을 열어도 따라옴).
         parent = str(Path(path).parent)
@@ -5469,6 +5472,9 @@ class Controller(QObject):
             self._layer_keys = [[] for _ in range(5)]
             self._layer_strokes = [[] for _ in range(5)]     # 복원은 applySkyEdits→setStrokes
             self._layer_mask_strokes = [[] for _ in range(5)]
+        # 새 파일의 날짜/회전을 QML 에 알린다. ⚠️**여기여야 한다** — 디코드 전(EXIF 단계)에
+        # 알리면 아직 이전 사진의 편집 맥락이라 빠져나온 사진이 edited 가 된다(위 주석).
+        self.stampChanged.emit()
         self._update_stamp_layer()       # 날짜 스탬프 프리뷰 레이어(프록시, 우하단)
         self._compute_histogram(img)     # 톤커브 배경 히스토그램(디코딩된 프록시)
         self._update_sim_ev()            # 새 표본(_proxy_small) 기준 필름시뮬 보정 노출
