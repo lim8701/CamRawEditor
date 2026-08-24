@@ -2527,6 +2527,14 @@ class Controller(QObject):
         self._remember_export_ext(path)   # 다음 export 의 제안 이름/필터가 이 형식을 따라간다
         pdict = {k: params[k] for k in params}     # QVariantMap -> 평범한 dict
         pdict["proxyEdge"] = max(self._proxy_w, self._proxy_h)   # 공간 반경 스케일 기준(스냅샷)
+        # 하이라이트 디새추 게이트 기준(센서 포화 레벨). ⚠️**여기서** 스냅샷해야 한다 —
+        # `_render_array` 는 워커 스레드라 거기서 self._clip_level 을 읽으면 export 중에 다른
+        # 사진을 열었을 때 그 사진의 값이 섞인다(`src` 를 스냅샷하는 이유와 똑같다).
+        # ⚠️프리뷰가 쓰는 값을 넘기는 것 자체가 목적이다 — render_full 이 자체 계산하면
+        # 프록시/풀해상도 게인 차이(실측 1.8786 vs 1.8722, 0.3%)가 `clip_level` 의
+        # 불연속(g==PROXY_HEADROOM)을 건드려 게이트가 프리뷰와 export 에서 갈릴 수 있다.
+        # 프리뷰·GPU export(셰이더 유니폼)·CPU export 가 이걸로 한 값을 공유한다.
+        pdict["clipLevel"] = float(self._clip_level)
         # 요청 시점 스냅샷 — export 중 마스크 변경/이미지 전환과 분리.
         # ⚠️소스 경로/WB 도 반드시 스냅샷: 워커에서 self._path 를 읽으면 export 중 다른
         # 사진을 로드했을 때 '새 사진 + 이전 편집값'이 이전 파일명으로 저장되는 버그.
@@ -2554,11 +2562,6 @@ class Controller(QObject):
         # 하이라이트 디새추는 센서 클립 보정 → display-referred 소스에선 끈다(셰이더 hlDesat 와 동기).
         params = dict(params)
         params["hlDesat"] = 0.0 if image_loader.is_display_image(src_path) else 1.0
-        # ⚠️프리뷰가 쓰는 클립레벨을 그대로 넘긴다 — render_full 이 자체 계산하면 프록시/풀해상도
-        #   게인 차이가 `clip_level` 의 불연속(g==PROXY_HEADROOM)을 건드려 게이트가 갈릴 수 있다.
-        #   `src` 스냅샷과 같은 전제에 기댄다 — **export 대상 = 지금 로드된 사진**(배치도 한 장씩
-        #   로드→export 라 같다). 그 전제가 깨지면 `src` 도 같이 깨진다.
-        params["clipLevel"] = float(self._clip_level)
         # ⚠️proxy_edge = 실제 프록시의 긴 변. 기본값 2560 을 그대로 쓰면 프록시가 2560 보다
         #   작은 소스(웹 크기 JPEG 등)에서 공간 반경(블러/샤프닝/NR)이 프리뷰와 어긋난다
         #   — RAW 는 항상 2560 이라 드러나지 않던 문제. 값은 요청 시점 스냅샷(params) 에서
@@ -2599,6 +2602,7 @@ class Controller(QObject):
         pdict = {k: params[k] for k in params}
         pdict["bitDepth"] = 8                      # 패널은 항상 8bit(합성 캔버스가 uint8)
         pdict["proxyEdge"] = max(self._proxy_w, self._proxy_h)   # exportImage 와 동일(스냅샷)
+        pdict["clipLevel"] = float(self._clip_level)             # exportImage 와 동일(스냅샷)
         src = (self._path, self._kelvin, self._tint)   # exportImage 와 동일 스냅샷
         sky_masks = list(self._layer_masks)
         haze = (self._haze_t, list(self._haze_A), self._haze_conf)

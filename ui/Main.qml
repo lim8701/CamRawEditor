@@ -5867,7 +5867,9 @@ ApplicationWindow {
                     // 열렸으면" 이라는 피드백. ⚠️첫 사진 자동 로드는 하지 않는다 — 시작 동작이
                     // '폴더만 연다'인 것은 설계 결정이고(CLAUDE.md), 원하지도 않은 사진을 2~4초
                     // 디코딩하게 된다. 고를 수 있게 **보여주기만** 한다. 모델·썸네일 모두 탐색기와
-                    // 같은 것을 쓴다(검색·좋아요 필터 그대로 반영, provider 캐시 공유).
+                    // 같은 것을 쓴다(검색·좋아요 필터 그대로 반영). ⚠️**썸네일 캐시는 공유되지
+                    // 않는다** — ThumbProvider 의 LRU 키가 `(경로, 긴변)` 인데 탐색기는 96px,
+                    // 격자는 160px 을 요청한다(파일당 슬롯 2개).
                     Item {
                         id: contactSheet
                         objectName: "contactSheet"     // 헤드리스 검증용(stampField 와 같은 용도)
@@ -5925,6 +5927,7 @@ ApplicationWindow {
 
                         Label {
                             id: sheetHint
+                            objectName: "contactSheetHint"   // 헤드리스 검증용(contactSheet 와 같은 용도)
                             anchors.top: parent.top
                             anchors.left: parent.left
                             anchors.right: parent.right
@@ -5932,7 +5935,11 @@ ApplicationWindow {
                             text: "Double-click a photo to open  ·  "
                                   + contactSheet.photos.length
                                   + (contactSheet.photos.length === 1 ? " photo" : " photos")
-                                  + "  ·  G closes this grid"
+                                  // ⚠️사진을 아직 안 열었으면 G 는 `gridPinned` 만 토글하고
+                                  //   격자는 그대로다(visible 의 두 번째 항). 닫힌다고 적으면
+                                  //   눌러도 아무 일이 없어 고장으로 보인다.
+                                  + (controller.imagePath === ""
+                                     ? "" : "  ·  G closes this grid")
                             color: "#8a8a8a"
                             font.pixelSize: 12
                         }
@@ -6022,8 +6029,17 @@ ApplicationWindow {
                                             asynchronous: true      // provider 가 워커 스레드에서 디코딩
                                             cache: true
                                             sourceSize.width: contactSheet.thumbEdge
-                                            source: "image://thumb/"
-                                                    + encodeURIComponent(cell.modelData.path)
+                                            // ⚠️격자가 닫혀 있으면 요청하지 않는다. GridView 는
+                                            //   자기 **지오메트리**로 delegate 를 채우고 visible
+                                            //   은 보지 않아서(시트가 anchors.fill 이라 항상 크기가
+                                            //   있다), 이게 없으면 폴더를 옮길 때마다 안 보이는
+                                            //   썸네일을 디코딩한다(실측: 격자 닫힌 채 폴더 이동에
+                                            //   160px 요청 6건). model 을 비우지 않는 이유는
+                                            //   스크롤 위치를 잃지 않기 위해서다.
+                                            source: contactSheet.visible
+                                                    ? "image://thumb/"
+                                                      + encodeURIComponent(cell.modelData.path)
+                                                    : ""
                                         }
                                         Text {                // 임베드 프리뷰가 없는 RAW(일부 DNG 등)
                                             visible: cellImg.status === Image.Error
