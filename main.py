@@ -3210,8 +3210,11 @@ class Controller(QObject):
     stampText = Property(str, _get_stamp_text, notify=stampChanged)
     stampWRatio = Property(float, _get_stamp_wr, notify=stampSpriteChanged)   # 스프라이트 W/짧은변
     stampHRatio = Property(float, _get_stamp_hr, notify=stampSpriteChanged)   # 스프라이트 H/짧은변
-    stampRot = Property(int, _get_stamp_rot, notify=stampChanged)       # 촬영 방향 CW 회전(export 전달)
-    stampCorner = Property(str, _get_stamp_corner, notify=stampChanged)  # 데이트백 코너(프리뷰 배치)
+    # ⚠️회전/코너는 **스프라이트 세대**에 속한다 — 스프라이트가 rot 로 미리 회전돼 구워지므로
+    #   (sprite_layer(rot=...)), 코너만 먼저 새 사진 값으로 바뀌면 이전 사진의 스프라이트가
+    #   새 코너에 잠깐 그려진다(가로→세로 전환에서 수십 ms). bleed 와 같은 부류다.
+    stampRot = Property(int, _get_stamp_rot, notify=stampSpriteChanged)     # 촬영 방향 CW 회전(export 전달)
+    stampCorner = Property(str, _get_stamp_corner, notify=stampSpriteChanged)  # 데이트백 코너(프리뷰 배치)
     stampFont = Property(str, _get_stamp_font, notify=stampChanged)       # 폰트 방식(STYLES 키)
     stampSize = Property(float, _get_stamp_size, notify=stampChanged)     # 크기(숫자높이/짧은변 비율)
     def _get_stamp_color(self) -> str:
@@ -3305,10 +3308,13 @@ class Controller(QObject):
     # 사진 여러 장을 연속 작업할 때 폰트·크기·여백을 매번 다시 잡는 것이 힘들다는 피드백에서
     # 나왔다. ⚠️우선순위는 **사이드카 > 이 기본값 > 공장 기본값** — 사이드카가 있는 사진의
     # 룩은 절대 바뀌지 않고, 이 값은 '사이드카가 없는 새 사진의 출발점'만 정한다.
-    # ⚠️QML 은 이 값을 **`resetAllEdits` 에서만** 본다(= Reset 버튼 + 사이드카 없는 새 사진).
-    # `applyEdits` 의 `_ev` 폴백과 슬라이더 더블클릭은 **공장 기본값**이다 — 의도된 비대칭이고
-    # 근거는 CLAUDE.md UI 규칙 절에 있다(폴백을 내 기본값으로 두면 스탬프 키가 없던 시절의
-    # 옛 사이드카를 열 때 없던 각인이 켜지고, 더블클릭을 내 기본값으로 두면 무동작이 된다).
+    # ⚠️QML 이 이 값을 읽는 곳은 **사이드카 없는 새 사진의 로드 경로 하나뿐**이다
+    # (`resetAllEdits()` 인자 없이). **Reset 버튼(`resetAllEdits(true)`)·슬라이더 더블클릭·
+    # `applyEdits` 의 `_ev` 폴백은 공장 기본값**을 쓴다 — 폴백을 내 기본값으로 두면 스탬프 키가
+    # 없던 시절의 옛 사이드카를 열 때 없던 각인이 켜지고, 더블클릭·Reset 을 내 기본값으로 두면
+    # 슬라이더 릴리즈마다 그 값이 기억되므로 '기본값 == 현재값'이 되어 무동작이 된다.
+    # ⚠️Reset 은 이 값을 **쓰기도 한다**(리셋 결과가 다음 사진으로 이어지도록) — 단 폰트는
+    # 리셋 대상이 아니라 기억도 하지 않는다(QML `rememberStamp(true)`).
     _STAMP_PREF_DEFAULTS = {"stampOn": False, "stampStyle": "7c_bold",
                             "stampSize": 0.032, "stampMargin": 0.05,
                             "stampColor": "#ff8a29", "stampGlow": 1.0, "stampSpread": 1.0}
@@ -5472,9 +5478,6 @@ class Controller(QObject):
             self._layer_keys = [[] for _ in range(5)]
             self._layer_strokes = [[] for _ in range(5)]     # 복원은 applySkyEdits→setStrokes
             self._layer_mask_strokes = [[] for _ in range(5)]
-        # 새 파일의 날짜/회전을 QML 에 알린다. ⚠️**여기여야 한다** — 디코드 전(EXIF 단계)에
-        # 알리면 아직 이전 사진의 편집 맥락이라 빠져나온 사진이 edited 가 된다(위 주석).
-        self.stampChanged.emit()
         self._update_stamp_layer()       # 날짜 스탬프 프리뷰 레이어(프록시, 우하단)
         self._compute_histogram(img)     # 톤커브 배경 히스토그램(디코딩된 프록시)
         self._update_sim_ev()            # 새 표본(_proxy_small) 기준 필름시뮬 보정 노출
@@ -5485,6 +5488,12 @@ class Controller(QObject):
         if self._fresh_load:
             self._fresh_load = False
             self._ui_path = self._path
+            # 새 파일의 날짜/회전을 QML 에 알린다. ⚠️**여기여야 한다** — ①디코드 전(EXIF 단계)에
+            # 알리면 아직 이전 사진의 편집 맥락이라 **빠져나온 사진이 edited 가 된다**(3645행 주석)
+            # ②재디코딩(렌즈보정 토글 등)에는 editsReady 가 안 나므로, 밖에 두면 이 알림이 예약한
+            # 자동저장을 아무도 취소하지 않아 500ms 뒤 불필요한 저장이 한 번 더 돈다.
+            # `_ui_path` 확정 **뒤**, `editsReady` **직전**이라 예약돼도 곧바로 취소된다.
+            self.stampChanged.emit()
             self.editsReady.emit()
             self.captionChanged.emit()   # _ui_path 확정 후 캡션 재평가(사이드카 저장분 표시)
             self._maybe_auto_caption()   # 저장된 캡션 없으면 자동 생성(하단 캡션 패널)

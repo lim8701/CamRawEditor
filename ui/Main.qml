@@ -95,17 +95,25 @@ ApplicationWindow {
     }
     // 사용자가 스탬프 컨트롤을 **직접** 바꿨을 때만 기억한다. 로드/리셋의 프로그램 대입까지
     // 저장하면 옛 사진을 열기만 해도 내 기본값이 그 사진 값으로 덮인다.
-    function rememberStamp() {
+    // keepStoredStyle=true 면 **폰트는 기억하지 않는다**(키를 빼면 controller 가 저장값을 유지).
+    // Reset 이 그렇다 — 폰트는 리셋 대상이 아니라 손대지 않고 두는 값인데(사용자 요청),
+    // ⚠️그것을 기억까지 하면 **그 사진 사이드카의 폰트가 내 기본값으로 굳는다**. 실측 재현:
+    //   내 기본 폰트 7c_bold → 사이드카가 dotmatrix 인 사진을 열고 Reset → 이후 사이드카 없는
+    //   사진이 전부 dotmatrix 로 찍힌다. '사진을 여는 것만으로 내 기본값이 덮이면 안 된다'는
+    //   규칙(main.rememberStampPrefs 주석)이 클릭 한 번만큼 미뤄진 것일 뿐이라 같은 위반이다.
+    function rememberStamp(keepStoredStyle) {
         if (win._applying) return
         // 값은 슬라이더가 아니라 **controller** 에서 읽는다 — editParams()/사이드카가 보는
         // 것과 같은 하나의 진실원이라, 슬라이더와 controller 가 어긋나도 기억값이 안 튄다.
-        controller.rememberStampPrefs({ "stampOn": win.dateStamp,
-                                        "stampStyle": controller.stampFont,
-                                        "stampSize": controller.stampSize,
-                                        "stampMargin": controller.stampMargin,
-                                        "stampColor": controller.stampColor,
-                                        "stampGlow": controller.stampGlow,
-                                        "stampSpread": controller.stampSpread })
+        var o = { "stampOn": win.dateStamp,
+                  "stampSize": controller.stampSize,
+                  "stampMargin": controller.stampMargin,
+                  "stampColor": controller.stampColor,
+                  "stampGlow": controller.stampGlow,
+                  "stampSpread": controller.stampSpread }
+        if (keepStoredStyle !== true)
+            o["stampStyle"] = controller.stampFont
+        controller.rememberStampPrefs(o)
     }
     Shortcut { sequence: "D"; enabled: !win._typing
                onActivated: { win.dateStamp = !win.dateStamp; win.rememberStamp() } }
@@ -1126,7 +1134,7 @@ ApplicationWindow {
         //   ⚠️`_applying` 을 푼 **뒤**여야 한다(rememberStamp 가 그 가드로 조기 반환한다).
         //   ⚠️로드 경로는 여전히 기억하지 않는다 — 사이드카 있는 사진을 열기만 해도 내
         //   기본값이 덮이는 것이 원래 이 가드의 목적이다(docs/date_stamp.md).
-        win.rememberStamp()
+        win.rememberStamp(true)      // 폰트는 리셋 대상이 아니므로 기억도 하지 않는다(위 주석)
         win.refreshHistogram()
         win.histPush(JSON.stringify(win.editParams()))    // 리셋 상태 = undo 스텝(undo 시 편집 복원)
     }
@@ -9470,11 +9478,13 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                 property real defaultValue: 0.032
                                 property real _lastPressMs: 0     // isDblPress 가 읽고 씀(없으면 더블클릭 리셋 무동작)
                                 property bool _pendingReset: false
-                                // ⚠️여기에 디바운스를 넣지 말 것 — 한 번 넣었다가 철회했다. 스프라이트 재렌더는
-                                // 21.3ms(기본 3.2%, 실측)라 그대로 두면 약 47fps 로 **실시간으로 따라온다**.
-                                // 150ms Timer 를 끼우면 초당 6~7회로 떨어져 오히려 뚝뚝 끊긴다(사용자 확인).
-                                // Grain 슬라이더가 디바운스인 것은 거기가 장면 그레인(GPU 라이브)과 스탬프
-                                // 스프라이트(CPU)를 동시에 물고 있어서지, 스프라이트 비용 자체 때문이 아니다.
+                                // ⚠️여기에 디바운스를 넣지 말 것 — 한 번 넣었다가 철회했다(150ms Timer 를
+                                // 끼우면 초당 6~7회로 떨어져 오히려 뚝뚝 끊긴다, 사용자 확인).
+                                // 스프라이트 재렌더 비용(실측 2.5/20.2/56.5ms, 크기 제곱 비례)은 이제
+                                // **워커 스레드**가 지므로 이 슬라이더가 GUI 를 잡지 않는다
+                                // (main._stamp_worker — 점유 평균 0.11ms). Grain 슬라이더가 디바운스인
+                                // 것은 거기가 장면 그레인(GPU 라이브)과 스탬프 스프라이트를 동시에
+                                // 물고 있어서지, 스프라이트 비용 자체 때문이 아니다.
                                 // 드래그(user)만 controller 로 push — 프로그램 대입(로드/리셋)은 onMoved 안 불림.
                                 onMoved: controller.setStampSize(value)
                                 onPressedChanged: {
