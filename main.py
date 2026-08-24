@@ -1233,6 +1233,7 @@ class Controller(QObject):
         self._stamp_counter = 0
         self._stamp_wr = 0.0        # 스프라이트 (W,H)/짧은변 비율 — QML 오버레이 크기 산출용
         self._stamp_hr = 0.0
+        self._stamp_bleed = 0.0     # 글로우 여유 변화분/짧은변 — ⚠️**wr/hr 과 반드시 같은 세대**
         self._stamp_seq = 0         # 스프라이트 워커 세대(늦게 온 결과 버리기)
         self._stamp_busy = False    # 워커 1개만 — 그 사이 들어온 요청은 _stamp_job 으로 코얼레싱
         self._stamp_job = None      # 대기 중인 최신 파라미터(None=없음)
@@ -3219,9 +3220,14 @@ class Controller(QObject):
     def _get_stamp_bleed(self) -> float:
         """글로우 영역 변화분(짧은 변 대비 비율) — QML 오버레이가 마진에서 빼서 글자 위치를
         고정한다. export(stamp_export)가 쓰는 date_stamp.bleed_frac 과 **같은 값**이라야
-        프리뷰=export 가 유지된다."""
-        import date_stamp
-        return date_stamp.bleed_frac(self._stamp_size, self._stamp_spread)
+        프리뷰=export 가 유지된다.
+
+        ⚠️**지금 화면에 떠 있는 스프라이트의 값**이다(`_on_stamp_sprite` 가 wr/hr 과 함께 심는다).
+        여기서 `self._stamp_spread` 로 즉시 계산하면 안 된다 — 스프라이트는 워커에서 오므로
+        최대 56ms 늦고, 그동안 '새 마진 + 옛 스프라이트' 조합이 되어 **Area 를 끄는 동안 글자가
+        진동한다**(실제로 그렇게 만들었다가 사용자 보고로 잡았다). 넷(url·wr·hr·bleed)은 항상
+        한 세대로 함께 바뀌어야 한다."""
+        return self._stamp_bleed
 
     def _get_stamp_fonts(self) -> list:
         """폰트 콤보 모델: 번들 + 사용자 추가. 각 항목 {key, label, user}.
@@ -3858,7 +3864,7 @@ class Controller(QObject):
             self._stamp_job = None
             layer = QImage(1, 1, QImage.Format.Format_ARGB32)
             layer.fill(0)                 # 투명 1x1 — sampler/Image 항상 유효하게 유지
-            self._stamp_wr = self._stamp_hr = 0.0
+            self._stamp_wr = self._stamp_hr = self._stamp_bleed = 0.0
             self._publish_stamp_layer(layer)
             return
         # 워커에 넘길 스냅샷 — self 를 워커에서 읽지 않는다(끄는 중에 값이 바뀐다).
@@ -3888,17 +3894,18 @@ class Controller(QObject):
             if cm_on and cm_dst is not None:
                 import display_cm
                 display_cm.apply_display_cm(layer, cm_dst)
-            self._stampSpriteSig.emit((seq, layer, wr, hr))
+            # ⚠️bleed 를 **이 렌더의 인자로** 함께 낸다(위 _get_stamp_bleed 주석의 진동 방지).
+            self._stampSpriteSig.emit((seq, layer, wr, hr, date_stamp.bleed_frac(size, spread)))
         except Exception as exc:
             print(f"[stamp] 스프라이트 렌더 실패: {exc}")
-            self._stampSpriteSig.emit((seq, None, 0.0, 0.0))
+            self._stampSpriteSig.emit((seq, None, 0.0, 0.0, 0.0))
 
     def _on_stamp_sprite(self, payload) -> None:
         """워커 결과를 GUI 스레드에서 반영. 대기 중인 최신 요청이 있으면 이어서 굽는다."""
-        seq, layer, wr, hr = payload
+        seq, layer, wr, hr, bleed = payload
         self._stamp_busy = False
         if seq == self._stamp_seq and layer is not None:
-            self._stamp_wr, self._stamp_hr = wr, hr
+            self._stamp_wr, self._stamp_hr, self._stamp_bleed = wr, hr, bleed
             self._publish_stamp_layer(layer)
         job, self._stamp_job = self._stamp_job, None
         if job is not None:
