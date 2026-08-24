@@ -1119,6 +1119,14 @@ ApplicationWindow {
         controller.setWb(tempSlider.value, tintSlider.value)
         controller.setCurve(curveEditor.allLuts())
         controller.deleteEdits()                          // 사이드카 삭제 + 썸네일 배지(파일명 앰버) 해제
+        // ⚠️리셋한 스탬프 상태를 '내 기본값'으로도 기억한다 — 안 그러면 **다음에 여는 사진이
+        //   리셋 전 값으로 되돌아간다**(사용자 보고: A 에서 크기를 바꾸고 → B 를 열어 Reset →
+        //   C 를 열면 리셋값이 아니라 A 의 값이 나온다). 사이드카 없는 사진은 내 기본값을
+        //   따르므로, Reset 이 그것을 갱신하지 않으면 화면과 기억이 어긋난 채로 남는다.
+        //   ⚠️`_applying` 을 푼 **뒤**여야 한다(rememberStamp 가 그 가드로 조기 반환한다).
+        //   ⚠️로드 경로는 여전히 기억하지 않는다 — 사이드카 있는 사진을 열기만 해도 내
+        //   기본값이 덮이는 것이 원래 이 가드의 목적이다(docs/date_stamp.md).
+        win.rememberStamp()
         win.refreshHistogram()
         win.histPush(JSON.stringify(win.editParams()))    // 리셋 상태 = undo 스텝(undo 시 편집 복원)
     }
