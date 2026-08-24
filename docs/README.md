@@ -29,7 +29,16 @@ Korean (🇰🇷) — they carry the numbers, the rejected alternatives and the 
 | [Sky masking](sky_masking.md) 🇰🇷 | Scene segmentation → soft mask → per-mask develop |
 | [Depth masking](depth_masking.md) 🇰🇷 | Selecting by distance: monocular depth, log-z, and the per-photo seed |
 | [Folder indexing & search](folder_index_search.md) 🇰🇷 | On-device captions turned into a searchable folder index |
+| [Tone pipeline](tone_pipeline.md) 🇰🇷 | Where the base render sits: auto exposure, the film-simulation LUTs' own tone curve, and the highlight desaturation gate |
 | [Preview vs export (resolved)](KNOWN_ISSUE_preview_vs_export.md) 🇰🇷 | A colour mismatch traced to wide-gamut monitor profiles |
+
+## Building and shipping
+
+| Document | What's in it |
+|---|---|
+| [Recipe presets](recipe_presets.md) 🇰🇷 | What a `.frpreset` carries, what it deliberately leaves out, and how the badge decides |
+| [UI notes](ui_notes.md) 🇰🇷 | Contact sheet, edited badge and face-part selection — including the versions that were rolled back |
+| [macOS packaging](packaging_macos.md) 🇰🇷 | Bundle surgery, the minimum-OS measurement, and the signing decision |
 
 ## Elsewhere in the repo
 
