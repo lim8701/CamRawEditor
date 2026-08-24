@@ -575,6 +575,42 @@ ApplicationWindow {
         }
         win._commitMaskKeys(a)     // 정렬 + 활성 레이어 반영 + 디바운스 재조합
     }
+    // 얼굴 부위 전체 선택/해제 — 부위가 11개(Skin/Nose/Eyes/…/Neck)라 얼굴 전체를 잡으려면
+    // 11번 눌러야 한다는 피드백. ⚠️`toggleMaskKey` 를 11번 부르지 않는다 — 호출마다 재조합
+    // 디바운스가 돌고 '첫 부위' 기본 대상 로직이 매번 재평가된다. 키 목록을 한 번에 만들고
+    // **한 번만** 커밋한다. 규칙(첫 부위의 기본 대상 / 마지막 부위의 memo 백업)은 toggleMaskKey
+    // 와 같아야 한다 — 한쪽만 고치면 얼굴 선택이 어긋난다.
+    function setAllFaceParts(on) {
+        var groups = controller.faceGroups
+        if (!groups || groups.length === 0) return
+        var a = []
+        for (var i = 0; i < win.maskKeys.length; i++)      // 부위 외(얼굴 선택·Scene 클래스)는 보존
+            if (!win._isFacePart(win.maskKeys[i])) a.push(win.maskKeys[i])
+        var hadFacePart = win.hasFacePart()                // ⚠️변경 **전** 상태로 판단
+        if (on) {
+            for (var g = 0; g < groups.length; g++) a.push(groups[g].key)
+            // 부위를 처음 켤 때만 기본 대상: 직전 선택(faceSelMemo) → 없으면 가장 큰 얼굴 1명.
+            if (!hadFacePart && !win._hasFaceSel(a)
+                    && controller.faceCount > 1 && controller.faceKeys.length > 0) {
+                var all = controller.faceKeys
+                var memo = win.layers[win.activeLayer].faceSelMemo || []
+                var restored = 0
+                for (var r = 0; r < memo.length; r++)
+                    if (all.indexOf(memo[r]) >= 0) { a.push(memo[r]); restored++ }
+                if (restored === 0) a.push(all[0])
+            }
+        } else {
+            // 부위가 하나도 안 남으므로 얼굴 선택 key 도 버린다(버리기 전에 memo 백업).
+            var b = [], drop = []
+            for (var m = 0; m < a.length; m++) {
+                if (win._isFaceSel(a[m])) drop.push(a[m])
+                else b.push(a[m])
+            }
+            if (drop.length > 0) win.layers[win.activeLayer].faceSelMemo = drop
+            a = b
+        }
+        win._commitMaskKeys(a)
+    }
     // 체크박스 토글 코얼레싱 — 마지막 토글 후 잠깐 뒤 한 번만 세그/재조합 실행(스레드 폭증 방지).
     Timer {
         id: maskApplyTimer
@@ -5836,7 +5872,23 @@ ApplicationWindow {
                         //   축소 디코딩(**73.9ms/장**, 50배)으로 간다. 셀을 키우려면 그 비용을
                         //   감당할 방법(선캐시 등)을 먼저 정할 것.
                         readonly property int thumbEdge: 160
-                        property string selectedPath: ""      // 클릭=선택, 더블클릭=열기
+                        // 선택 상태는 **좌측 탐색기의 현재 항목에서 파생**한다(별도 상태 아님).
+                        // 격자 클릭은 `selectInExplorer` 로 탐색기 선택을 옮기고, 탐색기에서
+                        // 고르면 여기가 따라온다 — 진실원이 하나라 양방향을 맞출 일이 없다.
+                        readonly property string selectedPath: {
+                            var i = fileListView.currentIndex
+                            var f = win.explorerFiles
+                            return (i >= 0 && i < f.length && !f[i].isDir) ? f[i].path : ""
+                        }
+                        // 탐색기에서 화면 밖 사진을 고르면 격자도 그 자리로 스크롤(동기화가 보이게).
+                        onSelectedPathChanged: {
+                            if (!visible || selectedPath === "") return
+                            for (var i = 0; i < photos.length; i++)
+                                if (photos[i].path === selectedPath) {
+                                    sheetGrid.positionViewAtIndex(i, GridView.Contain)
+                                    return
+                                }
+                        }
 
                         // ⚠️불투명 배경 필수 — 사진이 열린 채로 격자를 켜면(G) 이 Item 은 렌더
                         //   트리보다 뒤(=위)에 그려지므로, 배경이 없으면 셀 사이로 편집 중인
@@ -5990,13 +6042,11 @@ ApplicationWindow {
                                         // ⚠️한 번 클릭 = 열기로 뒀다가 되돌렸다 — 잘못 누르면
                                         //   2~4초 디코딩을 그대로 기다려야 한다(사용자 보고).
                                         //   탐색기 목록과 같은 규칙(클릭=선택 / 더블클릭=열기).
-                                        onClicked: {
-                                            contactSheet.selectedPath = cell.modelData.path
-                                            // 좌측 목록도 같은 항목으로(두 화면이 따로
-                                            // 노는 느낌 완화). focus=false — 격자에서 방향키를
-                                            // 쓰려는 게 아니라 목록 하이라이트만 맞추는 것.
-                                            win.selectInExplorer(cell.modelData.path, false)
-                                        }
+                                        // 선택은 탐색기 currentIndex 가 진실원이라 여기서
+                                        // 그것만 옮기면 `selectedPath` 가 따라온다.
+                                        // focus=false — 격자에서 방향키를 쓰려는 게 아니라
+                                        // 목록 하이라이트만 맞추는 것.
+                                        onClicked: win.selectInExplorer(cell.modelData.path, false)
                                         // 격자를 닫는 것은 win 의 onImageChanged 한 곳이 맡는다
                                         // (탐색기·프리뷰에서 열어도 같아야 하므로).
                                         onDoubleClicked: controller.loadPath(cell.modelData.path)
@@ -8872,6 +8922,49 @@ ApplicationWindow {
                                           + "same Near/Far lands differently on another shot, so "
                                           + "pasted edits may need a nudge."
                                     color: "#888"; font.pixelSize: 10
+                                }
+                            }
+                            // ---- 얼굴 부위 머리글 + 전체 선택/해제 ----
+                            // 부위가 11개라 얼굴 전체를 잡으려면 11번 눌러야 한다는 피드백.
+                            // ⚠️아래 `Clear` 버튼은 대안이 아니다 — 그건 **전 레이어 초기화**
+                            //   (마스크·로컬 조정 슬라이더까지 전부)라 훨씬 센 동작이다.
+                            RowLayout {
+                                id: facePartsRow
+                                Layout.fillWidth: true
+                                spacing: 10          // All/None 이 한 낱말로 붙어 읽히지 않게
+                                visible: win.maskTab === 1
+                                readonly property bool canEdit: controller.imagePath !== ""
+                                        && !win.skyBusySlow && !controller.faceScanning
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: "FACE PARTS"
+                                    color: "#8ab4f8"; font.pixelSize: 11; font.bold: true
+                                }
+                                Label {                       // 전체 체크(FACES 줄의 All 과 같은 표기)
+                                    text: "All"
+                                    opacity: facePartsRow.canEdit ? 1.0 : 0.4
+                                    color: allPartsHover.containsMouse ? "#8ab4f8" : "#8a8a8a"
+                                    font.pixelSize: 11; font.underline: allPartsHover.containsMouse
+                                    MouseArea {
+                                        id: allPartsHover
+                                        anchors.fill: parent; anchors.margins: -4
+                                        enabled: facePartsRow.canEdit
+                                        hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                        onClicked: win.setAllFaceParts(true)
+                                    }
+                                }
+                                Label {                       // 전체 해제(부위만 — 조정값은 그대로)
+                                    text: "None"
+                                    opacity: facePartsRow.canEdit ? 1.0 : 0.4
+                                    color: nonePartsHover.containsMouse ? "#8ab4f8" : "#8a8a8a"
+                                    font.pixelSize: 11; font.underline: nonePartsHover.containsMouse
+                                    MouseArea {
+                                        id: nonePartsHover
+                                        anchors.fill: parent; anchors.margins: -4
+                                        enabled: facePartsRow.canEdit
+                                        hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                        onClicked: win.setAllFaceParts(false)
+                                    }
                                 }
                             }
                             GridLayout {
