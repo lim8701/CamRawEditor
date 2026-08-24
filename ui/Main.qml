@@ -6143,7 +6143,7 @@ ApplicationWindow {
                     Rectangle {
                         id: hashtagBar
                         visible: win.captionOverlay && cropClip.visible
-                                 && controller.hashtags !== ""
+                                 && controller.hashtags !== "" && !contactSheet.visible
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
                         anchors.margins: 12
@@ -6164,7 +6164,7 @@ ApplicationWindow {
 
                     // 원본 표시 배지: 원본 보는 중 상단중앙에 표시.
                     Rectangle {
-                        visible: win.compareOn
+                        visible: win.compareOn && !contactSheet.visible
                         anchors.top: parent.top
                         anchors.horizontalCenter: parent.horizontalCenter
                         anchors.topMargin: 12

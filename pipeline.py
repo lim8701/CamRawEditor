@@ -216,7 +216,15 @@ def _apply_lut3d(c, lut, n):
     return c0 * (1 - fb) + c1 * fb
 
 
-FILM_SIM_EV_EDGE = 64   # 보정 노출 solve 표본의 긴 변(px) — 프리뷰/export 공통
+FILM_SIM_EV_EDGE = 64    # 보정 노출 solve 표본의 긴 변(px) — 프리뷰/export 공통
+# 베이스 display 중앙값이 이 아래면 **보정하지 않는다**. 중앙값 보존 앵커는 중간톤에서만
+# 성립하고, 아래로 갈수록 LUT 의 끝단 거동(크러시 / 들린 블랙)이 지배해 solve 가 불안정해진다.
+# 실측(번들 LUT): 중앙값 0.026 에서 보정 −0.12~−0.18 인데 0.019 에서 −1.21~−1.59, 0.013 이하는
+# **−4.00(탐색 하한, 화면이 검정)** 이 된다. 블랙이 들린 LUT(bleach_bypass 0.0172 /
+# nostalgic_neg 0.0158 / classic_neg 0.0105)은 그 아래 중앙값에 **도달 자체가 불가능**하다.
+# 0.05 는 불안정 구간(≲0.026)에서 여유를 둔 값이고, 0.05~0.12 구간의 보정은 어차피 0 이라
+# 잃는 것이 없다(코드 검토 3차에서 잡혔다).
+FILM_SIM_EV_FLOOR = 0.05
 
 
 def film_sim_ev(scene, lut_arr, lut_n, strength=1.0):
@@ -250,17 +258,19 @@ def film_sim_ev(scene, lut_arr, lut_n, strength=1.0):
     k = max(1, max(s.shape[:2]) // FILM_SIM_EV_EDGE)
     s = s[::k, ::k]
     base = float(np.median(wb.filmic(s) @ LUMA))
+    if not np.isfinite(base) or base < FILM_SIM_EV_FLOOR:
+        return 0.0                # 어두운 베이스 — 위 상수 주석 참조(양쪽 폭주를 여기서 막는다)
 
     def med(ev):
         c = wb.filmic(s * np.float32(2.0 ** ev))
         looked = _apply_lut3d(c, lut_arr, lut_n)
         return float(np.median((c * (1.0 - strength) + looked * strength) @ LUMA))
 
-    if not np.isfinite(base):
-        return 0.0                # 표본이 비정상(NaN/Inf) — 경계로 클램프하면 16배 어두워진다
-    lo, hi = -4.0, 2.0            # 탐색 범위(단조 증가) — 밖이면 경계로 클램프
+    lo, hi = -4.0, 2.0            # 탐색 범위(단조 증가)
     if med(lo) >= base:
-        return lo
+        # 하한까지 낮춰도 목표에 못 미친다 = **도달 불가능**(들린 블랙). 경계값 −4 를 그대로
+        # 돌려주면 화면이 검정이 된다 — 상한 쪽과 같이 '보정 없음'으로 떨어뜨린다.
+        return 0.0
     if med(hi) <= base:
         return 0.0                # 상한까지 밀어도 중앙값에 못 미친다 — 아래 '상한 0' 과 같은 이유
     for _ in range(12):           # 6EV/2^12 = 0.0015EV — 표본 오차보다 훨씬 작다
@@ -579,8 +589,16 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     # 같은 단위), 프록시가 L/H 를 [0,1] 로 클램프하므로 H 로 잘라 프리뷰와 같은 값을 얻는다.
     _hld = float(p.get("hlDesat", 1.0))
     _clip_prox = None
-    if _hld > 0.0:
-        _lv = raw_loader.clip_level(_auto_gain)
+    # ⚠️클립레벨은 **프리뷰가 쓰는 값을 그대로 받는다**(`params["clipLevel"]`). 자체 계산하면
+    #   프록시 게인과 풀해상도 게인이 미세하게 다른데 `clip_level` 이 g==PROXY_HEADROOM 에서
+    #   **불연속**(→게이트 off)이라, 게인이 4.0 근처인 파일은 프리뷰와 export 가 게이트 on/off 로
+    #   갈릴 수 있다. 실측 차이는 작다(FXT50017: 프록시 1.8786 / 풀 1.8722, 0.3%) — 게이트
+    #   문턱이 0.3% 흔들리는 것과 on/off 가 통째로 뒤집히는 것 중 전자를 택한다.
+    #   프리뷰·GPU export(셰이더 uniform)·CPU export 가 이걸로 **한 값**을 공유한다.
+    #   값이 안 오면(다른 호출자) 예전처럼 자체 계산.
+    _lv = float(p.get("clipLevel", 0.0)) or raw_loader.clip_level(_auto_gain)
+    # 게인이 헤드룸을 넘으면 게이트는 항등 0 이다 — 26MP 배열을 만들 이유가 없다(메모리 피크).
+    if _hld > 0.0 and _lv <= raw_loader.PROXY_HEADROOM:
         # ⚠️26MP 에서 이 배열을 mist/WB/노출 구간 내내 들고 있어야 한다(원본 값이 필요한데 nat 은
         #   그 사이 덮인다) → **float16**(104MB → 52MB). 게이트는 [0,1] 이고 float16 분해능이
         #   ~0.0005 라 8bit 양자화(0.004)보다 훨씬 작다 — 프리뷰=Export 차이는 표현 한계 아래.

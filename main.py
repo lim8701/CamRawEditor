@@ -2554,6 +2554,11 @@ class Controller(QObject):
         # 하이라이트 디새추는 센서 클립 보정 → display-referred 소스에선 끈다(셰이더 hlDesat 와 동기).
         params = dict(params)
         params["hlDesat"] = 0.0 if image_loader.is_display_image(src_path) else 1.0
+        # ⚠️프리뷰가 쓰는 클립레벨을 그대로 넘긴다 — render_full 이 자체 계산하면 프록시/풀해상도
+        #   게인 차이가 `clip_level` 의 불연속(g==PROXY_HEADROOM)을 건드려 게이트가 갈릴 수 있다.
+        #   `src` 스냅샷과 같은 전제에 기댄다 — **export 대상 = 지금 로드된 사진**(배치도 한 장씩
+        #   로드→export 라 같다). 그 전제가 깨지면 `src` 도 같이 깨진다.
+        params["clipLevel"] = float(self._clip_level)
         # ⚠️proxy_edge = 실제 프록시의 긴 변. 기본값 2560 을 그대로 쓰면 프록시가 2560 보다
         #   작은 소스(웹 크기 JPEG 등)에서 공간 반경(블러/샤프닝/NR)이 프리뷰와 어긋난다
         #   — RAW 는 항상 2560 이라 드러나지 않던 문제. 값은 요청 시점 스냅샷(params) 에서
