@@ -6109,6 +6109,12 @@ ApplicationWindow {
                                         //   사진을 다시 더블클릭하면 격자가 그대로 남는다.
                                         onDoubleClicked: {
                                             win.gridPinned = false
+                                            // 클릭과 **같은 처리**를 여기서도 한 번 더 한다.
+                                            // ⚠️첫 클릭의 onClicked 가 먼저 오므로 대개는 이미
+                                            //   맞춰져 있지만, 그건 이벤트 순서에 기대는 것이다
+                                            //   — 여는 경로에서 선택이 따라오는 것은 보장이어야
+                                            //   한다(멱등하니 중복 호출은 무해).
+                                            win.selectInExplorer(cell.modelData.path, false)
                                             controller.loadPath(cell.modelData.path)
                                         }
                                     }
