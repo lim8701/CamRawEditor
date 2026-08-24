@@ -5291,10 +5291,12 @@ class Controller(QObject):
         if abs(_clip - self._clip_level) > 1e-6:
             self._clip_level = _clip
             self.clipLevelChanged.emit()
-        _ev = float(math.log2(max(float(auto_gain), 1e-6)))
-        if abs(_ev - self._auto_ev) > 1e-4:
-            self._auto_ev = _ev
-            self.autoExpChanged.emit()
+        # ⚠️**무조건 emit** 한다 — `autoExposureOffsetEV` 는 `_auto_ev`(디코드)와 `_auto_exp`
+        #   (사이드카, `_load` 에서 조용히 선설정)의 함수다. 값이 바뀐 쪽만 보고 걸렀더니,
+        #   **같은 게인**의 다른 사진으로 넘어가며 토글만 달라지는 경우(연사 컷) 신호가 안 나가
+        #   프리뷰가 이전 오프셋을 그대로 쓰고 export 와 갈라졌다.
+        self._auto_ev = float(math.log2(max(float(auto_gain), 1e-6)))
+        self.autoExpChanged.emit()
         if as_shot != self._asshot or as_shot_tint != self._asshot_tint:
             self._asshot = as_shot
             self._asshot_tint = as_shot_tint

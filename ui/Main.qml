@@ -1802,7 +1802,7 @@ ApplicationWindow {
         grainRoughSlider.value, grainColorSlider.value, grainShapeCheck.checked,
         sharpAmtSlider.value, sharpRadiusSlider.value, sharpDetailSlider.value, sharpMaskSlider.value,
         lumaNrSlider.value, colorNrSlider.value, aiNrCheck.checked,
-        lensCheck.checked, win.dateStamp, stampField.text,
+        lensCheck.checked, autoExpCheck.checked, win.dateStamp, stampField.text,
         controller.stampFont, controller.stampSize, controller.stampMargin,
         controller.stampColor, controller.stampGlow, controller.stampSpread,
         curveEditor.channelPoints,
@@ -1821,7 +1821,8 @@ ApplicationWindow {
         cgShHueSlider.value, cgShSatSlider.value, cgMidHueSlider.value, cgMidSatSlider.value,
         cgHiHueSlider.value, cgHiSatSlider.value, cgBalanceSlider.value, vignetteSlider.value,
         mistAmtSlider.value, mistCharSlider.value, mistRadiusSlider.value,
-        mistHiSlider.value, mistColorSlider.value
+        mistHiSlider.value, mistColorSlider.value,
+        autoExpCheck.checked          // 베이스 밝기가 통째로 바뀐다 — 분포도 다시 그려야 한다
     ]
     onHistWatchChanged: win.refreshHistogram()
 
@@ -4361,9 +4362,12 @@ ApplicationWindow {
                                         font.pixelSize: 14
                                         // 로드 전에는 감춘다(편집 배지와 같은 이유 — 위치가 사진
                                         // 기준이라 paintedWidth=0 이면 칸 한가운데로 간다).
+                                        // ⚠️`Image.Error`(임베드 프리뷰 없는 DNG 등)는 **영원히**
+                                        //   Ready 가 아니다 — 그 파일만 배지가 통째로 사라지므로
+                                        //   'No preview' 자리 위에라도 띄운다.
                                         visible: {
                                             controller.likeRevision
-                                            return thumbImg.status === Image.Ready
+                                            return thumbImg.status !== Image.Loading
                                                    && !modelData.isDir
                                                    && controller.isLiked(modelData.path)
                                         }
@@ -4376,7 +4380,7 @@ ApplicationWindow {
                                         //   배지가 사진마다 다르게 붙은 것처럼 보인다(사용자 보고).
                                         x: (parent.width + thumbImg.paintedWidth) / 2 - width - 1
                                         y: (parent.height - thumbImg.paintedHeight) / 2 + 1
-                                        ready: thumbImg.status === Image.Ready
+                                        ready: thumbImg.status !== Image.Loading
                                         path: modelData.isDir ? "" : modelData.path
                                     }
                                     // 배치 선택 체크박스(선택 모드에서만, 파일 전용) — 좌상단
@@ -5980,6 +5984,13 @@ ApplicationWindow {
                                         anchors.right: parent.right
                                         anchors.margins: 5
                                         height: 160          // 폭도 160(cellWidth 178 − 여백 18)
+                                        // 배지 기준 사각형 — 사진이 그려진 영역. ⚠️디코드 실패
+                                        // (`Image.Error`, 임베드 프리뷰 없는 DNG 등)면 painted 가
+                                        // 0 이라 배지가 한가운데로 간다 → 그때는 칸 전체로 폴백.
+                                        readonly property real pw: cellImg.paintedWidth > 0
+                                                                   ? cellImg.paintedWidth : width
+                                        readonly property real ph: cellImg.paintedHeight > 0
+                                                                   ? cellImg.paintedHeight : height
 
                                         Rectangle {           // 로딩중/실패 placeholder(탐색기 행과 동일)
                                             anchors.fill: parent
@@ -6008,23 +6019,23 @@ ApplicationWindow {
                                         //   (탐색기 행은 칸이 작고 기존 ♥/+JPG 와 규칙을 맞춰야 해서
                                         //    그대로 칸 모서리에 둔다.)
                                         EditedBadge {
-                                            x: (cellThumb.width + cellImg.paintedWidth) / 2 - width - 2
-                                            y: (cellThumb.height - cellImg.paintedHeight) / 2 + 2
-                                            ready: cellImg.status === Image.Ready
+                                            x: (cellThumb.width + cellThumb.pw) / 2 - width - 2
+                                            y: (cellThumb.height - cellThumb.ph) / 2 + 2
+                                            // ⚠️`Image.Error` 는 **영원히** Ready 가 아니다 — 그
+                                            //   파일만 배지가 통째로 사라지므로 로딩 중에만 감춘다.
+                                            ready: cellImg.status !== Image.Loading
                                             path: cell.modelData.path
                                         }
                                         Text {                // 좋아요(셀렉트) — 탐색기 행과 같은 표기
-                                            x: (cellThumb.width + cellImg.paintedWidth) / 2
-                                               - width - 2
-                                            y: (cellThumb.height + cellImg.paintedHeight) / 2
-                                               - height - 2
+                                            x: (cellThumb.width + cellThumb.pw) / 2 - width - 2
+                                            y: (cellThumb.height + cellThumb.ph) / 2 - height - 2
                                             text: "♥"
                                             color: "#ff6b6b"
                                             style: Text.Outline; styleColor: "#000000"
                                             font.pixelSize: 14
                                             visible: {
                                                 controller.likeRevision
-                                                return cellImg.status === Image.Ready
+                                                return cellImg.status !== Image.Loading
                                                        && controller.isLiked(cell.modelData.path)
                                             }
                                         }
@@ -6059,9 +6070,13 @@ ApplicationWindow {
                                         // focus=false — 격자에서 방향키를 쓰려는 게 아니라
                                         // 목록 하이라이트만 맞추는 것.
                                         onClicked: win.selectInExplorer(cell.modelData.path, false)
-                                        // 격자를 닫는 것은 win 의 onImageChanged 한 곳이 맡는다
-                                        // (탐색기·프리뷰에서 열어도 같아야 하므로).
-                                        onDoubleClicked: controller.loadPath(cell.modelData.path)
+                                        // ⚠️여기서도 닫는다 — `onImageChanged` 는 **경로가 바뀔 때만**
+                                        //   닫으므로(재디코딩에 꺼지지 않게 한 장치), 지금 열려 있는
+                                        //   사진을 다시 더블클릭하면 격자가 그대로 남는다.
+                                        onDoubleClicked: {
+                                            win.gridPinned = false
+                                            controller.loadPath(cell.modelData.path)
+                                        }
                                     }
                                 }
                             }

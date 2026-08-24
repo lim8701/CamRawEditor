@@ -256,8 +256,10 @@ def film_sim_ev(scene, lut_arr, lut_n, strength=1.0):
         looked = _apply_lut3d(c, lut_arr, lut_n)
         return float(np.median((c * (1.0 - strength) + looked * strength) @ LUMA))
 
+    if not np.isfinite(base):
+        return 0.0                # 표본이 비정상(NaN/Inf) — 경계로 클램프하면 16배 어두워진다
     lo, hi = -4.0, 2.0            # 탐색 범위(단조 증가) — 밖이면 경계로 클램프
-    if not np.isfinite(base) or med(lo) >= base:
+    if med(lo) >= base:
         return lo
     if med(hi) <= base:
         return hi
