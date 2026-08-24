@@ -2,7 +2,7 @@
 
 라이트룸 등에서 이미 현상·톤매핑을 끝낸 사진을 그대로 받아, 우리 파이프라인의 입력 계약
 (카메라네이티브 scene-linear 의 헤드룸 인코딩)으로 되돌려 준다. 반환 계약은
-`raw_loader.load_proxy` / `load_full` 과 **동일한 6-튜플**이라 호출부는 분기만 하면 된다.
+`raw_loader.load_proxy` / `load_full` 과 **동일한 7-튜플**이라 호출부는 분기만 하면 된다.
 
 핵심: 셰이더/pipeline 프론트엔드는 `srgbToLinear(src)*PROXY_HEADROOM -> WB -> cam2srgb ->
 filmic()` 로 display 를 만든다. 이미 display 인 이미지를 그냥 넣으면 `filmic()` 이 한 번 더

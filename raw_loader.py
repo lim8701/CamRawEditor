@@ -26,11 +26,16 @@ def clip_level(auto_gain: float) -> float:
     """센서 포화(=디코드 상한)가 나타나는 scene-linear 값 — 하이라이트 디새추 게이트 기준.
 
     디코드는 카메라네이티브 1.0 = 센서 포화이고 거기에 자동노출 게인 g 를 곱하므로 포화 레벨은 g 다.
-    ⚠️PROXY_HEADROOM 으로 상한을 둔다 — 프록시 인코딩이 L/H 를 [0,1] 로 클램프하므로 g>H 인 사진
-    (후지에선 흔하다: +2.4EV = 5.4배)은 포화 화소가 H 에서 잘려 g 에 도달하지 못한다. export(pipeline)도
-    같은 상한을 쓴다 — 프리뷰=Export 정합.
+
+    ⚠️**g > PROXY_HEADROOM 이면 게이트를 끈다**(도달 불가능한 큰 값을 돌려준다). 프록시 인코딩이
+    L/H 를 [0,1] 로 클램프하므로 그런 사진(후지에선 흔하다: +2.4EV = 5.4배)은 **센서 H/g 이상이
+    이미 한 값으로 뭉개져 클립 여부를 구분할 수 없다.** 예전에는 min(g, H) 로 상한을 뒀는데,
+    그러면 g=5.4 에서 게이트가 **센서의 0.67 부터** 열려 클립되지도 않은 하늘을 흰색으로 날린다
+    — 이 게이트를 만든 이유 그 자체다(코드 검토에서 잡혔다). 끄는 쪽의 손해는 그 파일에서
+    '색끼가 남은 부분 클립'을 못 잡는 것인데, 실측 발동률이 이미 0.00% 라 잃는 것이 없다.
     """
-    return float(min(max(auto_gain, 1e-6), PROXY_HEADROOM))
+    g = float(max(auto_gain, 1e-6))
+    return g if g <= PROXY_HEADROOM else 1e9
 
 
 def _embedded_jpeg_lum(raw):

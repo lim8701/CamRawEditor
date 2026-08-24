@@ -262,14 +262,20 @@ def film_sim_ev(scene, lut_arr, lut_n, strength=1.0):
     if med(lo) >= base:
         return lo
     if med(hi) <= base:
-        return hi
+        return 0.0                # 상한까지 밀어도 중앙값에 못 미친다 — 아래 '상한 0' 과 같은 이유
     for _ in range(12):           # 6EV/2^12 = 0.0015EV — 표본 오차보다 훨씬 작다
         m = 0.5 * (lo + hi)
         if med(m) < base:
             lo = m
         else:
             hi = m
-    return 0.5 * (lo + hi)
+    # ★**상한 0** — 이 보정의 목적은 LUT 이 **들어올린 것을 되돌리는 것**이다. 되돌릴 리프트가
+    # 없으면 보정도 없다. ⚠️베이스가 어두워 중앙값이 LUT 의 **크러시 구간**(그레이 전달의
+    # 교차점 ≈ 0.23 아래)에 앉으면, 중앙값을 지키려고 입력을 거꾸로 밀어 올리게 된다 — 실측
+    # 베이스 중앙값 0.012 에서 **+2.00EV**(탐색 경계, p95 0.011→0.473 으로 하이라이트 폭발),
+    # 0.123 에서 +0.75EV. **이 기능이 고치려던 증상 그대로이고 부호만 반대다.**
+    # 코퍼스 853장 중 중앙값 0.21 미만이 6.9% — 드물지 않다(코드 검토에서 잡혔다).
+    return min(0.5 * (lo + hi), 0.0)
 
 
 def _downscale_to_edge(rgb16, out_edge):
@@ -575,9 +581,12 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     _clip_prox = None
     if _hld > 0.0:
         _lv = raw_loader.clip_level(_auto_gain)
+        # ⚠️26MP 에서 이 배열을 mist/WB/노출 구간 내내 들고 있어야 한다(원본 값이 필요한데 nat 은
+        #   그 사이 덮인다) → **float16**(104MB → 52MB). 게이트는 [0,1] 이고 float16 분해능이
+        #   ~0.0005 라 8bit 양자화(0.004)보다 훨씬 작다 — 프리뷰=Export 차이는 표현 한계 아래.
         _clip_prox = _smoothstep(0.90, 1.0,
                                  np.minimum(nat.max(axis=2, keepdims=True),
-                                            raw_loader.PROXY_HEADROOM) * (1.0 / _lv)).astype(np.float32)
+                                            raw_loader.PROXY_HEADROOM) * (1.0 / _lv)).astype(np.float16)
     # 1) 미스트(디퓨전) 필터 — 셰이더 1단계 == mist.apply. **유저 WB/매트릭스/노출보다 앞**:
     #    그 셋은 픽셀마다 같은 선형 연산이라 블러와 정확히 교환되므로 결과는 같으면서 산란 필드가
     #    세 슬라이더와 무관해진다(프리뷰가 이미지당 1회 계산해 캐시할 수 있는 이유).
@@ -614,7 +623,8 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     if _hld > 0.0 and _clip_prox is not None:
         _mx = disp.max(axis=2, keepdims=True)
         _cool = np.maximum(disp[..., 1:2], disp[..., 2:3]) - disp[..., 0:1]
-        disp = disp + (_mx - disp) * (_hld * _clip_prox * _smoothstep(0.05, 0.35, _cool))
+        disp = disp + (_mx - disp) * (_hld * _clip_prox.astype(np.float32)
+                                      * _smoothstep(0.05, 0.35, _cool))
         del _clip_prox, _mx, _cool       # 26MP 공간단계 피크 전에 해제
 
     hi, sh = float(p.get("highlights", 0)), float(p.get("shadows", 0))

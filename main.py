@@ -5236,7 +5236,7 @@ class Controller(QObject):
     def _render_worker(self, seq, path, lens_on) -> None:
         err = ""
         try:
-            # 일반 이미지(JPG/PNG/TIFF)는 display-referred 어댑터로 — 반환 계약은 동일한 6-튜플.
+            # 일반 이미지(JPG/PNG/TIFF)는 display-referred 어댑터로 — 반환 계약은 동일한 7-튜플.
             res = (image_loader.load_proxy(path, lens_correct=lens_on)
                    if image_loader.is_display_image(path)
                    else load_proxy(path, lens_correct=lens_on))

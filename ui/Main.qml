@@ -4281,9 +4281,17 @@ ApplicationWindow {
 
                                 // 썸네일(파일) 또는 폴더 아이콘
                                 Item {
+                                    id: rowThumb
                                     Layout.preferredWidth: modelData.isDir ? 20 : 84
                                     Layout.preferredHeight: modelData.isDir ? 20 : 56
                                     Layout.alignment: Qt.AlignVCenter
+                                    // 배지 기준 사각형 — 사진이 그려진 영역. ⚠️디코드 실패
+                                    // (`Image.Error`)면 painted 가 0 이라 배지가 칸 한가운데로
+                                    // 간다 → 그때는 칸 전체로 폴백(컨택트 시트와 같은 규칙).
+                                    readonly property real pw: thumbImg.paintedWidth > 0
+                                                               ? thumbImg.paintedWidth : width
+                                    readonly property real ph: thumbImg.paintedHeight > 0
+                                                               ? thumbImg.paintedHeight : height
 
                                     Text {
                                         visible: modelData.isDir
@@ -4353,8 +4361,8 @@ ApplicationWindow {
                                     Text {
                                         // 사진이 그려진 사각형 기준(편집 배지와 같은 규칙) — 칸 기준이면
                                         // 가로/세로 사진에서 붙는 자리가 달라 보인다(사용자 보고).
-                                        x: (parent.width + thumbImg.paintedWidth) / 2 - width - 1
-                                        y: (parent.height + thumbImg.paintedHeight) / 2 - height - 1
+                                        x: (rowThumb.width + rowThumb.pw) / 2 - width - 1
+                                        y: (rowThumb.height + rowThumb.ph) / 2 - height - 1
                                         text: "♥"
                                         color: "#ff6b6b"
                                         style: Text.Outline
@@ -4378,8 +4386,8 @@ ApplicationWindow {
                                         // ⚠️**사진이 그려진 사각형** 기준. 칸 모서리에 붙이면 가로
                                         //   사진은 사진 위, 세로 사진은 사진 밖(빈 칸)에 놓여 같은
                                         //   배지가 사진마다 다르게 붙은 것처럼 보인다(사용자 보고).
-                                        x: (parent.width + thumbImg.paintedWidth) / 2 - width - 1
-                                        y: (parent.height - thumbImg.paintedHeight) / 2 + 1
+                                        x: (rowThumb.width + rowThumb.pw) / 2 - width - 1
+                                        y: (rowThumb.height - rowThumb.ph) / 2 + 1
                                         ready: thumbImg.status !== Image.Loading
                                         path: modelData.isDir ? "" : modelData.path
                                     }
@@ -5910,6 +5918,10 @@ ApplicationWindow {
                         //   트리보다 뒤(=위)에 그려지므로, 배경이 없으면 셀 사이로 편집 중인
                         //   사진이 비친다. 창 배경과 같은 색.
                         Rectangle { anchors.fill: parent; color: "#1a1a1a" }
+                        // ⚠️입력도 막아야 한다 — `Rectangle` 은 클릭을 안 받으므로 힌트 줄과
+                        //   격자 바깥 여백으로 클릭이 새어 **아래 사진이 1:1 확대·팬** 된다
+                        //   (뒤의 팬/줌 MouseArea 로 전달). 셀보다 먼저 선언해 셀이 위에 오게 한다.
+                        MouseArea { anchors.fill: parent }
 
                         Label {
                             id: sheetHint
@@ -5944,7 +5956,13 @@ ApplicationWindow {
                             cellWidth: 178
                             cellHeight: 198
                             model: contactSheet.photos
-                            onModelChanged: positionViewAtBeginning()   // 폴더가 바뀌면 맨 위로
+                            // ⚠️폴더가 바뀔 때만 맨 위로. `photos` 는 검색어·좋아요·짝 토글에도
+                            //   재평가되므로 `onModelChanged` 에 걸면 900장 폴더에서 P 를 누르거나
+                            //   검색어를 치는 순간 보던 자리를 잃는다(탐색기는 선택을 보존한다).
+                            Connections {
+                                target: controller
+                                function onFolderChanged() { sheetGrid.positionViewAtBeginning() }
+                            }
                             B.ScrollBar.vertical: B.ScrollBar {           // 탐색기 목록과 같은 스타일
                                 id: sheetVbar
                                 width: 10
@@ -6306,7 +6324,7 @@ ApplicationWindow {
                     // 존 시스템 범례 (Z 키 토글 시) — 하단 중앙, 존 0..X 스와치.
                     // 셰이더 zoneShow 표시색과 동일(0=파랑, X=빨강, 나머지 존/10 그레이).
                     Rectangle {
-                        visible: win.zoneOverlay && cropClip.visible
+                        visible: win.zoneOverlay && cropClip.visible && !contactSheet.visible
                         anchors.horizontalCenter: parent.horizontalCenter
                         anchors.bottom: parent.bottom
                         anchors.margins: 12
@@ -6354,7 +6372,11 @@ ApplicationWindow {
                     Item {
                         id: brushSurface
                         anchors.fill: parent
+                        // ⚠️`!contactSheet.visible` 필수 — 격자는 이 항목보다 **앞**에 선언돼
+                        //   있어 브러시 표면이 그 위를 덮는다. 빠뜨리면 격자에서 셀을 못 고르고
+                        //   드래그가 뒤에 가려진 사진에 **보이지 않는 획**을 남긴다.
                         visible: win.activePanel === 2 && win.brushMode !== 0 && cropClip.visible
+                                 && !contactSheet.visible
                         // 화면상 브러시 반경(px): 프록시 px 반경을 pipeView→화면 스케일로 환산
                         function screenRadius() {
                             var rpx = win.brushSize * Math.min(viewport.procW, viewport.procH)
