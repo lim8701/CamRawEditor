@@ -1084,7 +1084,11 @@ ApplicationWindow {
         win.dateStamp = win.stampDef("stampOn")
         stampField.text = controller.stampText
         controller.setStampText(stampField.text)
-        controller.setStampFont(_sd("stampStyle"))
+        // ⚠️**폰트만은 Reset 에서 건드리지 않는다**(사용자 요청) — 각인 폰트는 '이 사진의
+        //   편집'이라기보다 쓰는 사람의 취향이라, 리셋할 때마다 공장 폰트로 튀면 매번 다시
+        //   고르게 된다. 사이드카 없는 새 사진의 로드 경로에서는 지금까지처럼 내 기본값을 쓴다.
+        if (factoryStamp !== true)
+            controller.setStampFont(_sd("stampStyle"))
         stampSizeSlider.value = _sd("stampSize")
         controller.setStampSize(stampSizeSlider.value)
         stampMarginSlider.value = _sd("stampMargin")
