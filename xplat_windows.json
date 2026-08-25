@@ -1,0 +1,286 @@
+{
+ "platform": {
+  "system": "Windows",
+  "release": "11",
+  "machine": "AMD64",
+  "python": "3.13.9",
+  "numpy": "2.4.6",
+  "scipy": "1.17.1",
+  "rawpy": "0.27.0",
+  "cv2": "5.0.0",
+  "PySide6": "6.11.1",
+  "onnxruntime": "1.24.4",
+  "ort_providers": [
+   "DmlExecutionProvider",
+   "CPUExecutionProvider"
+  ]
+ },
+ "cases": {
+  "identity": {
+   "sha256": "dda2d556988f29f2683b95e772d0c550b9a53df5118bc732863e13205ebbc150",
+   "shape": [
+    1200,
+    1800,
+    3
+   ],
+   "dtype": "uint8",
+   "mean": 176.1924,
+   "std": 63.7602,
+   "min": 0,
+   "max": 255,
+   "sec": 0.683
+  },
+  "exposure+1EV": {
+   "sha256": "c4e267fe142763f4928144bb2d4a95b1cff328b947168e24ee5fd3e911d5d98b",
+   "shape": [
+    1200,
+    1800,
+    3
+   ],
+   "dtype": "uint8",
+   "mean": 212.7772,
+   "std": 67.3327,
+   "min": 0,
+   "max": 255,
+   "sec": 0.69
+  },
+  "tone": {
+   "sha256": "347512259efaebcedd40f43233b36f1d566c63c5be6492f79cde7cce334960be",
+   "shape": [
+    1200,
+    1800,
+    3
+   ],
+   "dtype": "uint8",
+   "mean": 153.0027,
+   "std": 52.1653,
+   "min": 0,
+   "max": 255,
+   "sec": 1.05
+  },
+  "scurve": {
+   "sha256": "b6b69dc196d06245385b56e1dde4a70e559754a1facd0c105db0c68ef78c4f02",
+   "shape": [
+    1200,
+    1800,
+    3
+   ],
+   "dtype": "uint8",
+   "mean": 191.4534,
+   "std": 74.1164,
+   "min": 0,
+   "max": 255,
+   "sec": 0.671
+  },
+  "wb8000": {
+   "sha256": "43633076508b130503248987f80568a8f3da23177d1fe964006adc8db346582f",
+   "shape": [
+    1200,
+    1800,
+    3
+   ],
+   "dtype": "uint8",
+   "mean": 172.9074,
+   "std": 63.3257,
+   "min": 0,
+   "max": 255,
+   "sec": 0.649
+  },
+  "wb3500tint": {
+   "sha256": "5f15696564be0c5588e1a4b892a425c58200b03c2ddbe812c6270c6ae338c4ee",
+   "shape": [
+    1200,
+    1800,
+    3
+   ],
+   "dtype": "uint8",
+   "mean": 183.2183,
+   "std": 67.6752,
+   "min": 0,
+   "max": 255,
+   "sec": 0.706
+  },
+  "color": {
+   "sha256": "6d837e08fd332c865dce4e10c4ef2577bc11420a8f258981510a06801d09801d",
+   "shape": [
+    1200,
+    1800,
+    3
+   ],
+   "dtype": "uint8",
+   "mean": 174.6112,
+   "std": 67.145,
+   "min": 0,
+   "max": 255,
+   "sec": 2.217
+  },
+  "colorgrade": {
+   "sha256": "751c492a25d194677569aadac23e77bb98dccc2f57f634000535117fd1804032",
+   "shape": [
+    1200,
+    1800,
+    3
+   ],
+   "dtype": "uint8",
+   "mean": 177.5257,
+   "std": 63.0375,
+   "min": 0,
+   "max": 255,
+   "sec": 0.905
+  },
+  "detail": {
+   "sha256": "9efe9433d338035c7c05ec7b586f48ab6091297a52793a9ee0674489947e0e7c",
+   "shape": [
+    1200,
+    1800,
+    3
+   ],
+   "dtype": "uint8",
+   "mean": 180.696,
+   "std": 70.7992,
+   "min": 0,
+   "max": 255,
+   "sec": 1.545
+  },
+  "nr": {
+   "sha256": "fcfc5d85773e820b7a0cf1e09aa122aa04e6d193dfc8b2e7295bd8454cedc0a7",
+   "shape": [
+    1200,
+    1800,
+    3
+   ],
+   "dtype": "uint8",
+   "mean": 176.228,
+   "std": 63.5285,
+   "min": 0,
+   "max": 255,
+   "sec": 1.995
+  },
+  "lut_classic_chrome": {
+   "sha256": "18b9196298f34367de3c2b7594bafbd1a78745fbde7c34ea1d5c86e738179740",
+   "shape": [
+    1200,
+    1800,
+    3
+   ],
+   "dtype": "uint8",
+   "mean": 170.6565,
+   "std": 63.7535,
+   "min": 0,
+   "max": 253,
+   "sec": 2.204
+  },
+  "lut_velvia_half": {
+   "sha256": "6a4a62309059555e26eb640e4defe3cd5932bbbbba13a0907269191644a2be16",
+   "shape": [
+    1200,
+    1800,
+    3
+   ],
+   "dtype": "uint8",
+   "mean": 174.1272,
+   "std": 63.437,
+   "min": 0,
+   "max": 254,
+   "sec": 2.226
+  },
+  "grain_square": {
+   "sha256": "a53d6d433e7f71458f5a2911df7d752decc111f65448fe36f5f09288c5896e73",
+   "shape": [
+    1200,
+    1800,
+    3
+   ],
+   "dtype": "uint8",
+   "mean": 176.2078,
+   "std": 63.8706,
+   "min": 0,
+   "max": 255,
+   "sec": 1.665
+  },
+  "grain_round": {
+   "sha256": "d3fb3404a440989f645b0715e8379ce7d0f7320e3299b33c3893254d0791f301",
+   "shape": [
+    1200,
+    1800,
+    3
+   ],
+   "dtype": "uint8",
+   "mean": 176.2053,
+   "std": 63.8607,
+   "min": 0,
+   "max": 255,
+   "sec": 7.623
+  },
+  "vignette": {
+   "sha256": "fa31675fe3b2935238a125f317e2a5fc8c58bf7e167b8d1fc1b06af1c1f4acc0",
+   "shape": [
+    1200,
+    1800,
+    3
+   ],
+   "dtype": "uint8",
+   "mean": 154.76,
+   "std": 61.3573,
+   "min": 0,
+   "max": 246,
+   "sec": 0.742
+  },
+  "geometry": {
+   "sha256": "01139f6b80d4c5f8e4a3ef531e76459ff1064888b07796a029ec7bb9d33038a6",
+   "shape": [
+    1530,
+    960,
+    3
+   ],
+   "dtype": "uint8",
+   "mean": 179.1331,
+   "std": 65.1523,
+   "min": 0,
+   "max": 246,
+   "sec": 1.56
+  },
+  "datestamp": {
+   "sha256": "01f7cd1abfed6d92106b88928d5973f0b97a117c8172a6375a6968e91916bc62",
+   "shape": [
+    1200,
+    1800,
+    3
+   ],
+   "dtype": "uint8",
+   "mean": 176.3819,
+   "std": 63.6907,
+   "min": 0,
+   "max": 255,
+   "sec": 0.77
+  },
+  "outEdge1024": {
+   "sha256": "5e8892e2ce22cfb29b3e56358eb17eba2fdc91b46183236273948a76d6740edd",
+   "shape": [
+    683,
+    1024,
+    3
+   ],
+   "dtype": "uint8",
+   "mean": 176.1154,
+   "std": 63.5404,
+   "min": 0,
+   "max": 255,
+   "sec": 1.209
+  },
+  "bit16": {
+   "sha256": "085493d0b328014280cbc2a0a7130e8578c38c12ea0378b105419a40798d766f",
+   "shape": [
+    1200,
+    1800,
+    3
+   ],
+   "dtype": "uint16",
+   "mean": 46673.4911,
+   "std": 17486.4335,
+   "min": 0,
+   "max": 65535,
+   "sec": 0.656
+  }
+ }
+}

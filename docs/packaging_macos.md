@@ -98,3 +98,16 @@
   `QFileOpenEvent` 핸들러가 없어 Finder 더블클릭/Dock 드롭으로 사진이 안 열린다(argv 만 처리) ·
   `pipeline.py` serif 후보에 mac 폰트가 없어 시작 시 **폰트 별칭 채우기 105ms**(missing
   "Constantia").
+
+## 크로스 플랫폼 렌더 일치(`xplat_check.py`)
+
+양쪽에서 `python xplat_check.py <상대 JSON>` 을 돌려 19케이스 해시를 비교한다. **1.10.1 시점
+실측: 17/19 일치**, 나머지 둘은 코드 문제가 아니라 환경 차이다 — 재조사하지 말 것.
+
+| 케이스 | 차이 | 원인 |
+|---|---|---|
+| `vignette` | **sha 만** 다르고 min/max/mean/std/shape 는 전부 동일 | 부동소수 반올림(x86_64 vs arm64, numpy 2.4.6 vs 2.5.2). 몇 픽셀이 ±1코드 |
+| `datestamp` | mean 176.382 vs 176.399(Δ0.017/255), std 63.691 vs 63.681 | 폰트 래스터라이저가 다르다(Windows vs CoreText). `render_sprite` 가 `QFont`/`QFontMetrics` 로 글자를 굽는 이상 피할 수 없다 |
+
+⚠️`xplat_check.py` 는 `pipeline`/`lut`/`image_loader` 만 import 한다 — `main.py`/QML 변경은 이
+결과에 영향을 주지 않으므로, 불일치가 늘면 **현상 파이프라인 쪽**을 볼 것.
