@@ -2945,9 +2945,8 @@ class Controller(QObject):
     def _on_full_decoded(self, ok: bool) -> None:
         """메인 스레드: 풀해상도 src 준비됨 → URL 갱신(QML Image 재로드) + grab 트리거."""
         if not ok:
-            self._exporting = False
             self._apply_keep_awake(False)
-            self._set_export_status("GPU export failed (decode)")
+            self._finish_export("GPU export failed (decode)")
             # 디코드 실패는 QML 이 감지 못 함(fullChanged/fullReady 미발화 → srcFull 상태변화
             # 없음). 명시적으로 로더 해제 신호를 보내지 않으면 gpuExportLoader 가 active=true
             # 로 남아 pipeFull(모든 슬라이더 바인딩) 파이프라인이 계속 재평가된다.
@@ -2966,9 +2965,8 @@ class Controller(QObject):
         복구한다. 없으면 _exporting 이 영구 True 로 남아 이후 모든 export 가 무시됐음."""
         if not self._exporting:
             return
-        self._exporting = False
         self._apply_keep_awake(False)
-        self._set_export_status("GPU export failed (image load)")
+        self._finish_export("GPU export failed (image load)")
         if self._full_provider is not None:
             self._full_provider.clear()
 
@@ -3001,11 +2999,10 @@ class Controller(QObject):
                              args=(arr, dict(self._gpu_params), self._gpu_path, expected),
                              daemon=True).start()
         except Exception as exc:
-            self._exporting = False
             self._apply_keep_awake(False)
             if self._full_provider is not None:
                 self._full_provider.clear()
-            self._set_export_status(f"Failed: {exc}")
+            self._finish_export(f"Failed: {exc}")
             return
 
     def _finish_gpu_export(self, arr, params: dict, path: str, expected=None) -> None:
@@ -3139,6 +3136,9 @@ class Controller(QObject):
         ⚠️반대 순서(`_exporting` 먼저 해제 → 상태 확정)도 안 된다 — 배치 폴러가 exporting=false 를
         보는 순간 exportStatus 가 아직 "Exporting…" 이라 저장된 파일을 실패로 오카운트한다
         (`ui/Main.qml` batchTick). 그래서 **둘 다 emit 앞**에 둔다. 수정 후 실측 1600회 래치 0회.
+        ⚠️**export 를 끝내는 모든 경로가 이걸 쓴다** — 메인 스레드 슬롯(`_on_full_decoded` 실패·
+        `abortGpuExport`·`saveGrab` except)도 포함. 거기선 두 값 사이에 관측자가 못 끼어들어
+        예전 순서도 안전했지만, "이 순서는 위험" 이라고 적어둔 바로 옆에 반례를 두지 않는다.
         ⚠️`print` 를 이 앞에 두지 말 것 — cp949 콘솔에서 인코딩 불가 문자가 섞이면
         UnicodeEncodeError 로 상태 확정 자체가 건너뛰어져 같은 증상이 **결정적으로** 난다.
         """
