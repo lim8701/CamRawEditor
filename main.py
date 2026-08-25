@@ -5323,7 +5323,8 @@ class Controller(QObject):
 
     @Slot(bool)
     def setAutoExposure(self, on: bool) -> None:  # noqa: N802 (QML 슬롯)
-        """자동노출 on/off. 끄면 톤 가공 없는 선형 출발점(캡처원 Linear Response 와 같은 자리).
+        """자동노출 on/off. 끄면 톤 가공 없는 선형 출발점(⚠️타 현상기의 '선형' 옵션과 같은
+        자리인지는 **미검증** — `docs/tone_pipeline.md` 참조. 등가로 설명하지 말 것).
 
         ⚠️**재디코드가 아니다** — 디코드는 항상 자동노출을 적용하고, 끄기는 셰이더/pipeline 의
         노출 지수에서 −log2(게인) 을 빼는 것으로 처리한다(곱셈이라 수학적으로 동일, 토글 즉시
