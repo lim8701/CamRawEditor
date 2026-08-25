@@ -97,7 +97,7 @@ go out and wait for a clear yes:
 
 Only after the user agrees:
 ```
-gh release create v<ver> --title "v<ver>" --notes-file dist\RELEASE_NOTES_v<ver>.md                  --verify-tag --latest dist\FilmRawstery-v<ver>-setup.exe
+gh release create v<ver> --title "v<ver>" --notes-file dist\RELEASE_NOTES_v<ver>.md --verify-tag --latest dist\FilmRawstery-v<ver>-setup.exe
 ```
 Add `FilmRawstery-v<ver>-macos-arm64.dmg` when a Mac build was made — the in-app updater only opens
 the release *page*, so a second asset needs no code change.
