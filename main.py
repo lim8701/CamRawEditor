@@ -88,14 +88,55 @@ FEATURE_FLAGS = _feature_flags()
 # Wallpaper 패널(3분할 트립틱 합성): 개인용 — 릴리즈에선 .env 부재로 자동 숨김
 WALLPAPER_PANEL = _flag_on(FEATURE_FLAGS, "WALLPAPER_PANEL")
 
-# ---------- 시스템 슬립 방지 (Windows SetThreadExecutionState) ----------
+# ---------- 시스템 슬립 방지 (Windows SetThreadExecutionState / macOS IOKit 어서션) ----------
 _ES_CONTINUOUS = 0x80000000
 _ES_SYSTEM_REQUIRED = 0x00000001
 _ES_DISPLAY_REQUIRED = 0x00000002
 
+_mac_sleep_assertion = None      # IOPMAssertionID — 홀드 중일 때만 not None
+
+
+def _mac_keep_awake(on: bool) -> None:
+    """macOS 유휴 시스템 슬립 방지(IOKit 전원 어서션).
+
+    ⚠️**디스플레이는 붙잡지 않는다** — Windows 와 다른 판단이다. 거기서 화면까지 붙잡는 것은
+    Modern Standby 가 '화면 꺼짐 = 대기 진입' 이라 어쩔 수 없어서인데, macOS 는 화면이 꺼져도
+    프로세스가 계속 돌아 export 가 멈추지 않는다. 그래서 필요한 최소인 시스템 슬립만 막는다.
+    ⚠️`caffeinate` 자식 프로세스 대신 어서션을 쓴다 — 어서션은 **프로세스에 귀속**돼 앱이
+    강제 종료돼도 커널이 회수하지만, 자식 프로세스는 살아남아 절전을 영영 막을 수 있다.
+    ⚠️뚜껑을 닫으면(clamshell) 어서션과 무관하게 잔다 — 막을 방법이 없다."""
+    global _mac_sleep_assertion
+    import ctypes
+    iokit = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/IOKit.framework/IOKit")
+    iokit.IOPMAssertionRelease.argtypes = [ctypes.c_uint32]
+    if not on:
+        if _mac_sleep_assertion is None:
+            return
+        iokit.IOPMAssertionRelease(ctypes.c_uint32(_mac_sleep_assertion))
+        _mac_sleep_assertion = None
+        return
+    if _mac_sleep_assertion is not None:
+        return                       # 이미 홀드 중 — 어서션이 쌓이면 해제가 짝이 안 맞는다
+    cf = ctypes.cdll.LoadLibrary(
+        "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+    cf.CFStringCreateWithCString.restype = ctypes.c_void_p
+    cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+    cf.CFRelease.argtypes = [ctypes.c_void_p]
+    iokit.IOPMAssertionCreateWithName.argtypes = [ctypes.c_void_p, ctypes.c_uint32,
+                                                  ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+    _UTF8 = 0x08000100                                   # kCFStringEncodingUTF8
+    kind = cf.CFStringCreateWithCString(None, b"PreventUserIdleSystemSleep", _UTF8)
+    name = cf.CFStringCreateWithCString(None, b"FilmRawstery export", _UTF8)  # pmset -g assertions
+    aid = ctypes.c_uint32(0)
+    rc = iokit.IOPMAssertionCreateWithName(kind, 255, name, ctypes.byref(aid))  # 255 = Level On
+    cf.CFRelease(kind)
+    cf.CFRelease(name)
+    if rc == 0:                                          # kIOReturnSuccess
+        _mac_sleep_assertion = aid.value
+
 
 def _set_keep_awake(on: bool) -> None:
-    """export 류 긴 작업 동안 Windows 시스템 슬립 방지.
+    """export 류 긴 작업 동안 시스템 슬립 방지(Windows/macOS).
     ⚠️**ES_DISPLAY_REQUIRED 가 반드시 함께 있어야 한다** — 요즘 PC 는 대부분
     **Modern Standby(S0 저전력 대기)** 이고(`powercfg /a` 에 'Standby (S0 Low Power Idle)'
     가 보이면 해당), 그 환경에서 ES_SYSTEM_REQUIRED 는 문서상 **무효**다
@@ -104,7 +145,15 @@ def _set_keep_awake(on: bool) -> None:
     export 가 디스플레이 타임아웃(기본 10분) 뒤 대기로 들어가며 멈췄다(사용자 보고).
     대가로 export 중에는 화면이 안 꺼진다(끝나면 해제되어 원래 전원 정책으로 복귀).
     ⚠️ES_CONTINUOUS 상태는 '호출한 스레드'에 귀속(스레드 종료 시 자동 해제)이라 반드시
-    메인 스레드에서만 호출할 것 — 워커에서는 Controller._keepAwakeSig 로 큐잉."""
+    메인 스레드에서만 호출할 것 — 워커에서는 Controller._keepAwakeSig 로 큐잉.
+    macOS 는 IOKit 어서션(_mac_keep_awake) — 스레드가 아니라 프로세스 귀속이지만 호출 규약은
+    같게 둔다(홀드/해제가 짝을 이뤄야 하므로)."""
+    if sys.platform == "darwin":
+        try:
+            _mac_keep_awake(on)
+        except Exception:
+            pass                        # 실패해도 기능 자체는 무영향(슬립만 못 막음)
+        return
     if sys.platform != "win32":
         return
     try:

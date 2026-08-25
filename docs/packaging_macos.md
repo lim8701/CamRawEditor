@@ -88,8 +88,13 @@
   셰이더 오류 0 — 커밋된 `.qsb` 의 MSL 12 가 재컴파일 없이 로드됨), 메인 창
   `CAMetalLayer 3456x1946 scale 2.00`(Retina DPR 2), 일반 이미지 로드 경로 통과,
   **읽기 전용 DMG 볼륨에서 실행 성공**(번들에 쓰지 않음), 번들에 ARR LUT·models 없음.
-- **남은 mac 이슈**(패키징 아님): `_set_keep_awake` 가 win32 전용이라 **긴 export 중 잠든다**
-  (`caffeinate -dims` 또는 IOKit 필요) · 폰트 추가 대화상자가 `C:/Windows/Fonts` 를 연다 ·
+- **슬립 방지는 IOKit 어서션**(`_mac_keep_awake`): export 중 `PreventUserIdleSystemSleep` 을
+  홀드한다(`pmset -g assertions` 에 `"FilmRawstery export"` 로 보인다). ⚠️Windows 와 달리
+  **디스플레이는 붙잡지 않는다** — 화면이 꺼져도 프로세스가 계속 돌아 export 가 멈추지 않으므로
+  Modern Standby 때문에 화면까지 붙잡아야 하는 Windows 와 이유가 성립하지 않는다.
+  ⚠️`caffeinate` 자식 프로세스를 쓰지 않는다 — 어서션은 프로세스 귀속이라 앱이 강제 종료돼도
+  커널이 회수하지만, 자식은 살아남아 절전을 영영 막을 수 있다. 뚜껑을 닫으면 그래도 잔다.
+- **남은 mac 이슈**(패키징 아님): 폰트 추가 대화상자가 `C:/Windows/Fonts` 를 연다 ·
   `QFileOpenEvent` 핸들러가 없어 Finder 더블클릭/Dock 드롭으로 사진이 안 열린다(argv 만 처리) ·
   `pipeline.py` serif 후보에 mac 폰트가 없어 시작 시 **폰트 별칭 채우기 105ms**(missing
   "Constantia").
