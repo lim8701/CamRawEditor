@@ -2643,10 +2643,7 @@ class Controller(QObject):
             msg = f"Failed: {exc}"
         finally:
             self._exportProgressSig.emit(0.0)   # 진행률 리셋(실패 시 stale 값이 오버레이에 남는 것 방지)
-            # 완료 상태를 먼저 확정한 뒤 _exporting 해제 — 순서가 반대면 배치 폴러가 exporting=false
-            # 를 보는 순간 exportStatus 가 아직 "Exporting…" 이라 저장된 파일을 실패로 오카운트함.
-            self._set_export_status(msg)   # 워커 스레드 -> 시그널은 메인으로 큐잉됨
-            self._exporting = False
+            self._finish_export(msg)   # 상태+_exporting 확정 후 1회 통지(순서 사유는 그쪽 독스트링)
             self._keepAwakeSig.emit(False)   # 슬립 방지 해제(스레드 귀속 API → 메인으로 큐잉)
         print(f"[export] {msg}")
 
@@ -2683,8 +2680,7 @@ class Controller(QObject):
             msg = f"Failed: {exc}"
         finally:
             self._exportProgressSig.emit(0.0)
-            self._set_export_status(msg)           # 반드시 _exporting 해제보다 먼저(_do_export 참조)
-            self._exporting = False
+            self._finish_export(msg)               # 상태+_exporting 확정 후 1회 통지
             self._keepAwakeSig.emit(False)
 
     @Slot()
@@ -2756,8 +2752,7 @@ class Controller(QObject):
         except Exception as exc:
             msg = f"Failed: {exc}"
         finally:
-            self._set_export_status(msg)
-            self._exporting = False
+            self._finish_export(msg)
             self._keepAwakeSig.emit(False)
         print(f"[wallpaper] {msg}")
 
@@ -3071,11 +3066,12 @@ class Controller(QObject):
         except Exception as exc:
             msg = f"Failed: {exc}"
         finally:
-            print(f"[export-gpu] {msg}")
-            # CPU export 와 동일 순서: 상태 확정 → _exporting 해제(반대면 배치 폴러 오카운트).
-            self._set_export_status(msg)             # 워커 → 시그널은 메인으로 큐잉됨
-            self._exporting = False
+            self._finish_export(msg)                 # 상태+_exporting 확정 후 1회 통지
             self._keepAwakeSig.emit(False)           # 스레드 귀속 API → 메인으로 큐잉
+            # ⚠️print 는 **맨 마지막** — 여기서 UnicodeEncodeError 가 나도 상태는 이미 확정됐다
+            #   (cp949 콘솔 + 인코딩 불가 문자. 예전엔 이 줄이 finally 첫 줄이라 저장은 됐는데
+            #    _exporting 이 True 로 남아 진행 표시가 안 사라졌다. CPU export 와 동일 위치.)
+            print(f"[export-gpu] {msg}")
 
     @Slot(str)
     def refreshDisplayCm(self, device_name: str = "") -> None:  # noqa: N802 (QML 슬롯)
@@ -3128,6 +3124,27 @@ class Controller(QObject):
         return self._full_url
 
     fullUrl = Property(str, _get_full_url, notify=fullChanged)
+
+    def _finish_export(self, msg: str) -> None:
+        """워커 종료 공통 처리 — 상태와 `_exporting` 을 **알림 전에 모두 확정**한 뒤 한 번만 통지.
+
+        ★⚠️`exporting` 의 notify 가 `exportStatusChanged` **하나뿐**이라, emit 을 두 값 사이에
+        두면(예전 코드) 메인 스레드가 그 틈에 '상태=Saved, exporting=True' 를 읽고 **영구히
+        굳는다** — 실측 800회 중 454~470회(57~59%). 워커가 emit 직전까지 numpy/파일 IO 로 GIL 을
+        놓고 메인은 `app.exec()` 에 파킹돼 있어, 큐잉된 통지가 워커의 다음 줄보다 먼저 처리된다.
+        ⚠️한 번 굳으면 `busyChanged`·`batchChanged` 로도 **안 풀린다** — 진행 오버레이 식
+        `exporting || batchActive || wallActive || busy` 에서 QML 이 `||` 를 단축평가하므로 첫 항이
+        True 인 동안 뒤 항이 의존성에서 빠진다. **다음 export 가 시작될 때만** 복구된다(= 저장은
+        끝났는데 진행 표시가 계속 도는 사용자 보고의 정체).
+        ⚠️반대 순서(`_exporting` 먼저 해제 → 상태 확정)도 안 된다 — 배치 폴러가 exporting=false 를
+        보는 순간 exportStatus 가 아직 "Exporting…" 이라 저장된 파일을 실패로 오카운트한다
+        (`ui/Main.qml` batchTick). 그래서 **둘 다 emit 앞**에 둔다. 수정 후 실측 1600회 래치 0회.
+        ⚠️`print` 를 이 앞에 두지 말 것 — cp949 콘솔에서 인코딩 불가 문자가 섞이면
+        UnicodeEncodeError 로 상태 확정 자체가 건너뛰어져 같은 증상이 **결정적으로** 난다.
+        """
+        self._export_status = msg
+        self._exporting = False
+        self.exportStatusChanged.emit()
 
     def _set_export_status(self, s: str) -> None:
         self._export_status = s
