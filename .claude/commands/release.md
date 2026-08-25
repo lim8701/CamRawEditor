@@ -27,7 +27,7 @@ Do NOT pick a bump level yourself, even if the changes obviously look like a pat
 
 ## 3. Spec check + clean build
 Run the spec completeness check from the `package` command (QML list, native deps, hidden imports, ARR LUT exclusion, no models/). Then:
-```
+```powershell
 Remove-Item -Recurse -Force build   # REQUIRED: PyInstaller misses icon/version_info CONTENT changes
 .\packaging\build.ps1
 ```
@@ -96,8 +96,11 @@ go out and wait for a clear yes:
 - that it will be published as a normal (non-pre-, non-draft) release
 
 Only after the user agrees:
+⚠️ 경로는 **슬래시**로 쓴다 — 이 세션엔 PowerShell 과 Git Bash 가 둘 다 있고,
+백슬래시는 Bash 에서 이스케이프로 먹혀 `distRELEASE_NOTES_...` 로 붙어버린다
+(하필 되돌릴 수 없는 단계다). gh 와 Windows 모두 슬래시를 받는다.
 ```
-gh release create v<ver> --title "v<ver>" --notes-file dist\RELEASE_NOTES_v<ver>.md --verify-tag --latest dist\FilmRawstery-v<ver>-setup.exe
+gh release create v<ver> --title "v<ver>" --notes-file dist/RELEASE_NOTES_v<ver>.md --verify-tag --latest dist/FilmRawstery-v<ver>-setup.exe
 ```
 Add `FilmRawstery-v<ver>-macos-arm64.dmg` when a Mac build was made — the in-app updater only opens
 the release *page*, so a second asset needs no code change.
