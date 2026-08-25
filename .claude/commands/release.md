@@ -82,14 +82,33 @@ Once a Developer ID certificate exists, switch to
 `packaging/build_mac.sh --sign "Developer ID Application: … (TEAMID)" --notarize`, drop the unblock
 paragraph from the notes, and keep the SHA256 line.
 
-## 6. GitHub release (user does the upload)
-No `gh` CLI on the Windows machine (the Mac has one — see 5.5). Give the user:
-- the link `https://github.com/lim8701/FilmRawstery/releases/new?tag=v<ver>`
-- the notes file path to paste, and the assets to upload: `dist\FilmRawstery-v<ver>-setup.exe`
-  (installer only — zip is not uploaded since v1.7.1) plus `FilmRawstery-v<ver>-macos-arm64.dmg`
-  if a Mac build was made. The in-app updater only opens the release *page*, so a second asset needs
-  no code change — but the release must stay a normal (non-pre-)release, see 5.5.
-Wait for the user to say it's up, then verify via `curl https://api.github.com/repos/lim8701/FilmRawstery/releases/latest` (tag matches, not draft/prerelease, setup asset present).
+## 6. GitHub release — ⚠️ALWAYS ASK BEFORE PUBLISHING
+`gh` is installed and authenticated on Windows (and on the Mac — see 5.5), so you *can* publish
+without the user. **Do not.** Publishing is outward-facing and effectively irreversible: the in-app
+updater notifies every user as soon as the release goes live.
+
+**Ask for explicit confirmation every time, even when the user said "proceed" earlier in the
+session** — approval to build, to tag, or to push is NOT approval to publish. Show what is about to
+go out and wait for a clear yes:
+- tag and the commit it points at
+- the notes file, and a short summary of what the notes say
+- the asset filename and its size
+- that it will be published as a normal (non-pre-, non-draft) release
+
+Only after the user agrees:
+```
+gh release create v<ver> --title "v<ver>" --notes-file dist\RELEASE_NOTES_v<ver>.md                  --verify-tag --latest dist\FilmRawstery-v<ver>-setup.exe
+```
+Add `FilmRawstery-v<ver>-macos-arm64.dmg` when a Mac build was made — the in-app updater only opens
+the release *page*, so a second asset needs no code change.
+⚠️**`--prerelease` is forbidden** — the in-app updater skips prerelease/draft, see 5.5.
+If the user would rather do it by hand, give them
+`https://github.com/lim8701/FilmRawstery/releases/new?tag=v<ver>`, the notes path and the asset path,
+and wait for them to say it is up.
+
+Either way, verify afterwards with
+`curl https://api.github.com/repos/lim8701/FilmRawstery/releases/latest`
+(tag matches, not draft/prerelease, setup asset present and `state=uploaded`).
 
 ## 7. Finish: fast-forward main
 ```
