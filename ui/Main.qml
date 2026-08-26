@@ -2318,7 +2318,7 @@ ApplicationWindow {
                                 visible: modelData.installed
                                 text: "Installed"; color: "#6fbf73"; font.pixelSize: 12
                             }
-                            Button {
+                            DarkButton {
                                 anchors.fill: parent
                                 visible: !modelData.installed
                                 // 동시 1개만 — 진행 중에는 나머지 버튼 잠금
@@ -2387,8 +2387,8 @@ ApplicationWindow {
                         Layout.fillWidth: true
                     }
                 }
-                Button { text: "Open folder"; onClicked: controller.openModelsFolder() }
-                Button { text: "Close"; onClicked: modelDialog.close() }
+                DarkButton { text: "Open folder"; onClicked: controller.openModelsFolder() }
+                DarkButton { text: "Close"; onClicked: modelDialog.close() }
             }
         }
     }
@@ -4565,7 +4565,7 @@ ApplicationWindow {
                         font.pixelSize: 12
                         elide: Text.ElideRight
                     }
-                    Button {
+                    DarkButton {
                         text: "Export…"
                         enabled: win.batchCheckedCount > 0 && !win.batchActive
                                  && !controller.exporting
@@ -4604,7 +4604,7 @@ ApplicationWindow {
                                     color: "#9a9a9a"; font.pixelSize: 10
                                     wrapMode: Text.WordWrap
                                 }
-                                Button {
+                                DarkButton {
                                     Layout.fillWidth: true
                                     text: "Choose folder && start"
                                     onClicked: {
@@ -6700,7 +6700,7 @@ ApplicationWindow {
                 }
 
                 // 배치 취소 — 현재 파일까지 마치고 중단(진행 중 render_full 은 중단 불가)
-                Button {
+                DarkButton {
                     visible: win.batchActive
                     anchors.top: filmCell.bottom
                     anchors.topMargin: 12
@@ -6711,7 +6711,7 @@ ApplicationWindow {
                 }
 
                 // 배경화면 취소 — 현재 패널까지 마치고 중단(배치와 동일 의미론)
-                Button {
+                DarkButton {
                     visible: win.wallActive
                     anchors.top: filmCell.bottom
                     anchors.topMargin: 12
@@ -7457,41 +7457,19 @@ ApplicationWindow {
                 // 사용자 폰트(Add font...)와 같은 구조·같은 규약이다: 고른 파일을 **사용자
                 // 데이터 폴더로 복사**하므로 원본이 없어져도 사이드카가 열리고, 설치 폴더를
                 // 건드리지 않으므로 앱 업데이트에도 남는다.
-                // ⚠️`Button`(네이티브 스타일)은 background/contentItem 커스터마이즈를 **거부**한다
-                //   ("The current style does not support customization of this control" 경고 →
-                //   다크 패널 위에 밝은 회색 네이티브 버튼이 그대로 남는다). 이미 import 된
-                //   `QtQuick.Controls.Basic`(`B`)로 그려야 색이 먹는다. 색은 이 패널이 이미
-                //   쓰는 값들: 면 #3a3a3a / 호버 #3a3f4b(콤보 delegate 와 동일) / 테두리 #555 /
-                //   글자 #e8e8e8.
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 6
-                    B.Button {
-                        id: addLutBtn
+                    DarkButton {
                         text: "Add LUT…"
                         font.pixelSize: 11
                         implicitHeight: 24
-                        leftPadding: 10; rightPadding: 10; topPadding: 0; bottomPadding: 0
                         onClicked: { win.lutNotice = ""; userLutDialog.open() }
-                        contentItem: Text {
-                            text: addLutBtn.text; font: addLutBtn.font
-                            color: addLutBtn.enabled ? "#e8e8e8" : "#777"
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
-                        }
-                        background: Rectangle {
-                            radius: 3
-                            color: addLutBtn.down ? "#4a4f5b"
-                                   : addLutBtn.hovered ? "#3a3f4b" : "#3a3a3a"
-                            border.color: "#555"
-                        }
                     }
-                    B.Button {
-                        id: rmLutBtn
+                    DarkButton {
                         text: "Remove"
                         font.pixelSize: 11
                         implicitHeight: 24
-                        leftPadding: 10; rightPadding: 10; topPadding: 0; bottomPadding: 0
                         // 번들 필름시뮬은 지울 수 없다(설치 자산) — 추가한 LUT 에만 활성.
                         enabled: win.curSimKey.indexOf("user:") === 0
                         onClicked: {
@@ -7503,19 +7481,6 @@ ApplicationWindow {
                                 win.lutNotice = "Could not delete that file."
                                 win.lutNoticeWarn = true
                             }
-                        }
-                        contentItem: Text {
-                            text: rmLutBtn.text; font: rmLutBtn.font
-                            color: rmLutBtn.enabled ? "#e8e8e8" : "#777"
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
-                        }
-                        background: Rectangle {
-                            radius: 3
-                            color: !rmLutBtn.enabled ? "#2f2f2f"
-                                   : rmLutBtn.down ? "#4a4f5b"
-                                   : rmLutBtn.hovered ? "#3a3f4b" : "#3a3a3a"
-                            border.color: rmLutBtn.enabled ? "#555" : "#3f3f3f"
                         }
                     }
                     Item { Layout.fillWidth: true }
@@ -8737,9 +8702,9 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                             RowLayout {
                                 Layout.fillWidth: true
                                 spacing: 6
-                                Button { id: cropLandscapeBtn; text: "Landscape"; checkable: true; checked: true; autoExclusive: true; Layout.fillWidth: true; Layout.preferredWidth: 0
+                                DarkButton { id: cropLandscapeBtn; text: "Landscape"; checkable: true; checked: true; autoExclusive: true; Layout.fillWidth: true; Layout.preferredWidth: 0
                                          onClicked: win.applyCropAspect() }
-                                Button { id: cropPortraitBtn; text: "Portrait"; checkable: true; autoExclusive: true; Layout.fillWidth: true; Layout.preferredWidth: 0
+                                DarkButton { id: cropPortraitBtn; text: "Portrait"; checkable: true; autoExclusive: true; Layout.fillWidth: true; Layout.preferredWidth: 0
                                          onClicked: win.applyCropAspect() }
                             }
                             // 안내
@@ -8785,14 +8750,14 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                             RowLayout {
                                 Layout.fillWidth: true
                                 spacing: 6
-                                Button {
+                                DarkButton {
                                     text: "⟲ 90°"
                                     Layout.fillWidth: true
                                     ToolTip.visible: hovered
                                     ToolTip.text: "90° CCW"
                                     onClicked: { win.quarterTurns = (win.quarterTurns + 3) % 4; win.applyCropAspect() }
                                 }
-                                Button {
+                                DarkButton {
                                     text: "⟳ 90°"
                                     Layout.fillWidth: true
                                     ToolTip.visible: hovered
@@ -8805,14 +8770,14 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                             RowLayout {
                                 Layout.fillWidth: true
                                 spacing: 6
-                                Button {
+                                DarkButton {
                                     id: flipHBtn
                                     text: "Flip horizontal"
                                     checkable: true
                                     Layout.fillWidth: true
                                     Layout.preferredWidth: 0
                                 }
-                                Button {
+                                DarkButton {
                                     id: flipVBtn
                                     text: "Flip vertical"
                                     checkable: true
@@ -8871,7 +8836,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
 
                             Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
 
-                            Button {
+                            DarkButton {
                                 text: "Reset Crop · Rotate · Geometry"
                                 Layout.fillWidth: true
                                 onClicked: win.resetGeometry()
@@ -8949,7 +8914,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                                     color: "#eee"; font.pixelSize: 12; elide: Text.ElideRight
                                                     verticalAlignment: Text.AlignVCenter
                                                 }
-                                                Button {                 // 레이어 삭제(최소 1개는 유지 — 비활성)
+                                                DarkButton {                 // 레이어 삭제(최소 1개는 유지 — 비활성)
                                                     id: delBtn
                                                     text: "✕"; flat: true
                                                     implicitWidth: 26; implicitHeight: 24
@@ -8968,7 +8933,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         }
                                     }
                                 }
-                                Button {                         // 레이어 추가(상한 5)
+                                DarkButton {                         // 레이어 추가(상한 5)
                                     Layout.fillWidth: true
                                     text: "+ Add Layer  (" + win.layerCount + "/" + win.maxLayers + ")"
                                     enabled: controller.imagePath !== "" && win.layerCount < win.maxLayers
@@ -9263,7 +9228,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                     }
                                 }
                             }
-                            Button {
+                            DarkButton {
                                 text: "Clear"
                                 Layout.fillWidth: true
                                 enabled: controller.imagePath !== ""
@@ -9381,7 +9346,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                     from: 0.0; to: 1.0; value: 0.5; defaultValue: 0.5
                                     onValueChanged: win.brushFeather = value
                                 }
-                                Button {
+                                DarkButton {
                                     Layout.fillWidth: true
                                     text: "Clear strokes"
                                     enabled: win.activeStrokeCount > 0
@@ -9535,13 +9500,13 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                             RowLayout {
                                 Layout.fillWidth: true
                                 spacing: 6
-                                Button {
+                                DarkButton {
                                     text: "Add font…"
                                     font.pixelSize: 11
                                     enabled: win.dateStamp
                                     onClicked: stampFontDialog.open()
                                 }
-                                Button {
+                                DarkButton {
                                     text: "Remove"
                                     font.pixelSize: 11
                                     // 번들 폰트는 지울 수 없다(설치 자산) — 추가한 폰트에만 활성.
@@ -9887,7 +9852,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                     font.pixelSize: 12
                                     onAccepted: wallPresetSave.clicked()
                                 }
-                                Button {
+                                DarkButton {
                                     id: wallPresetSave
                                     text: "Save"
                                     enabled: wallPresetName.text.trim() !== ""
@@ -10422,7 +10387,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                 color: "#888"; font.pixelSize: 11
                             }
 
-                            Button {
+                            DarkButton {
                                 text: "Export Wallpaper…"
                                 Layout.fillWidth: true
                                 enabled: win.wallFilled === 3 && !win.wallActive && !win.batchActive
