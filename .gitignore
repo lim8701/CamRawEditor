@@ -47,3 +47,6 @@ Thumbs.db
 
 # Claude Code 로컬 설정(권한 허용 목록 등 — 머신별). .claude/commands 는 추적 유지.
 .claude/settings.local.json
+
+# 테스트용 생성 LUT (luts/make_test_luts.py 로 언제든 재생성)
+testluts/

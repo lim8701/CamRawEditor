@@ -26,6 +26,10 @@ Any cube size works (the loader auto-detects N per file).
 >   display-referred sRGB into the LUT, so such a LUT would silently produce wrong colour.
 >   1D-only LUTs are rejected too. Cubes larger than 64³ are resampled to 64³ on import
 >   (the atlas is N² pixels wide, so bigger cubes exceed common GPU texture limits).
+>
+> To exercise all of that without hunting for downloads, run
+> [`make_test_luts.py`](make_test_luts.py) — it writes a fixture set to `testluts/`
+> (7 valid LUTs across N=17/32/33/64/65, plus the three that must be rejected).
 
 ## Keys (filename → simulation)
 
