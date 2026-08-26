@@ -197,6 +197,8 @@ Save the look you built and put it on another photo.
 - **Zone System overlay** (`Z`) — paints the frame by Ansel Adams zone, so you can see where the
   tones actually land instead of guessing from the histogram (preview only; never exported)
 - **Undo / redo** — snapshot history of all adjustments (`Ctrl+Z` / `Ctrl+Shift+Z`)
+- **Develop credit** — exported files carry `Software: Film Rawstery v<version>`
+  (an EXIF tag in JPEG, a text chunk in PNG; TIFF cannot hold it)
 - **Non-destructive, per-image persistence** — edits autosave to a `.filmrawsteryedits/<file>.json` sidecar and restore when you reopen the image
 - **File explorer** with RAF thumbnails and a likes/favorites filter
 - **Live histogram** reflecting current adjustments

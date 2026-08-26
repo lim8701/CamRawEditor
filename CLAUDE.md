@@ -360,6 +360,14 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   → `saveGrab` 이 소스 원본 크기에서 기대 치수를 계산해 워커에서 **지오메트리 전에**
   정규화(배율 100% 면 no-op, 동일 객체). ⚠️CPU 점유율 질문(커뮤니티): CPU export 는
   numpy 단일 코어 위주라 12스레드 CPU 에서 8~10% 로 보이는 게 정상 — iGPU 유무와 무관.
+- **현상 크레딧**: export 파일에 `Software = Film Rawstery v<ver>` 를 남긴다
+  (`main.EXPORT_SOFTWARE` → `pipeline.save_image(..., software=)`). JPEG 은 **직접 만든 최소
+  EXIF APP1**(`_exif_app1`/`_insert_app1`), PNG 은 tEXt. ⚠️**TIFF 는 남지 않는다** — Qt 의
+  TIFF 핸들러가 `setText` 를 조용히 버린다(실측). ⚠️Qt 의 `setText` 는 JPEG 에서 **COM(주석)**
+  으로 나가 `exifread` 태그가 0개다 — 탐색기·라이트룸의 Software 칸에 뜨게 하려면 EXIF 세그먼트를
+  직접 넣어야 한다(그래서 그렇게 했다). 실측: 픽셀 비트동일, JPEG +58B, 16bit PNG depth 유지.
+  ⚠️export 경로를 새로 만들면 `EXPORT_SOFTWARE` 를 함께 넘길 것(호출부 3곳 — 순환 임포트 때문에
+  pipeline 이 APP_VERSION 을 직접 못 읽는다).
 - 16bit TIFF 미지원(QImage 8bit). 필요 시 tifffile/imageio 추가.
 
 ## macOS 패키징 (.app + DMG)

@@ -52,6 +52,10 @@ SHADER_NAMES = ["adjust.frag", "blur.frag", "convert.frag", "displaycm.frag", "m
                 "stamp.frag"]
 LUTS_DIR = BASE / "luts"
 APP_VERSION = "1.10.1"   # SemVer(MAJOR.MINOR.PATCH). 올릴 때 packaging/version_info.txt(exe 버전 리소스)도 수동으로 맞출 것
+# export 파일에 남기는 현상 크레딧(JPEG=EXIF Software 태그 / PNG=tEXt).
+# ⚠️`pipeline` 이 `main.APP_VERSION` 을 직접 읽으면 순환 임포트라 **호출측이 넘긴다** —
+#   export 경로를 새로 만들면 이 값을 함께 넘길 것(빠뜨리면 그 파일만 크레딧이 없다).
+EXPORT_SOFTWARE = f"Film Rawstery v{APP_VERSION}"
 
 
 def _feature_flags() -> dict:
@@ -2712,7 +2716,7 @@ class Controller(QObject):
         try:
             import pipeline
             arr = self._render_array(params, src, sky_masks, haze)
-            ok = pipeline.save_image(arr, path)
+            ok = pipeline.save_image(arr, path, EXPORT_SOFTWARE)
             msg = f"Saved: {path}" if ok else f"Save failed: {path}"
         except Exception as exc:
             msg = f"Failed: {exc}"
@@ -2822,7 +2826,7 @@ class Controller(QObject):
                 canvas = pipeline.compose_wallpaper(
                     panels, int(o["canvasW"]), int(o["canvasH"]), int(o.get("gap", 18)),
                     [float(v) for v in o.get("offsets", [0.0, 0.0, 0.0])])
-                ok = pipeline.save_image(canvas, path)
+                ok = pipeline.save_image(canvas, path, EXPORT_SOFTWARE)
             msg = f"Saved: {path}" if ok else f"Save failed: {path}"
         except Exception as exc:
             msg = f"Failed: {exc}"
@@ -3133,7 +3137,7 @@ class Controller(QObject):
                 if s > 0.4:
                     x = gaussian_filter(x, (s, s, 0.0))
                 arr = np.clip(zoom(x, (f, f, 1.0), order=1) + 0.5, 0, 255).astype(np.uint8)
-            ok = pipeline.save_image(arr, path)
+            ok = pipeline.save_image(arr, path, EXPORT_SOFTWARE)
             msg = f"Saved: {path}" if ok else f"Save failed: {path}"
         except Exception as exc:
             msg = f"Failed: {exc}"
