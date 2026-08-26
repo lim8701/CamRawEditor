@@ -9,8 +9,9 @@ Any cube size works (the loader auto-detects N per file).
 >
 > To use a `.cube` you made or downloaded, open **Film Simulation → Add LUT…**
 > in the app. The file is copied to your user data folder
-> (`%LOCALAPPDATA%\FilmRawstery\luts` on Windows) and appears under **My LUTs**
-> in the selector, right away — no restart, no admin rights.
+> (`%LOCALAPPDATA%\FilmRawstery\luts` on Windows) and appears at the **bottom of
+> the Film Simulation list, below a divider**, right away — no restart, no admin
+> rights.
 >
 > This folder is for **replacing the bundled film simulations** under the exact key
 > names listed below. In an installed build it lives inside the install directory,
@@ -27,9 +28,10 @@ Any cube size works (the loader auto-detects N per file).
 >   1D-only LUTs are rejected too. Cubes larger than 64³ are resampled to 64³ on import
 >   (the atlas is N² pixels wide, so bigger cubes exceed common GPU texture limits).
 >
-> To exercise all of that without hunting for downloads, run
-> [`make_test_luts.py`](make_test_luts.py) — it writes a fixture set to `testluts/`
-> (7 valid LUTs across N=17/32/33/64/65, plus the three that must be rejected).
+> To exercise all of that without hunting for downloads, the source repo ships
+> [`luts/make_test_luts.py`](make_test_luts.py) (not included in installed builds)
+> — it writes a fixture set of 7 valid LUTs across N=17/32/33/64/65 plus the three
+> that must be rejected.
 
 ## Keys (filename → simulation)
 

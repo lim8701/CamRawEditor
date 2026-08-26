@@ -615,13 +615,16 @@ class LutProvider(QQuickImageProvider):
     def load_dir(self, luts_dir: Path, prefix: str = "") -> None:
         """폴더의 .cube 를 전부 굽는다. `prefix` 를 주면 키가 `<prefix><파일명>`(사용자 LUT).
         폴더가 없으면 glob 이 빈 결과라 그냥 넘어간다(사용자 폴더는 없을 수 있다)."""
+        loaded = 0
         for cube in sorted(Path(luts_dir).glob("*.cube")):
             key = (prefix + cube.name) if prefix else cube.stem
-            if self.load_one(cube, key) and not prefix:
-                self.size = self._sizes[key]
-        # 번들/사용자 두 번 불리므로 어느 쪽인지 함께 찍는다(예전엔 같은 줄이 두 번 나왔다).
-        print(f"[lut] {'사용자' if prefix else '번들'} {len(self._atlases)}개 누적, "
-              f"번들 N={self.size}")
+            if self.load_one(cube, key):
+                loaded += 1
+                if not prefix:
+                    self.size = self._sizes[key]
+        # 번들/사용자 두 번 불리므로 어느 쪽인지, 그 폴더에서 몇 개인지 찍는다
+        # (예전엔 같은 줄이 두 번 나왔고, 그다음엔 누적 개수가 나와 헷갈렸다).
+        print(f"[lut] {'사용자' if prefix else '번들'} {loaded}개 로드, 번들 N={self.size}")
 
     def load_one(self, path, key: str) -> bool:
         """.cube 하나를 아틀라스로 굽는다. 실패는 스킵+경고(그 룩만 미로드, 나머지는 정상) —
@@ -5415,7 +5418,12 @@ class Controller(QObject):
             if LUT_PROVIDER is not None and not LUT_PROVIDER.load_one(
                     lut_mod.lut_path(res["key"]), res["key"]):
                 # 파서는 통과했는데 아틀라스 생성이 실패한 경우 — 목록에 남기지 않는다.
-                lut_mod.remove_user_lut(res["key"])
+                # ⚠️**덮어쓴 경우엔 파일을 지우지 않는다** — 사용자가 이미 쓰고 있던 LUT 을
+                #   없애게 된다(그 키를 저장한 사진·레시피가 통째로 룩을 잃는다). 그때는 새
+                #   파일이 디스크에 남고 프로바이더는 옛 아틀라스를 들고 있으므로, 사용자가
+                #   멀쩡한 파일로 다시 가져오면 정리된다.
+                if not res.get("replaced"):
+                    lut_mod.remove_user_lut(res["key"])
                 return {"key": "", "note": "",
                         "error": "Could not build a GPU texture from that LUT."}
             self.filmSimsChanged.emit()

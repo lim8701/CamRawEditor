@@ -88,6 +88,16 @@ ApplicationWindow {
     // ⚠️예전엔 조용히 None 으로 떨어지고 다음 저장에서 **영구 소실**됐다 — 사용자 LUT 이
     //   생기면 '다른 PC 에서 열었더니 룩이 날아감'이 실제 시나리오라 알려야 한다.
     property string missingSimKey: ""
+    // LUT 아틀라스 리비전. ★같은 이름의 .cube 를 다시 가져오면 목록 **내용이 안 바뀌므로**
+    // `curSimKey` 도 그대로고, source 가 같은 Image 는 **다시 요청하지 않는다**(cache:false 는
+    // 픽맵 캐시만 우회한다 — 실측). 그러면 프로바이더·CPU export 는 새 파일인데 셰이더만 옛
+    // 아틀라스를 쓰는 프리뷰≠export 가 된다. 리비전을 쿼리스트링으로 붙여 강제 재요청한다
+    // (`requestImage` 가 `?` 뒤를 잘라낸다). N 이 바뀌었을 수도 있어 lutSize 도 같이 묶는다.
+    property int lutAtlasRev: 0
+    Connections {
+        target: controller
+        function onFilmSimsChanged() { win.lutAtlasRev++ }
+    }
     // 스탬프 '내 기본값' — 사진 여러 장을 연속 작업할 때 폰트·크기·여백을 매번 다시 잡지
     // 않도록 마지막 사용값을 기억한다(controller 가 사용자 데이터 폴더 JSON 으로 보존).
     // ⚠️`applyEdits` 의 `_ev` 폴백은 이 함수가 아니라 **`lookDef`(=공장 기본값)**를 쓴다.
@@ -2044,6 +2054,9 @@ ApplicationWindow {
     readonly property string curSimKey: (simCombo.currentIndex >= 0
         && simCombo.currentIndex < win.simKeys.length)
         ? win.simKeys[simCombo.currentIndex] : "identity"
+    // 현재 LUT 의 한 변 N. `lutAtlasRev` 를 참조해 **덮어쓰기로 N 이 바뀐 경우까지** 다시
+    // 평가되게 한다(슬롯 호출만으로는 재평가 트리거가 없다 — batchCheckedCount 와 같은 패턴).
+    readonly property int curLutN: { win.lutAtlasRev; return controller.lutSizeFor(win.curSimKey) }
 
     function planckXY(T) {
         var x
@@ -4755,7 +4768,7 @@ ApplicationWindow {
                 visible: false
                 cache: false
                 smooth: false
-                source: "image://lut/" + win.curSimKey
+                source: "image://lut/" + win.curSimKey + "?v=" + win.lutAtlasRev
             }
 
             // 디스플레이 색관리 LUT 아틀라스(sRGB→모니터). 수동 트라이리니어라 smooth:false 필수.
@@ -4966,7 +4979,7 @@ ApplicationWindow {
                         property real wbR: wbGain.x
                         property real wbG: wbGain.y
                         property real wbB: wbGain.z
-                        property real lutSize: controller.lutSizeFor(win.curSimKey)
+                        property real lutSize: win.curLutN
                         property real lutStrength: simStrengthSlider.value
                         property int lutEnabled: simCombo.currentIndex === 0 ? 0 : 1
                         // 로컬 마스크 레이어(5) — win.layers 에서 vec4 유니폼. export 는 오버레이 없음(-1).
@@ -5404,7 +5417,7 @@ ApplicationWindow {
                         property real wbR: wbGain.x
                         property real wbG: wbGain.y
                         property real wbB: wbGain.z
-                        property real lutSize: controller.lutSizeFor(win.curSimKey)   // LUT 별 N
+                        property real lutSize: win.curLutN      // LUT 별 N(리비전 의존)
                         property real lutStrength: simStrengthSlider.value
                         property int lutEnabled: simCombo.currentIndex === 0 ? 0 : 1
                         // 로컬 마스크 레이어(3) — win.layers vec4 유니폼. 오버레이=활성 레이어(프리뷰 전용).
@@ -7507,18 +7520,27 @@ ApplicationWindow {
                     title: "Add a LUT"
                     nameFilters: ["Cube LUT (*.cube)"]
                     onAccepted: {
+                        // ⚠️목록 **내용**이 바뀌면 ComboBox 가 currentIndex 를 0 으로 되돌린다
+                        //   (Qt 6.11 setModel 이 무조건 setCurrentIndex(0) — 실측). 그래서
+                        //   복구 기준을 **호출 전에** 잡아둔다. 안 그러면 새 키를 못 찾았을 때
+                        //   이 사진의 필름시뮬이 조용히 None 이 되고 사이드카까지 덮어쓴다.
+                        var prevKey = win.curSimKey
                         var r = controller.addUserLut(selectedFile)
                         if (r.key === "") {
                             win.lutNotice = r.error
                             win.lutNoticeWarn = true
-                        } else {
-                            // note 는 '리샘플됨/이름 바뀜' 같은 통지 — 없으면 배너도 안 뜬다.
-                            win.lutNotice = r.note
-                            win.lutNoticeWarn = false
-                            // 목록 갱신 후 새 LUT 을 곧바로 선택(폰트 추가와 같은 흐름).
-                            var i = win.simKeys.indexOf(r.key)
-                            if (i >= 0) simCombo.currentIndex = i
+                            return
                         }
+                        // note 는 '리샘플됨/이름 바뀜/덮어씀' 통지 — 없으면 배너도 안 뜬다.
+                        win.lutNotice = r.note
+                        win.lutNoticeWarn = false
+                        // 새 LUT 을 곧바로 선택해 결과를 보여준다(폰트 추가와 같은 흐름).
+                        // 못 찾으면 **원래 선택으로 되돌린다**(리셋된 채 두지 않는다).
+                        var i = win.simKeys.indexOf(r.key)
+                        if (i < 0) i = win.simKeys.indexOf(prevKey)
+                        if (i >= 0) simCombo.currentIndex = i
+                        // 배너가 "이 LUT 이 없다"고 말하는 중이었다면 이제 거짓이다.
+                        if (win.missingSimKey === r.key) win.missingSimKey = ""
                     }
                 }
 

@@ -43,7 +43,10 @@ def load_cube(path: str, strict_domain: bool = False):
             if key == "LUT_3D_SIZE":
                 if len(parts) < 2:
                     raise ValueError("LUT_3D_SIZE has no value.")
-                size = int(parts[1])
+                try:
+                    size = int(parts[1])
+                except ValueError:
+                    raise ValueError(f"LUT_3D_SIZE is not an integer: {parts[1]!r}") from None
             elif key == "DOMAIN_MIN":
                 dom_min = [float(x) for x in s.split()[1:4]]
             elif key == "DOMAIN_MAX":
@@ -59,6 +62,11 @@ def load_cube(path: str, strict_domain: bool = False):
                         continue
     if size is None:
         raise ValueError("No LUT_3D_SIZE found — 1D-only LUTs are not supported.")
+    # ⚠️크기 범위를 검사한다. `LUT_3D_SIZE 1` 은 파싱을 통과해 **사진 전체를 단색으로** 만들고,
+    #   `0` 은 아래 인덱싱에서 numpy 내부 오류 문구가 나오는데 가져오기 경로가 그 문구를 그대로
+    #   UI 배너에 띄운다. 상한 256 은 방어선(256³×3×4B ≈ 201MB) — 64 초과는 가져올 때 리샘플된다.
+    if not 2 <= size <= 256:
+        raise ValueError(f"Unsupported LUT_3D_SIZE {size} (expected 2..256).")
     # 파이프라인/셰이더는 입력을 [0,1]로 가정하고 LUT 를 샘플한다. 비표준 도메인
     # (예: DOMAIN_MAX 4 4 4)은 조용히 잘못된 색을 내므로 최소한 경고한다(미지원).
     if (dom_min is not None and any(abs(v) > 1e-6 for v in dom_min)) or \
@@ -154,13 +162,6 @@ def lut_path(key, bundled_dir=None):
     return Path(bundled_dir) / f"{os.path.basename(k)}.cube"
 
 
-def has_lut(key, bundled_dir=None) -> bool:
-    """그 키의 .cube 가 실제로 있는가(누락 안내 배너 판정용)."""
-    try:
-        return lut_path(key, bundled_dir).is_file()
-    except Exception:
-        return False
-
 
 def _resample(lut, n_src, n_dst):
     """N_src³ → N_dst³ 트라이리니어 리샘플. 트라이리니어는 **축 분리 가능**이라 축별 3회로 끝난다."""
@@ -217,7 +218,8 @@ def add_user_lut(src):
     경로가 있다) 렌더는 조용히 빈 텍스처가 된다 — `add_user_font` 가 같은 실수를 한 번
     하고 고친 자리다.
 
-    반환: `{"key": 성공 시 키, "error": 실패 사유, "note": 알려야 할 변경}`
+    반환: `{"key": 성공 시 키, "error": 실패 사유, "note": 알려야 할 변경,
+             "replaced": 기존 파일을 덮어썼는가(호출측 롤백 판단용)}`
     """
     try:
         srcp = Path(str(src))
@@ -226,7 +228,23 @@ def add_user_lut(src):
         arr, n = load_cube(str(srcp), strict_domain=True)
         safe = _safe_name(srcp.name)
         dst = user_luts_dir(create=True) / safe
+        if safe != srcp.name:
+            # ⚠️새니타이즈는 **서로 다른 이름을 같은 이름으로 접을 수 있다**
+            #   (`Kodak#1.cube` / `Kodak%1.cube` → 둘 다 `Kodak 1.cube`). 이건 같은 파일을 다시
+            #   고른 경우가 아니므로 덮어쓰면 **남의 LUT 이 사라지고**, 그 키를 저장한 사진·레시피가
+            #   조용히 다른 룩으로 렌더된다. 번호를 붙여 피한다.
+            #   이름이 원래 안전했던 경우는 예전처럼 덮어쓴다 — 같은 LUT 을 다시 가져오는 흔한
+            #   경우이고, 새 키를 만들면 목록에 중복이 쌓인다(사용자 폰트와 같은 규칙).
+            k = 2
+            while dst.exists() and srcp.resolve() != dst.resolve():
+                dst = dst.parent / f"{safe[:-5]} ({k}).cube"
+                k += 1
+            safe = dst.name
+        replaced = dst.exists() and srcp.resolve() != dst.resolve()
         note = "" if safe == srcp.name else f'Saved as "{safe}".'
+        if replaced:
+            note = ((note + " " if note else "")
+                    + "Replaced the LUT already stored under that name.")
         if n > MAX_N:
             # 원본을 그대로 두면 아틀라스가 GPU 한도를 넘어 프리뷰만 죽는다. 파일 하나 = N 하나로
             # 맞춰야 프리뷰·GPU export·CPU export 가 같은 N 을 본다.
@@ -236,9 +254,10 @@ def add_user_lut(src):
                       f"(larger LUTs exceed GPU texture limits).")
         elif srcp.resolve() != dst.resolve():
             shutil.copyfile(srcp, dst)      # 이미 그 폴더의 파일을 고른 경우는 복사 생략
-        return {"key": USER_PREFIX + dst.name, "error": "", "note": note}
+        # `replaced` 는 호출측 롤백 판단용이다 — 실패해도 **덮어쓴 경우엔 지우면 안 된다**.
+        return {"key": USER_PREFIX + dst.name, "error": "", "note": note, "replaced": replaced}
     except Exception as exc:
-        return {"key": "", "error": str(exc), "note": ""}
+        return {"key": "", "error": str(exc), "note": "", "replaced": False}
 
 
 def remove_user_lut(key) -> bool:
