@@ -3,7 +3,29 @@
 The film-simulation list is **dynamic**: a look appears in the app only if its
 `<key>.cube` file exists in this folder, and is hidden otherwise. So you can add
 or replace LUTs without touching code — just match the filename (key) below.
-Any cube size works (the loader auto-detects N).
+Any cube size works (the loader auto-detects N per file).
+
+> ### Adding your own LUTs — use the app, not this folder
+>
+> To use a `.cube` you made or downloaded, open **Film Simulation → Add LUT…**
+> in the app. The file is copied to your user data folder
+> (`%LOCALAPPDATA%\FilmRawstery\luts` on Windows) and appears under **My LUTs**
+> in the selector, right away — no restart, no admin rights.
+>
+> This folder is for **replacing the bundled film simulations** under the exact key
+> names listed below. In an installed build it lives inside the install directory,
+> which is read-only and **is replaced on every update** — anything you drop here
+> by hand is lost when you upgrade. Your own LUTs belong in the user folder.
+>
+> Two things to know about imported LUTs:
+> - **They are applied exactly as authored.** The bundled Fuji cubes get an automatic
+>   brightness correction (they carry the whole Fuji tone curve, which would otherwise
+>   be applied twice); imported LUTs do not, because their brightness *is* the look.
+> - **Log-input LUTs are not supported.** A LUT expecting S-Log3 / V-Log / Cineon input
+>   (any `DOMAIN_MIN`/`DOMAIN_MAX` outside `[0,1]`) is rejected on import — the app feeds
+>   display-referred sRGB into the LUT, so such a LUT would silently produce wrong colour.
+>   1D-only LUTs are rejected too. Cubes larger than 64³ are resampled to 64³ on import
+>   (the atlas is N² pixels wide, so bigger cubes exceed common GPU texture limits).
 
 ## Keys (filename → simulation)
 

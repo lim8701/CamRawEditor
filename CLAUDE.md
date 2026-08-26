@@ -154,7 +154,7 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
 | `raw_loader.py` | RAF → 프록시 QImage (절대 Kelvin WB, half_size, max_edge=2560) |
 | `image_loader.py` | **일반 이미지(JPG/PNG/TIFF) → 같은 프록시 계약** (display-referred 어댑터). 프론트엔드가 `filmic()` 을 거는 것을 로드 시 `filmic⁻¹` 로 상쇄 → **중립 설정 export 가 원본과 비트 동일**(실측). 카메라공간=선형 sRGB(cam2srgb 항등, Temp/Tint 는 유효), 자동노출/렌즈보정 없음. 순백은 역함수가 발산해 최상단 코드의 1/4 빈 아래에서 클램프(8bit 2.171 / 16bit 3.834 < PROXY_HEADROOM). ⚠️`hlDesat=0` 필수 — 하이라이트 디새추는 센서 클립 보정이라 display-referred 소스에선 하늘·네온을 흰색으로 날린다. **같은 수식이 `adjust.frag`·`displaycm.frag`(Compare original 패스)·`pipeline.render_full` 세 곳에 있고 QML 은 `pipe`/`pipeFull`/`comparePipe` 세 ShaderEffect 에 게이트를 물려야 한다** — `displaycm.frag` 를 빠뜨려 `\` 비교창만 파랑을 날리는 버그가 있었다. Temp 는 일반 이미지에서 하한 2500K(선형 sRGB 원색의 저색온도 폭발 회피 — Bradford 교체는 프록시 정밀도 4배 악화로 기각) |
 | `wb.py` | Kelvin(+tint) → rawpy user_wb 배수, as-shot 색온도 추정 |
-| `lut.py` | `.cube` 3D LUT 파서 → 2D 아틀라스(셰이더용) |
+| `lut.py` | `.cube` 3D LUT 파서 → 2D 아틀라스(셰이더용) + **사용자 LUT 저장소**(`user:<파일명>`, app_dirs `luts/`). ★사용자 LUT 은 **`simExpEV` 보정을 받지 않는다**(그 보정은 번들 후지 LUT 의 톤커브 이중적용을 상쇄하는 것 — 남의 큐브엔 상쇄할 게 없고 밝기가 룩이다). 게이트가 `main._update_sim_ev` 와 `pipeline.render_full` **두 곳**에 있다. ⚠️**LUT 마다 N 이 다를 수 있다** — 셰이더 `lutSize` 는 `controller.lutSizeFor(key)` 로 키별 N 을 받고, QML 은 텍스처 소스와 **같은 식**(`win.curSimKey`)에서 파생시켜야 한다 |
 | `exif_info.py` | RAF 임베드 JPEG에서 EXIF 촬영정보 추출(exifread) → 패널/오버레이 |
 | `haze.py` | 디헤이즈 물리(DCP): 이미지당 투과율 t-맵/대기광 A/신뢰도 conf 추정(numpy 독립) |
 | `mist.py` | 미스트(디퓨전) 산란 모델 `out=(1−k)L+k(P⊗(L·E))` — **프론트엔드 맨 앞**(카메라네이티브 scene-linear = 유저 WB·매트릭스·노출보다 앞이라 산란 필드가 슬라이더와 무관해진다). 프리뷰는 **3단**: CPU 필드 3장 → `mistfield.frag` 합성 → `adjust.frag` 가 그 한 장만 섞는다. ⚠️**미측정 모델**(글레어 문헌의 1/θ² prior — 그레인·디헤이즈와 지위가 다르다). ★⚠️`adjust.frag` 에 **샘플러를 늘리지 말 것** — D3D11 은 스테이지당 16개뿐인데 이미 다 쓴다(늘렸다가 파이프라인 생성 실패로 죽었고 **qsb 컴파일은 통과한다**). 계수·실측·기각 기록은 `docs/mist_filter.md` |
@@ -293,6 +293,7 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
 | `wallpaper.json` | 배경화면 패널 설정 |
 | `presets/*.frpreset` | 레시피 프리셋 |
 | `fonts/*.ttf` | 사용자가 추가한 스탬프 폰트 |
+| `luts/*.cube` | 사용자가 추가한 LUT(Film Simulation → Add LUT…) |
 | `models/` | AI 모델(런타임 다운로드) |
 
 사진별 편집은 설정이 아니라 **사이드카**다: `<사진 폴더>/.filmrawsteryedits/<파일명>.json`

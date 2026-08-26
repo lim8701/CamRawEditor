@@ -82,6 +82,12 @@ ApplicationWindow {
     // 날짜 스탬프(필름 데이트백) 표시 여부 (D 키로 토글). 기본 off.
     property bool dateStamp: false
     property string stampFontError: ""    // 폰트 추가 실패 안내(빈 문자열=숨김)
+    property string lutNotice: ""         // LUT 추가 결과 안내(실패 사유 또는 변경 통지)
+    property bool lutNoticeWarn: false    // true=실패(붉게), false=정보(호박색)
+    // 사이드카/레시피가 가리키는 LUT 이 이 기계에 없을 때 그 키(빈 문자열=정상).
+    // ⚠️예전엔 조용히 None 으로 떨어지고 다음 저장에서 **영구 소실**됐다 — 사용자 LUT 이
+    //   생기면 '다른 PC 에서 열었더니 룩이 날아감'이 실제 시나리오라 알려야 한다.
+    property string missingSimKey: ""
     // 스탬프 '내 기본값' — 사진 여러 장을 연속 작업할 때 폰트·크기·여백을 매번 다시 잡지
     // 않도록 마지막 사용값을 기억한다(controller 가 사용자 데이터 폴더 JSON 으로 보존).
     // ⚠️`applyEdits` 의 `_ev` 폴백은 이 함수가 아니라 **`lookDef`(=공장 기본값)**를 쓴다.
@@ -937,6 +943,8 @@ ApplicationWindow {
         var _si
         if (_sk !== "") { _si = win.simKeys.indexOf(_sk); if (_si < 0) _si = 0 }   // 목록에 없는 LUT → None
         else { _si = _ev(p, "simIndex", 0); if (_si < 0 || _si >= win.simKeys.length) _si = 0 }
+        // 없는 LUT 은 위에서 None(0)으로 떨어진다 — 그 사실을 배너로 알린다(조용히 잃지 않게).
+        win.missingSimKey = (_sk !== "" && win.simKeys.indexOf(_sk) < 0) ? _sk : ""
         simCombo.currentIndex = _si
         simStrengthSlider.value = _ev(p, "simStrength", win.lookDef("simStrength"))
         texSlider.value = _ev(p, "texture", win.lookDef("texture")); claritySlider.value = _ev(p, "clarity", win.lookDef("clarity"))
@@ -1056,6 +1064,7 @@ ApplicationWindow {
     // factoryStamp=true 면 스탬프 설정을 **공장 기본값**으로 되돌린다(Reset 버튼).
     // 생략하면 '내 기본값' — 사이드카 없는 새 사진의 로드 경로가 그쪽이다(아래 주석).
     function resetAllEdits(factoryStamp) {
+        win.missingSimKey = ""
         expSlider.value = 0.0; conSlider.value = 1.0
         hiSlider.value = 0.0; shSlider.value = 0.0; whSlider.value = 0.0; blSlider.value = 0.0
         texSlider.value = 0.0; claritySlider.value = 0.0; dehazeSlider.value = 0.0
@@ -2029,6 +2038,12 @@ ApplicationWindow {
         for (var i = 0; i < sims.length; i++) l.push(sims[i].label)
         return l
     }
+    // 현재 선택된 필름시뮬 키. ★**LUT 아틀라스 텍스처와 셰이더 lutSize 는 반드시 이 하나에서
+    // 파생**시킨다 — LUT 마다 N 이 다를 수 있고(사용자 LUT), 둘이 한 프레임 어긋나면 그
+    // 프레임의 색이 깨진다.
+    readonly property string curSimKey: (simCombo.currentIndex >= 0
+        && simCombo.currentIndex < win.simKeys.length)
+        ? win.simKeys[simCombo.currentIndex] : "identity"
 
     function planckXY(T) {
         var x
@@ -4740,7 +4755,7 @@ ApplicationWindow {
                 visible: false
                 cache: false
                 smooth: false
-                source: "image://lut/" + win.simKeys[simCombo.currentIndex]
+                source: "image://lut/" + win.curSimKey
             }
 
             // 디스플레이 색관리 LUT 아틀라스(sRGB→모니터). 수동 트라이리니어라 smooth:false 필수.
@@ -4951,7 +4966,7 @@ ApplicationWindow {
                         property real wbR: wbGain.x
                         property real wbG: wbGain.y
                         property real wbB: wbGain.z
-                        property real lutSize: lutN
+                        property real lutSize: controller.lutSizeFor(win.curSimKey)
                         property real lutStrength: simStrengthSlider.value
                         property int lutEnabled: simCombo.currentIndex === 0 ? 0 : 1
                         // 로컬 마스크 레이어(5) — win.layers 에서 vec4 유니폼. export 는 오버레이 없음(-1).
@@ -5389,7 +5404,7 @@ ApplicationWindow {
                         property real wbR: wbGain.x
                         property real wbG: wbGain.y
                         property real wbB: wbGain.z
-                        property real lutSize: lutN             // context property (LUT 크기 N)
+                        property real lutSize: controller.lutSizeFor(win.curSimKey)   // LUT 별 N
                         property real lutStrength: simStrengthSlider.value
                         property int lutEnabled: simCombo.currentIndex === 0 ? 0 : 1
                         // 로컬 마스크 레이어(3) — win.layers vec4 유니폼. 오버레이=활성 레이어(프리뷰 전용).
@@ -7435,6 +7450,110 @@ ApplicationWindow {
                     onPressedChanged: {
                         if (pressed) _pendingReset = win.isDblPress(simStrengthSlider)
                         else { if (_pendingReset) { value = defaultValue; _pendingReset = false } win.refreshHistogram() }
+                    }
+                }
+
+                // ── 내 LUT(.cube) 추가/제거 ──
+                // 사용자 폰트(Add font...)와 같은 구조·같은 규약이다: 고른 파일을 **사용자
+                // 데이터 폴더로 복사**하므로 원본이 없어져도 사이드카가 열리고, 설치 폴더를
+                // 건드리지 않으므로 앱 업데이트에도 남는다.
+                // ⚠️`Button`(네이티브 스타일)은 background/contentItem 커스터마이즈를 **거부**한다
+                //   ("The current style does not support customization of this control" 경고 →
+                //   다크 패널 위에 밝은 회색 네이티브 버튼이 그대로 남는다). 이미 import 된
+                //   `QtQuick.Controls.Basic`(`B`)로 그려야 색이 먹는다. 색은 이 패널이 이미
+                //   쓰는 값들: 면 #3a3a3a / 호버 #3a3f4b(콤보 delegate 와 동일) / 테두리 #555 /
+                //   글자 #e8e8e8.
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    B.Button {
+                        id: addLutBtn
+                        text: "Add LUT…"
+                        font.pixelSize: 11
+                        implicitHeight: 24
+                        leftPadding: 10; rightPadding: 10; topPadding: 0; bottomPadding: 0
+                        onClicked: { win.lutNotice = ""; userLutDialog.open() }
+                        contentItem: Text {
+                            text: addLutBtn.text; font: addLutBtn.font
+                            color: addLutBtn.enabled ? "#e8e8e8" : "#777"
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        background: Rectangle {
+                            radius: 3
+                            color: addLutBtn.down ? "#4a4f5b"
+                                   : addLutBtn.hovered ? "#3a3f4b" : "#3a3a3a"
+                            border.color: "#555"
+                        }
+                    }
+                    B.Button {
+                        id: rmLutBtn
+                        text: "Remove"
+                        font.pixelSize: 11
+                        implicitHeight: 24
+                        leftPadding: 10; rightPadding: 10; topPadding: 0; bottomPadding: 0
+                        // 번들 필름시뮬은 지울 수 없다(설치 자산) — 추가한 LUT 에만 활성.
+                        enabled: win.curSimKey.indexOf("user:") === 0
+                        onClicked: {
+                            if (controller.removeUserLut(win.curSimKey)) {
+                                simCombo.currentIndex = 0        // 목록이 줄어드니 None 으로
+                                win.lutNotice = "Removed."
+                                win.lutNoticeWarn = false
+                            } else {
+                                win.lutNotice = "Could not delete that file."
+                                win.lutNoticeWarn = true
+                            }
+                        }
+                        contentItem: Text {
+                            text: rmLutBtn.text; font: rmLutBtn.font
+                            color: rmLutBtn.enabled ? "#e8e8e8" : "#777"
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        background: Rectangle {
+                            radius: 3
+                            color: !rmLutBtn.enabled ? "#2f2f2f"
+                                   : rmLutBtn.down ? "#4a4f5b"
+                                   : rmLutBtn.hovered ? "#3a3f4b" : "#3a3a3a"
+                            border.color: rmLutBtn.enabled ? "#555" : "#3f3f3f"
+                        }
+                    }
+                    Item { Layout.fillWidth: true }
+                }
+                Label {
+                    Layout.fillWidth: true
+                    visible: win.lutNotice !== ""
+                    text: (win.lutNoticeWarn ? "⚠ " : "") + win.lutNotice
+                    color: win.lutNoticeWarn ? "#e08a8a" : "#e8d5b0"
+                    font.pixelSize: 10; wrapMode: Text.WordWrap
+                }
+                // 남의 사용자 LUT(또는 배포본에서 빠진 ARR 흑백 LUT)으로 만든 사이드카·레시피를
+                // 열면 그 파일이 없는 것이 정상이다. 조용히 다른 룩으로 열리지 않게 알린다.
+                Label {
+                    Layout.fillWidth: true
+                    visible: win.missingSimKey !== ""
+                    text: "⚠ This photo used " + win.missingSimKey
+                          + ", which isn't installed here - film simulation is off. "
+                          + "Add the .cube to restore it."
+                    color: "#e8d5b0"; font.pixelSize: 10; wrapMode: Text.WordWrap
+                }
+                FileDialog {
+                    id: userLutDialog
+                    title: "Add a LUT"
+                    nameFilters: ["Cube LUT (*.cube)"]
+                    onAccepted: {
+                        var r = controller.addUserLut(selectedFile)
+                        if (r.key === "") {
+                            win.lutNotice = r.error
+                            win.lutNoticeWarn = true
+                        } else {
+                            // note 는 '리샘플됨/이름 바뀜' 같은 통지 — 없으면 배너도 안 뜬다.
+                            win.lutNotice = r.note
+                            win.lutNoticeWarn = false
+                            // 목록 갱신 후 새 LUT 을 곧바로 선택(폰트 추가와 같은 흐름).
+                            var i = win.simKeys.indexOf(r.key)
+                            if (i >= 0) simCombo.currentIndex = i
+                        }
                     }
                 }
 

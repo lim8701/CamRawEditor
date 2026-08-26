@@ -266,6 +266,8 @@ _RELEASES_API = "https://api.github.com/repos/lim8701/FilmRawstery/releases"
 
 # 필름 시뮬레이션 카탈로그 (key, 표시명, 그룹). 실제 luts/<key>.cube 가 있는 것만 UI 에 노출
 # (identity=None 은 LUT 미적용이라 항상 포함). 흑백 등은 .cube 를 넣으면 자동으로 다시 나타남.
+# ⚠️여기 없는 파일명은 UI 에 절대 안 뜬다 — 사용자가 임의 이름으로 넣는 .cube 는 카탈로그가
+#   아니라 `lut.user_lut_keys()`(=`user:` 접두사, 사용자 데이터 폴더)를 통해 합류한다.
 FILM_SIM_CATALOG = [
     ("identity", "None", 0),
     ("provia", "Provia / Standard", 1), ("velvia", "Velvia", 1), ("astia", "Astia", 1),
@@ -278,12 +280,36 @@ FILM_SIM_CATALOG = [
 ]
 
 
+USER_SIM_GROUP = 5   # 'My LUTs' — 사용자가 추가한 .cube (콤보에서 번들 뒤, 구분선 자동)
+
+# LutProvider 인스턴스(main() 에서 채운다). 목록을 '파싱 성공한 것'으로 좁히고 키별 N 을
+# 돌려주기 위해 모듈 전역으로 둔다 — Controller 가 LUT 프로바이더를 들고 있지 않기 때문.
+LUT_PROVIDER = None
+
+
 def available_film_sims():
-    """카탈로그 중 luts/<key>.cube 가 실제 존재하는 것만 [{key,label,group}] 로. identity 는 항상 포함."""
+    """UI 에 노출할 필름시뮬 목록 [{key,label,group}]. identity(None)는 항상 포함.
+
+    ① 번들: 카탈로그 중 `luts/<key>.cube` 가 실제 있는 것
+    ② 사용자: `user:<파일명>` (사용자 데이터 폴더의 .cube) → group 5 'My LUTs'
+
+    ⚠️존재만 보지 않고 **아틀라스까지 구워진 것**으로 좁힌다. 예전엔 `.exists()` 만 봤는데,
+      그러면 파싱 실패한 .cube 가 콤보에 뜨고 프리뷰는 빈 텍스처, CPU export 는 예외가 된다
+      (번들은 전부 정상이라 잠재적이었지만 사용자 LUT 에서는 흔해진다)."""
+    import lut as lut_mod
+    ok = LUT_PROVIDER.keys() if LUT_PROVIDER is not None else None
     out = []
     for key, label, group in FILM_SIM_CATALOG:
-        if key == "identity" or (LUTS_DIR / f"{key}.cube").exists():
+        for_bundle = (key in ok) if ok is not None else (LUTS_DIR / f"{key}.cube").exists()
+        if key == "identity" or for_bundle:
             out.append({"key": key, "label": label, "group": group})
+    for key in lut_mod.user_lut_keys():
+        if ok is not None and key not in ok:
+            continue
+        label = key[len(lut_mod.USER_PREFIX):]
+        if label.lower().endswith(".cube"):
+            label = label[:-5]
+        out.append({"key": key, "label": label, "group": USER_SIM_GROUP})
     return out
 
 # 사이드카(폴더당 데이터) 파일/폴더 이름. 구 이름(.camraw*)은 폴더 접근 시 1회 자동 마이그레이션.
@@ -571,29 +597,63 @@ class RawFullProvider(QQuickImageProvider):
 class LutProvider(QQuickImageProvider):
     """필름 시뮬레이션 LUT 아틀라스를 'image://lut/<key>' 로 제공.
 
-    key 는 luts/<key>.cube 파일명(확장자 제외). 모든 LUT 는 같은 크기 N 을 가정.
+    key 는 번들 `luts/<key>.cube` 의 파일명(확장자 제외), 또는 사용자 LUT 의 `user:<파일명>`.
+
+    ★⚠️**LUT 마다 N 이 다를 수 있다.** 아틀라스 좌표가 N 에 의존하므로(`lut.py` 규약) 셰이더
+      uniform 은 **키별 N**(`size_of`)으로 줘야 한다. 예전엔 전역 하나(`self.size`, 마지막 로드
+      승)였는데 번들이 전부 N=32 라 잠재적이었을 뿐이다 — N 이 다른 LUT 이 섞이면 프리뷰·GPU
+      export 만 색이 깨지고 CPU export(파일에서 자기 N 을 다시 읽는다)는 멀쩡한, 가장 찾기
+      어려운 형태의 불일치가 된다.
     """
 
     def __init__(self):
         super().__init__(QQuickImageProvider.ImageType.Image)
         self._atlases: dict[str, QImage] = {}
-        self.size = 0  # LUT 한 변 크기 N
+        self._sizes: dict[str, int] = {}
+        self.size = 0  # 번들 LUT 의 N (알 수 없는 키의 폴백용)
 
-    def load_dir(self, luts_dir: Path) -> None:
-        for cube in sorted(luts_dir.glob("*.cube")):
-            # 사용자 교체 .cube(손상/헤더누락/1D 등) 하나가 앱 시작을 통째로 막지 않도록
-            # 파일별로 방어 — 실패는 스킵+경고(해당 필름룩만 미로드, 나머지는 정상).
-            try:
-                lut, n = load_cube(str(cube))
-            except Exception as exc:
-                print(f"[lut] ⚠️로드 실패로 스킵: {cube.name} ({exc})")
-                continue
-            self._atlases[cube.stem] = atlas_qimage(lut, n)
-            self.size = n
-        print(f"[lut] {len(self._atlases)}개 로드, N={self.size}")
+    def load_dir(self, luts_dir: Path, prefix: str = "") -> None:
+        """폴더의 .cube 를 전부 굽는다. `prefix` 를 주면 키가 `<prefix><파일명>`(사용자 LUT).
+        폴더가 없으면 glob 이 빈 결과라 그냥 넘어간다(사용자 폴더는 없을 수 있다)."""
+        for cube in sorted(Path(luts_dir).glob("*.cube")):
+            key = (prefix + cube.name) if prefix else cube.stem
+            if self.load_one(cube, key) and not prefix:
+                self.size = self._sizes[key]
+        # 번들/사용자 두 번 불리므로 어느 쪽인지 함께 찍는다(예전엔 같은 줄이 두 번 나왔다).
+        print(f"[lut] {'사용자' if prefix else '번들'} {len(self._atlases)}개 누적, "
+              f"번들 N={self.size}")
+
+    def load_one(self, path, key: str) -> bool:
+        """.cube 하나를 아틀라스로 굽는다. 실패는 스킵+경고(그 룩만 미로드, 나머지는 정상) —
+        손상/헤더누락/1D 파일 하나가 앱 시작이나 목록을 통째로 막지 않게 한다."""
+        try:
+            arr, n = load_cube(str(path))
+        except Exception as exc:
+            print(f"[lut] ⚠️로드 실패로 스킵: {Path(path).name} ({exc})")
+            return False
+        self._atlases[key] = atlas_qimage(arr, n)
+        self._sizes[key] = n
+        return True
+
+    def drop_one(self, key: str) -> None:
+        self._atlases.pop(key, None)
+        self._sizes.pop(key, None)
+
+    def keys(self):
+        """아틀라스가 실제로 구워진 키 집합(=UI 에 내보내도 안전한 것)."""
+        return set(self._atlases)
+
+    def size_of(self, key: str) -> int:
+        """그 키의 한 변 N. 모르는 키는 번들 N 으로 폴백 — 짝이 되는 텍스처가 빈 이미지라
+        화면이 깨지지 않고 '적용 안 됨'으로 보인다."""
+        return self._sizes.get(key, self.size)
 
     def requestImage(self, image_id, size, requested_size):  # noqa: N802 (Qt API)
-        key = image_id.split("?", 1)[0]  # 쿼리스트링 제거
+        # ⚠️Qt 는 URL 경로의 `%` 를 `%25` 로 **인코딩한 채** 넘긴다(실측: 'user:100% pro.cube'
+        #   -> 'user:100%25 pro.cube'). 콜론·공백은 그대로 온다. 사용자가 폴더에 직접 넣은
+        #   파일명에 `%` 가 있을 수 있으므로 되살린다 — `%` 없는 키에는 무동작이다.
+        from urllib.parse import unquote
+        key = unquote(image_id.split("?", 1)[0])  # 쿼리스트링 제거 + 퍼센트 디코드
         return self._atlases.get(key, QImage())
 
 
@@ -1073,6 +1133,7 @@ class Controller(QObject):
     stampDefaultsChanged = Signal()   # 스탬프 '내 기본값' 갱신 알림
     exportOptsChanged = Signal()      # 기억된 export 옵션 갱신 알림
     stampFontsChanged = Signal()      # 폰트 목록(사용자 추가/삭제) 갱신 알림
+    filmSimsChanged = Signal()        # 필름시뮬 목록(사용자 LUT 추가/삭제) 갱신 알림
     editsReady = Signal()       # 새 파일 디코딩 완료 -> QML 이 저장 편집 복원(또는 기본값 리셋)
     histogramChanged = Signal()  # 톤커브 배경 히스토그램 갱신 알림
     simExpEVChanged = Signal()   # 필름시뮬 보정 노출(EV) 갱신 알림 — 셰이더 simExpEV 유니폼
@@ -2615,7 +2676,9 @@ class Controller(QObject):
         import pipeline
         lut_arr, lut_n = None, 0
         if params.get("lutEnabled", False):
-            lut_arr, lut_n = load_cube(str(LUTS_DIR / f"{params.get('simKey','identity')}.cube"))
+            import lut as lut_mod
+            lut_arr, lut_n = load_cube(
+                str(lut_mod.lut_path(params.get("simKey", "identity"), LUTS_DIR)))
         ident = [i / 255.0 for i in range(256)]
         curves = params.get("curves") or [ident, ident, ident, ident]
         curve_rgb = pipeline.compose_curves(*curves)
@@ -3530,7 +3593,8 @@ class Controller(QObject):
     def _get_lut(self, key):
         if key not in self._lut_cache:
             try:
-                self._lut_cache[key] = load_cube(str(LUTS_DIR / f"{key}.cube"))
+                import lut as lut_mod
+                self._lut_cache[key] = load_cube(str(lut_mod.lut_path(key, LUTS_DIR)))
             except Exception:
                 self._lut_cache[key] = (None, 0)
         return self._lut_cache[key]
@@ -3552,9 +3616,18 @@ class Controller(QObject):
         (pipeline.film_sim_ev 주석 참조 — 그게 없으면 필름시뮬만 켜도 +0.8~1.4EV 밝아진다).
         ⚠️앵커는 유저 편집 전 as-shot 베이스(`_proxy_small`)라 export(render_full)가 스스로
         계산하는 값과 표본만 다르다(실측 차 ≤0.005EV) — 프리뷰=Export 가 유지된다."""
+        import lut as lut_mod
         ev = 0.0
+        # ★**사용자 LUT 은 보정하지 않는다.** `film_sim_ev` 는 *번들 후지 LUT 이 들고 있는
+        #   톤커브*가 filmic 위에 두 번 걸리는 것을 상쇄하는 함수다(그쪽 주석). 남의 .cube 에는
+        #   상쇄할 그 톤커브가 없고, 밝기 자체가 작가의 룩이다. 게다가 그 솔버는 med(ev) 의
+        #   **단조증가를 가정**하므로(pipeline 탐색 범위 주석) 크로스프로세싱 류 LUT 에서는
+        #   안 거는 쪽이 더 안전하다. → LUT 의 밝기가 그 파일에 남고, `simKey` 가 이미
+        #   `_PRESET_KEYS` 에 있으므로 **레시피를 통해 그대로 전달된다**(exposure 를 룩 키로
+        #   만들 필요가 없어지는 지점 — docs/recipe_presets.md).
+        #   ⚠️pipeline.render_full 에도 같은 게이트가 있어야 한다(프리뷰=CPU export).
         if (self._proxy_small is not None and self._sim_key not in ("", "identity")
-                and self._sim_strength > 0.0):
+                and self._sim_strength > 0.0 and not lut_mod.is_user(self._sim_key)):
             try:
                 import pipeline
                 arr, n = self._get_lut(self._sim_key)
@@ -5320,8 +5393,47 @@ class Controller(QObject):
     def _get_film_sims(self):
         return available_film_sims()
 
-    # 사용 가능한 필름시뮬 목록(luts/*.cube 존재 기준) → QML 이 콤보/simKeys/구분선 구성. 시작 시 1회.
-    filmSims = Property("QVariantList", _get_film_sims, constant=True)
+    # 사용 가능한 필름시뮬 목록(번들 luts/*.cube + 사용자 LUT) → QML 이 콤보/simKeys/구분선 구성.
+    # ⚠️constant 가 아니다 — Add/Remove LUT 이 **재시작 없이** 반영돼야 한다.
+    filmSims = Property("QVariantList", _get_film_sims, notify=filmSimsChanged)
+
+    @Slot(str, result=int)
+    def lutSizeFor(self, key: str) -> int:      # noqa: N802 (QML 슬롯)
+        """그 LUT 의 한 변 N → 셰이더 uniform `lutSize`. LUT 마다 N 이 다를 수 있다.
+        ⚠️QML 은 이 값을 **텍스처 소스와 같은 식**에서 파생시켜야 한다 — 둘이 한 프레임
+        어긋나면 그 프레임의 색이 깨진다."""
+        return LUT_PROVIDER.size_of(key) if LUT_PROVIDER is not None else 0
+
+    @Slot(QUrl, result="QVariantMap")
+    def addUserLut(self, url: QUrl) -> dict:    # noqa: N802 (QML 슬롯)
+        """사용자가 고른 .cube 를 사용자 폴더로 복사·검증하고 목록에 넣는다(재시작 불필요).
+        반환 `{key, error, note}` — QML 이 error/note 를 배너로 보여준다."""
+        import lut as lut_mod
+        res = lut_mod.add_user_lut(url.toLocalFile() if url.isLocalFile() else str(url))
+        if res["key"]:
+            self._lut_cache.pop(res["key"], None)   # 같은 이름을 덮어썼으면 옛 파싱을 버린다
+            if LUT_PROVIDER is not None and not LUT_PROVIDER.load_one(
+                    lut_mod.lut_path(res["key"]), res["key"]):
+                # 파서는 통과했는데 아틀라스 생성이 실패한 경우 — 목록에 남기지 않는다.
+                lut_mod.remove_user_lut(res["key"])
+                return {"key": "", "note": "",
+                        "error": "Could not build a GPU texture from that LUT."}
+            self.filmSimsChanged.emit()
+        return res
+
+    @Slot(str, result=bool)
+    def removeUserLut(self, key: str) -> bool:  # noqa: N802 (QML 슬롯)
+        """추가한 LUT 을 지운다. 그 LUT 을 쓰던 사진은 목록에 없는 키가 되므로 경고와 함께
+        None(필름시뮬 미적용)으로 열린다 — 번들에서 빠진 ARR 흑백 LUT 과 같은 경로."""
+        import lut as lut_mod
+        if not lut_mod.remove_user_lut(key):
+            return False
+        if LUT_PROVIDER is not None:
+            LUT_PROVIDER.drop_one(key)
+        self._lut_cache.pop(key, None)
+        self.filmSimsChanged.emit()
+        return True
+
 
     @Slot(bool)
     def setLensCorrection(self, on: bool) -> None:  # noqa: N802 (QML 슬롯)
@@ -5874,6 +5986,10 @@ def main() -> int:
 
     lut_provider = LutProvider()
     lut_provider.load_dir(LUTS_DIR)
+    # 사용자가 추가한 .cube (설치 폴더가 아니라 사용자 데이터 폴더 — 업데이트에도 보존).
+    import lut as _lut_mod
+    lut_provider.load_dir(_lut_mod.user_luts_dir(), prefix=_lut_mod.USER_PREFIX)
+    globals()["LUT_PROVIDER"] = lut_provider   # available_film_sims/lutSizeFor 가 본다
     engine.addImageProvider("lut", lut_provider)
 
     curve_provider = CurveProvider()
@@ -5917,7 +6033,8 @@ def main() -> int:
                             face_provider, mist_provider)
     ctx = engine.rootContext()
     ctx.setContextProperty("controller", controller)
-    ctx.setContextProperty("lutN", lut_provider.size)
+    # ⚠️예전엔 여기서 `lutN`(전역 하나)을 넘겼다 — LUT 마다 N 이 다를 수 있으므로
+    #   QML 이 `controller.lutSizeFor(key)` 로 **키별 N** 을 읽는다(LutProvider 주석).
 
     engine.load(QUrl.fromLocalFile(str(BASE / "ui" / "Main.qml")))
     if not engine.rootObjects():

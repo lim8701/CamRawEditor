@@ -24,6 +24,7 @@ import coeffs
 import date_stamp
 import image_loader
 import lens
+import lut as lut_mod
 import mist
 import raw_loader
 import wb
@@ -580,9 +581,16 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     _auto_off = 0.0 if p.get("autoExposure", True) else -float(np.log2(max(_auto_gain, 1e-6)))
     _k = max(1, max(nat.shape[:2]) // 128)
     # ⚠️필름시뮬 보정은 **오프셋이 걸린 베이스**에서 풀어야 한다(끄면 베이스가 그만큼 어둡다).
-    _sim_ev = film_sim_ev((nat[::_k, ::_k] * np.float32(2.0 ** _auto_off)
-                           * wb.rel_gain(cam, ref, as_shot, as_shot_tint).astype(np.float32)) @ M.T,
-                          lut_arr, lut_n, float(p.get("lutStrength", 1.0)))
+    # ★**사용자 LUT(`user:`)은 보정하지 않는다** — 이 함수는 *번들 후지 LUT 이 들고 있는
+    #   톤커브*가 filmic 위에 두 번 걸리는 것을 상쇄하려고 있는 것이고(film_sim_ev 주석),
+    #   남의 .cube 에는 상쇄할 그 톤커브가 없다(밝기 자체가 작가의 룩). 게다가 solve 가
+    #   med(ev) 단조증가를 가정하므로 크로스프로세싱 류에서는 안 거는 쪽이 안전하다.
+    #   ⚠️main.Controller._update_sim_ev 에 **같은 게이트**가 있다 — 한쪽만 고치면 프리뷰와
+    #   export 의 밝기가 갈린다(CLAUDE.md '★ 렌더 경로').
+    _sim_ev = 0.0 if lut_mod.is_user(p.get("simKey", "")) else film_sim_ev(
+        (nat[::_k, ::_k] * np.float32(2.0 ** _auto_off)
+         * wb.rel_gain(cam, ref, as_shot, as_shot_tint).astype(np.float32)) @ M.T,
+        lut_arr, lut_n, float(p.get("lutStrength", 1.0)))
     # 하이라이트 디새추(0.5 단계) 게이트 = **센서 클립 근접도**(셰이더 clipProx 와 동일 수식).
     # ⚠️여기서, 즉 미스트/유저 WB/노출보다 **앞**에서 잰다 — 파일의 성질이지 슬라이더의 함수가
     # 아니다. nat 은 자동노출 게인이 곱해진 값이라 포화 레벨이 clip_level(g) 이고(셰이더의 cam 과

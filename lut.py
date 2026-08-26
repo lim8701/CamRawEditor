@@ -8,16 +8,27 @@
 아틀라스 좌표 규약 (셰이더와 반드시 일치):
     blue = b 슬라이스를 b 번째 타일에 배치
     픽셀 (x = b*N + r,  y = g) 위치에 LUT[r, g, b] 값
+
+사용자가 추가한 .cube (`user:<파일명>` 키)는 **번들 `luts/` 가 아니라 사용자 데이터 폴더**에
+둔다 — 설치 폴더는 쓰기 권한이 없고 업데이트마다 새로 풀린다. 규약·함정은 스탬프 사용자 폰트
+(`date_stamp.user_fonts_dir` 이하)와 같은 것을 그대로 따른다.
 """
+
+import os
+import shutil
+from pathlib import Path
 
 import numpy as np
 from PySide6.QtGui import QImage
 
 
-def load_cube(path: str):
+def load_cube(path: str, strict_domain: bool = False):
     """Adobe .cube 파일을 (N, N, N, 3) float32 배열과 크기 N 으로 반환.
 
     데이터 순서는 red 가 가장 빠르게 변함: index = r + g*N + b*N*N
+
+    `strict_domain=True` 면 비표준 DOMAIN 을 경고가 아니라 **거부**한다(가져오기 경로 전용) —
+    번들 LUT 을 읽는 기존 호출부의 거동은 바뀌지 않는다.
     """
     size = None
     dom_min, dom_max = None, None
@@ -31,7 +42,7 @@ def load_cube(path: str):
             key = parts[0].upper()
             if key == "LUT_3D_SIZE":
                 if len(parts) < 2:
-                    raise ValueError(f"LUT_3D_SIZE 값 없음: {path}")
+                    raise ValueError("LUT_3D_SIZE has no value.")
                 size = int(parts[1])
             elif key == "DOMAIN_MIN":
                 dom_min = [float(x) for x in s.split()[1:4]]
@@ -47,18 +58,24 @@ def load_cube(path: str):
                     except ValueError:
                         continue
     if size is None:
-        raise ValueError(f"LUT_3D_SIZE 없음: {path}")
+        raise ValueError("No LUT_3D_SIZE found — 1D-only LUTs are not supported.")
     # 파이프라인/셰이더는 입력을 [0,1]로 가정하고 LUT 를 샘플한다. 비표준 도메인
     # (예: DOMAIN_MAX 4 4 4)은 조용히 잘못된 색을 내므로 최소한 경고한다(미지원).
     if (dom_min is not None and any(abs(v) > 1e-6 for v in dom_min)) or \
        (dom_max is not None and any(abs(v - 1.0) > 1e-6 for v in dom_max)):
+        if strict_domain:
+            # Log 입력(S-Log3/V-Log/Cineon) LUT 이 거의 전부 여기 걸린다. 우리가 LUT 에 넣는 값은
+            # 이미 filmic() 을 거친 display-referred 라, 도메인을 맞춰줘도 인코딩이 안 맞는다 —
+            # 조용히 틀린 색을 내는 대신 가져오기 자체를 막는다.
+            raise ValueError(f"Non-standard DOMAIN (min={dom_min} max={dom_max}). "
+                             f"Only [0,1]-input LUTs are supported (log-input LUTs are not).")
         print(f"[lut] ⚠️비표준 DOMAIN(min={dom_min} max={dom_max}) — [0,1] 로 가정해 로드"
               f"(색이 어긋날 수 있음): {path}")
 
     data = np.asarray(rows, dtype=np.float32)
     if data.shape[0] != size ** 3:
         raise ValueError(
-            f"데이터 개수 불일치: {data.shape[0]} != {size**3} ({path})"
+            f"Entry count mismatch: {data.shape[0]} != {size ** 3} (LUT_3D_SIZE {size})."
         )
 
     idx = np.arange(size ** 3)
@@ -84,3 +101,154 @@ def atlas_qimage(lut: np.ndarray, size: int) -> QImage:
     atlas = np.ascontiguousarray(atlas)
     h, w, _ = atlas.shape
     return QImage(atlas.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+
+
+# ---------- 사용자가 추가한 .cube (`user:<파일명>`) ----------
+# 규약·함정은 스탬프 사용자 폰트(`date_stamp.py:206` 이하)와 같은 것을 그대로 따른다.
+# 다른 점 하나: 폰트는 Qt 가 파일을 잠그므로 삭제 전 등록 해제가 필수였지만, .cube 는
+# 우리가 읽고 바로 닫으므로 그냥 지우면 된다.
+
+USER_PREFIX = "user:"   # 사용자 LUT 키 접두사. 번들 카탈로그 키(provia…)와 절대 겹치지 않는다.
+MAX_N = 64              # 아틀라스 폭이 N² 라 이보다 크면 GPU 텍스처 한도(보통 16384)에 걸린다
+                        # (N=144 → 20736px). `luts/hald_to_cube.py` 가 내린 것과 같은 판단.
+
+
+def is_user(key) -> bool:
+    """사용자가 추가한 LUT 인가. 보정 노출 게이트와 Remove 버튼 활성 판정에 쓴다."""
+    return str(key).startswith(USER_PREFIX)
+
+
+def user_luts_dir(create=False):
+    """사용자가 추가한 .cube 폴더. 설치 폴더가 아니라 사용자 데이터 폴더에 두는 이유는
+    models/fonts 와 같다(설치 폴더는 쓰기 권한이 없고 업데이트마다 새로 풀린다).
+    app_dirs 는 지연 임포트.
+    ⚠️`create` 는 **추가할 때만** True — 읽기 경로에서 mkdir 를 돌리면 사용자가 폴더를
+    지워도 즉시 되살아난다(`date_stamp.user_fonts_dir` 와 같은 규칙)."""
+    import app_dirs
+    d = Path(app_dirs.user_data_path("luts"))
+    if create:
+        d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def user_lut_keys():
+    """추가된 사용자 LUT 의 키 목록(정렬). 키 = `user:<파일명>`."""
+    try:
+        return sorted(USER_PREFIX + f.name for f in user_luts_dir().iterdir()
+                      if f.suffix.lower() == ".cube" and f.is_file())
+    except Exception:
+        return []
+
+
+def lut_path(key, bundled_dir=None):
+    """LUT 키 → .cube 경로. 사용자 LUT 은 사용자 폴더, 나머지는 `bundled_dir`.
+    ⚠️경로는 항상 **파일명만** 이어붙인다 — 키 문자열을 그대로 경로로 쓰면
+    `user:../../x.cube` 같은 값이 폴더 밖을 가리킬 수 있다(`date_stamp.font_path` 와 같은 가드)."""
+    k = str(key)
+    if k.startswith(USER_PREFIX):
+        name = os.path.basename(k[len(USER_PREFIX):])
+        # 빈 이름이면 폴더 자체를 가리키게 된다 — 파일이 아닌 이름으로 바꿔 폴백을 타게 한다.
+        return user_luts_dir() / (name or "_")
+    if bundled_dir is None:
+        raise ValueError(f"bundled_dir is required for a bundled LUT key: {key}")
+    return Path(bundled_dir) / f"{os.path.basename(k)}.cube"
+
+
+def has_lut(key, bundled_dir=None) -> bool:
+    """그 키의 .cube 가 실제로 있는가(누락 안내 배너 판정용)."""
+    try:
+        return lut_path(key, bundled_dir).is_file()
+    except Exception:
+        return False
+
+
+def _resample(lut, n_src, n_dst):
+    """N_src³ → N_dst³ 트라이리니어 리샘플. 트라이리니어는 **축 분리 가능**이라 축별 3회로 끝난다."""
+    g = np.linspace(0.0, 1.0, n_dst, dtype=np.float32) * (n_src - 1)
+    i0 = np.floor(g).astype(np.intp)
+    i1 = np.minimum(i0 + 1, n_src - 1)
+    f = (g - i0).astype(np.float32)
+    out = lut[i0] * (1.0 - f)[:, None, None, None] + lut[i1] * f[:, None, None, None]
+    out = out[:, i0] * (1.0 - f)[None, :, None, None] + out[:, i1] * f[None, :, None, None]
+    out = out[:, :, i0] * (1.0 - f)[None, None, :, None] + out[:, :, i1] * f[None, None, :, None]
+    return np.ascontiguousarray(out, dtype=np.float32)
+
+
+def _write_cube(path, lut, n, title=""):
+    """(N,N,N,3) LUT → .cube. 데이터 순서는 `load_cube` 와 같은 red-fastest
+    (index = r + g*N + b*N*N) — `lut[r,g,b]` 를 `[b,g,r]` 로 transpose 하면 그 순서가 된다."""
+    flat = np.clip(lut, 0.0, 1.0).transpose(2, 1, 0, 3).reshape(-1, 3)
+    with open(path, "w", encoding="utf-8") as f:
+        if title:
+            f.write(f'TITLE "{title}"\n')
+        f.write(f"LUT_3D_SIZE {n}\n")
+        for r, g, b in flat:
+            f.write(f"{r:.6f} {g:.6f} {b:.6f}\n")
+
+
+# `image://lut/<key>` 로 실려 가므로 URL 을 깨는 문자는 파일명에서 뺀다. 실측(오프스크린
+# 엔진에 Image 를 태워 프로바이더가 받은 image_id 를 찍음):
+#   'user:my look.cube'          -> 'user:my look.cube'            (콜론·공백은 그대로 도착)
+#   'user:100% pro (v2).cube'    -> 'user:100%25 pro (v2).cube'    (**% 는 인코딩된 채 도착**)
+# `?` 는 `requestImage` 가 쿼리스트링으로 잘라내고 `#` 은 프래그먼트로 잘린다. 그래서 우리가
+# 만드는 파일명에서는 이 셋을 제거한다(수동으로 폴더에 넣은 파일은 `requestImage` 의 unquote
+# 가 % 만 되살린다 — 그쪽은 사용자가 이름을 고칠 수 있는 경로다).
+_UNSAFE = "#?%:/" + chr(92)      # chr(92)=역슬래시 (이스케이프 혼선 방지)
+
+
+def _safe_name(name: str) -> str:
+    """사용자 LUT 파일명을 프로바이더 URL 에 안전한 형태로. 표시명이 되는 값이라 공백·괄호·
+    한글은 그대로 둔다(실측에서 문제없음) — 위 `_UNSAFE` 와 제어문자만 뺀다."""
+    stem = os.path.basename(name)
+    if stem.lower().endswith(".cube"):
+        stem = stem[:-5]
+    out = "".join(" " if c in _UNSAFE else c for c in stem if ord(c) >= 32)
+    out = " ".join(out.split()).strip(". ")      # 공백 접기 + 윈도우가 조용히 지우는 끝 점/공백
+    return (out or "lut") + ".cube"
+
+
+def add_user_lut(src):
+    """사용자가 고른 .cube 를 사용자 폴더로 **복사**하고 키를 돌려준다.
+    복사하는 이유: 원본이 옮겨지거나 지워져도 사이드카·레시피가 계속 열려야 한다.
+    같은 이름이 있으면 덮어쓴다(같은 파일을 다시 고른 흔한 경우 — 새 키를 만들면 목록에
+    중복이 쌓인다).
+
+    ⚠️**검증이 복사보다 먼저**다. 못 읽는 파일을 폴더에 남기면 목록에는 뜨는데(존재만 보는
+    경로가 있다) 렌더는 조용히 빈 텍스처가 된다 — `add_user_font` 가 같은 실수를 한 번
+    하고 고친 자리다.
+
+    반환: `{"key": 성공 시 키, "error": 실패 사유, "note": 알려야 할 변경}`
+    """
+    try:
+        srcp = Path(str(src))
+        if srcp.suffix.lower() != ".cube" or not srcp.is_file():
+            return {"key": "", "error": "Not a .cube file.", "note": ""}
+        arr, n = load_cube(str(srcp), strict_domain=True)
+        safe = _safe_name(srcp.name)
+        dst = user_luts_dir(create=True) / safe
+        note = "" if safe == srcp.name else f'Saved as "{safe}".'
+        if n > MAX_N:
+            # 원본을 그대로 두면 아틀라스가 GPU 한도를 넘어 프리뷰만 죽는다. 파일 하나 = N 하나로
+            # 맞춰야 프리뷰·GPU export·CPU export 가 같은 N 을 본다.
+            _write_cube(dst, _resample(arr, n, MAX_N), MAX_N, title=dst.stem)
+            note = ((note + " " if note else "")
+                    + f"Resampled {n}³ → {MAX_N}³ "
+                      f"(larger LUTs exceed GPU texture limits).")
+        elif srcp.resolve() != dst.resolve():
+            shutil.copyfile(srcp, dst)      # 이미 그 폴더의 파일을 고른 경우는 복사 생략
+        return {"key": USER_PREFIX + dst.name, "error": "", "note": note}
+    except Exception as exc:
+        return {"key": "", "error": str(exc), "note": ""}
+
+
+def remove_user_lut(key) -> bool:
+    """추가한 사용자 LUT 을 지운다. 그 LUT 을 쓰던 사진은 목록에 없는 키가 되므로,
+    경고와 함께 None(필름시뮬 미적용)으로 열린다."""
+    if not is_user(key):
+        return False
+    try:
+        lut_path(key).unlink()
+        return True
+    except Exception as exc:
+        print(f"[lut] 삭제 실패: {exc}")
+        return False
