@@ -10,15 +10,17 @@
 메모리 큰 3D LUT 단계는 가로 스트립으로 처리한다.
 """
 
+import datetime
 import math
 import os
 import struct
 import threading
+import zlib
 
 import numpy as np
 import rawpy
 from PySide6.QtCore import QBuffer, QIODevice, Qt
-from PySide6.QtGui import QImage, QImageWriter
+from PySide6.QtGui import QImage
 from scipy.ndimage import affine_transform, gaussian_filter, map_coordinates, zoom
 
 import coeffs
@@ -1083,26 +1085,65 @@ JPEG_EXTS = ("jpg", "jpeg", "jfif")   # ⚠️Qt 가 JPEG 핸들러로 매핑하
                                      #   (jfif 누락 시 그 경로만 Qt 기본 품질 75 로 저장된다)
 
 
-def _exif_app1(software: str) -> bytes:
-    """`Software`(0x0131) 하나만 담은 최소 EXIF APP1 세그먼트.
+def _exif_app1(software: str, when: str = "") -> bytes:
+    """`Software`(0x0131)[+`DateTime`(0x0132)] 만 담은 최소 EXIF APP1 세그먼트.
 
     Qt 는 EXIF 를 못 쓴다 — `QImageWriter.setText` 는 JPEG 에서 **COM(주석) 마커**로 나가고
     (실측: `exifread` 태그 0개) 탐색기·라이트룸의 'Software' 칸에는 안 뜬다. 그래서 세그먼트를
-    직접 만들어 끼운다. 태그 하나뿐이라 구조가 짧고, 새 의존성이 필요 없다.
+    직접 만들어 끼운다. 태그가 둘뿐이라 구조가 짧고, 새 의존성이 필요 없다.
 
-    구조: `FFE1 <len> "Exif\0\0" | TIFF 헤더(II,42,IFD0=8) | IFD0(1 entry) | 문자열`
-    ⚠️IFD 엔트리는 태그 오름차순이어야 하고, 값이 4바이트를 넘으면 **TIFF 헤더 기준 오프셋**을
-      적는다(여기서는 항상 넘는다 — 문자열 + NUL).
+    `when`: EXIF 형식 `YYYY:MM:DD HH:MM:SS`(로컬시). ★**`DateTime`(0x0132)** 을 쓴다 —
+    파일이 만들어진/가공된 시각이다. `DateTimeOriginal`(0x9003)은 **촬영 시각**이므로 현상
+    시각을 거기 넣으면 거짓이 된다(그리고 ExifIFD 가 필요해 구조도 커진다).
+
+    구조: `FFE1 <len> "Exif\0\0" | TIFF 헤더(II,42,IFD0=8) | IFD0 | 문자열들`
+    ⚠️IFD 엔트리는 **태그 오름차순**이어야 하고(0x0131 < 0x0132), 값이 4바이트를 넘으면
+      **TIFF 헤더 기준 오프셋**을 적는다(ASCII 문자열은 항상 넘는다 — 문자열 + NUL).
     """
-    b = software.encode("ascii", "replace") + b"\x00"
-    ifd_size = 2 + 12 + 4                      # count + 엔트리 1개 + next-IFD
-    ifd = (struct.pack("<H", 1)
-           + struct.pack("<HHI", 0x0131, 2, len(b))   # Software, ASCII, 개수
-           + struct.pack("<I", 8 + ifd_size)          # 값 오프셋(TIFF 헤더 기준)
-           + struct.pack("<I", 0))                    # 다음 IFD 없음
-    tiff = b"II" + struct.pack("<H", 42) + struct.pack("<I", 8) + ifd + b
+    entries = [(0x0131, software.encode("ascii", "replace") + b"\x00")]
+    if when:
+        entries.append((0x0132, when.encode("ascii", "replace") + b"\x00"))
+    entries.sort(key=lambda e: e[0])
+    n = len(entries)
+    ifd_size = 2 + 12 * n + 4                  # count + 엔트리들 + next-IFD
+    data_off = 8 + ifd_size                    # 문자열 블록 시작(TIFF 헤더 기준)
+    ifd = struct.pack("<H", n)
+    blobs = b""
+    for tag, b in entries:
+        ifd += struct.pack("<HHI", tag, 2, len(b))          # 타입 2 = ASCII
+        ifd += struct.pack("<I", data_off + len(blobs))
+        blobs += b
+    ifd += struct.pack("<I", 0)                             # 다음 IFD 없음
+    tiff = b"II" + struct.pack("<H", 42) + struct.pack("<I", 8) + ifd + blobs
     payload = b"Exif\x00\x00" + tiff
     return b"\xFF\xE1" + struct.pack(">H", len(payload) + 2) + payload
+
+
+def _png_text_chunk(keyword: str, text: str) -> bytes:
+    """PNG `tEXt` 청크 하나. `<len><"tEXt"><keyword><NUL><text><crc>`.
+
+    ★직접 만드는 이유: `QImageWriter.setText` 는 **공백이 든 키를 `Description` 으로 접는다**
+      (실측: `setText("Creation Time", …)` → `tEXt Description="Creation Time: …"`). PNG 스펙의
+      정식 키워드가 `Creation Time` 이라 Qt 로는 쓸 수 없다. 단어 하나인 키는 그대로 쓴다.
+    ⚠️keyword 는 1~79자 Latin-1, text 는 NUL 불가(스펙).
+    """
+    kw = keyword.encode("latin-1", "replace")[:79]
+    body = kw + b"\x00" + text.encode("latin-1", "replace").replace(b"\x00", b" ")
+    return (struct.pack(">I", len(body)) + b"tEXt" + body
+            + struct.pack(">I", zlib.crc32(b"tEXt" + body) & 0xFFFFFFFF))
+
+
+def _insert_png_chunks(png: bytes, chunks: bytes) -> bytes:
+    """첫 IDAT **앞**에 청크를 끼운다(tEXt 는 IDAT 앞이어야 뷰어가 확실히 읽는다).
+    ⚠️모양이 예상과 다르면 손대지 않고 그대로 돌려준다 — 크레딧 때문에 산출물을 깨뜨리지 않는다."""
+    sig = b"\x89PNG\r\n\x1a\n"
+    if not png.startswith(sig):
+        return png
+    i = png.find(b"IDAT")
+    if i < 4:
+        return png
+    cut = i - 4                       # IDAT 의 길이 필드 앞
+    return png[:cut] + chunks + png[cut:]
 
 
 def _insert_app1(jpeg: bytes, app1: bytes) -> bytes:
@@ -1122,10 +1163,11 @@ def save_image(arr, path, software="") -> bool:
     - uint8  -> RGB888 (jpg/png/tif 8bit)
     - uint16 -> RGBX64 (png/tif 16bit, 알파 없음). jpg 는 8bit 만 가능(Qt 가 자동 강등).
 
-    `software`: 비어 있지 않으면 현상 크레딧을 남긴다 — JPEG 은 **EXIF Software 태그**,
-    PNG 은 tEXt 청크. **TIFF 는 남기지 않는다**(Qt 의 TIFF 핸들러가 setText 를 조용히 버린다 —
-    실측으로 확인, 에러도 안 낸다). 호출측이 문자열을 넘기는 이유는 `main.APP_VERSION` 을
-    읽으려면 순환 임포트가 되기 때문이다."""
+    `software`: 비어 있지 않으면 현상 크레딧 + **현상 시각**을 남긴다 — JPEG 은 EXIF
+    `Software`/`DateTime` 태그, PNG 은 tEXt `Software`/`Creation Time`. **TIFF 는 남기지
+    않는다**(Qt 의 TIFF 핸들러가 setText 를 조용히 버린다 — 실측으로 확인, 에러도 안 낸다).
+    시각은 저장 직전의 로컬시로 여기서 만든다(=현상이 끝난 시점). 호출측이 문자열을 넘기는
+    이유는 `main.APP_VERSION` 을 읽으려면 순환 임포트가 되기 때문이다."""
     arr = np.ascontiguousarray(arr)
     h, w, _ = arr.shape
     if arr.dtype == np.uint16:
@@ -1148,22 +1190,27 @@ def save_image(arr, path, software="") -> bool:
     #   같은 이름의 기존 파일이 잘린 채 남는다. 실측 쓰기 구간은 0.08~0.19s 로 19~40배 짧다.
     buf = QBuffer()
     buf.open(QIODevice.OpenModeFlag.WriteOnly)
-    if software and ext == "png":
-        # PNG 크레딧은 tEXt 청크로 들어간다. `QImage.save` 는 텍스트를 못 쓰므로 writer 를
-        # 직접 쓴다(같은 QBuffer 에 쓰므로 메모리 인코딩 구조는 그대로).
-        w = QImageWriter(buf, b"PNG")
-        w.setText("Software", software)
-        ok = w.write(img)
-    else:
-        ok = img.save(buf, fmt, quality)
-    if not ok:
+    # 현상 시각 — 저장 직전의 로컬시. EXIF `DateTime` 은 `YYYY:MM:DD HH:MM:SS` 고정 형식이고
+    # PNG 은 스펙 권장 키워드가 `Creation Time` 이라 표기가 다르다(형식도 자유).
+    now = datetime.datetime.now() if software else None
+    if not img.save(buf, fmt, quality):
         return False                                       # 인코딩 실패 — 디스크는 손대지 않음
     data = buf.data()
     buf.close()
-    if software and ext in JPEG_EXTS:
-        # ⚠️`bytes()` 변환은 **여기서만** 한다 — 26MP JPEG 을 통째로 한 번 더 복사하는 비용이라
-        #   크레딧을 넣는 경로에서만 치른다(png/tif 는 QByteArray 를 그대로 파일에 쓴다).
-        data = _insert_app1(bytes(data), _exif_app1(software))
+    # 크레딧은 **인코딩이 끝난 바이트에 끼운다** — 두 형식 모두 같은 방식이라 인코더 호출은
+    # 건드리지 않는다(픽셀·비트깊이가 바뀔 여지가 없다. 실측: JPEG 디코드 비트동일, PNG 16bit
+    # depth 유지). ⚠️`bytes()` 변환(26MP 를 한 번 더 복사)은 **크레딧을 넣는 경로에서만**
+    # 치른다 — TIFF 와 `software=""` 는 QByteArray 를 그대로 파일에 쓴다.
+    if software and ext == "png":
+        data = _insert_png_chunks(
+            bytes(data),
+            _png_text_chunk("Software", software)
+            # ISO 8601 로컬시. 스펙은 RFC 1123 을 권하지만 그 형식은 월/요일 이름이 로케일에
+            # 흔들려(strftime %b/%a) 파일 내용이 기계에 따라 달라진다.
+            + _png_text_chunk("Creation Time", now.strftime("%Y-%m-%dT%H:%M:%S")))
+    elif software and ext in JPEG_EXTS:
+        data = _insert_app1(bytes(data),
+                            _exif_app1(software, now.strftime("%Y:%m:%d %H:%M:%S")))
     # 임시 파일 → os.replace 로 원자적 교체(같은 디렉터리라 항상 동일 볼륨).
     # ⚠️대상 파일을 다른 프로그램이 열고 있으면 Windows 에서 replace 가 막힌다
     #   (실측 PermissionError WinError 5 — 뷰어로 결과를 열어둔 채 재export 하는 흔한 흐름).

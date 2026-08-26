@@ -360,14 +360,19 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   → `saveGrab` 이 소스 원본 크기에서 기대 치수를 계산해 워커에서 **지오메트리 전에**
   정규화(배율 100% 면 no-op, 동일 객체). ⚠️CPU 점유율 질문(커뮤니티): CPU export 는
   numpy 단일 코어 위주라 12스레드 CPU 에서 8~10% 로 보이는 게 정상 — iGPU 유무와 무관.
-- **현상 크레딧**: export 파일에 `Software = Film Rawstery v<ver>` 를 남긴다
-  (`main.EXPORT_SOFTWARE` → `pipeline.save_image(..., software=)`). JPEG 은 **직접 만든 최소
-  EXIF APP1**(`_exif_app1`/`_insert_app1`), PNG 은 tEXt. ⚠️**TIFF 는 남지 않는다** — Qt 의
-  TIFF 핸들러가 `setText` 를 조용히 버린다(실측). ⚠️Qt 의 `setText` 는 JPEG 에서 **COM(주석)**
-  으로 나가 `exifread` 태그가 0개다 — 탐색기·라이트룸의 Software 칸에 뜨게 하려면 EXIF 세그먼트를
-  직접 넣어야 한다(그래서 그렇게 했다). 실측: 픽셀 비트동일, JPEG +58B, 16bit PNG depth 유지.
-  ⚠️export 경로를 새로 만들면 `EXPORT_SOFTWARE` 를 함께 넘길 것(호출부 3곳 — 순환 임포트 때문에
-  pipeline 이 APP_VERSION 을 직접 못 읽는다).
+- **현상 크레딧 + 현상 시각**: export 파일에 `Software = Film Rawstery v<ver>` 와 저장 시각을
+  남긴다(`main.EXPORT_SOFTWARE` → `pipeline.save_image(..., software=)`, 시각은 save_image 가
+  로컬시로 생성). JPEG=EXIF `Software`(0x0131)+**`DateTime`(0x0132)**, PNG=tEXt `Software`+
+  `Creation Time`. ⚠️**TIFF 는 남지 않는다**(Qt TIFF 핸들러가 setText 를 조용히 버린다).
+  ★**둘 다 인코딩이 끝난 바이트에 직접 끼운다**(`_exif_app1`/`_insert_app1`,
+  `_png_text_chunk`/`_insert_png_chunks`) — 인코더 호출을 안 건드리므로 픽셀·비트깊이가
+  바뀔 여지가 없다(실측: JPEG 디코드 비트동일 +90B, PNG 8/16bit 동일 +87B, 16bit depth 유지).
+  Qt 로는 불가능해서 그렇게 한 것이다: `setText` 는 JPEG 에서 **COM 주석**으로 나가
+  `exifread` 태그가 0개고(탐색기·라이트룸 Software 칸에 안 뜬다), PNG 에서는 **공백이 든 키를
+  `Description` 으로 접는다**(정식 키워드가 `Creation Time` 이라 못 쓴다 — 둘 다 실측).
+  ⚠️`DateTimeOriginal`(0x9003)은 **촬영 시각**이라 쓰지 않는다. ⚠️export 경로를 새로 만들면
+  `EXPORT_SOFTWARE` 를 함께 넘길 것(호출부 3곳 — 순환 임포트로 pipeline 이 APP_VERSION 을
+  직접 못 읽는다).
 - 16bit TIFF 미지원(QImage 8bit). 필요 시 tifffile/imageio 추가.
 
 ## macOS 패키징 (.app + DMG)
