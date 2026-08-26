@@ -32,6 +32,9 @@ ApplicationWindow {
     //   우리 손에 있고 Windows 와도 동일하다. 아이콘은 SVG(assets/icons/, 잉크가 viewBox 정중앙).
     component IconBtn: Rectangle {
         property alias icon: img.source
+        // SVG 대신 문자 글리프로도 쓸 수 있다(`?` 처럼 새로 그릴 필요가 없는 경우).
+        // 크롬(크기·라운드·테두리·호버)은 아이콘 버튼과 완전히 같게 유지된다.
+        property string glyph: ""
         property bool active: true      // false = 비활성(흐리게 + 클릭 무시)
         property string tip: ""
         signal clicked()
@@ -45,10 +48,19 @@ ApplicationWindow {
         ToolTip.text: tip
         Image {
             id: img
+            visible: parent.glyph === ""
             anchors.centerIn: parent
             width: 16; height: 16
             sourceSize.width: 32; sourceSize.height: 32   // HiDPI 선명도
             smooth: true
+        }
+        Text {
+            visible: parent.glyph !== ""
+            anchors.centerIn: parent
+            text: parent.glyph
+            color: "#c8c8c8"
+            font.pixelSize: 15
+            font.bold: true
         }
         HoverHandler { id: hov }
         MouseArea {
@@ -6915,6 +6927,13 @@ ApplicationWindow {
                         icon: "../assets/icons/reset.svg"
                         tip: "Reset (clear adjustments — including geometry)"
                         onClicked: win.resetAndClearEdits()   // 모든 편집 초기화 + 사이드카 삭제(파일명 앰버 해제)
+                    }
+                    // 단축키 목록 — 사진과 무관한 앱 전역 항목이지만, 단축키를 찾는 순간은
+                    // 편집 중이라 좌측 푸터보다 이 줄이 눈에 띈다.
+                    IconBtn {
+                        glyph: "?"
+                        tip: "Shortcuts (? or F1)"
+                        onClicked: shortcutHelp.visible ? shortcutHelp.close() : shortcutHelp.open()
                     }
                     // 편집 복사/붙여넣기 메뉴(이미지 간) — Reset 우측 "⋯" 드롭다운.
                     IconBtn {

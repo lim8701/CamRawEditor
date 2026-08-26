@@ -12,6 +12,9 @@ Popup {
     modal: true
     dim: true
     padding: 0
+    // ⚠️`focus: true` 없으면 `CloseOnEscape` 가 동작하지 않는다 — Popup 이 키 이벤트를
+    //   받지 못해 Escape 가 그대로 아래로 흘러간다(실측: Esc 로 안 닫힘).
+    focus: true
     anchors.centerIn: Overlay.overlay
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
     Overlay.modal: Rectangle { color: "#000000"; opacity: 0.55 }
