@@ -88,6 +88,11 @@ ApplicationWindow {
     // ⚠️예전엔 조용히 None 으로 떨어지고 다음 저장에서 **영구 소실**됐다 — 사용자 LUT 이
     //   생기면 '다른 PC 에서 열었더니 룩이 날아감'이 실제 시나리오라 알려야 한다.
     property string missingSimKey: ""
+    // reconcile 이 방금 내린 유령 LUT 의 키(1회용 토큰). `onActivated` 가 '사용자가 직접
+    // 골랐다'로 보고 배너를 지우는 것을 막는다 — 사용자가 고른 것은 그 LUT 이고 None 이
+    // 아니다. ★토큰으로 두는 이유는 `currentIndexChanged` 와 `activated` 의 **발생 순서에
+    // 의존하지 않기 위해서**다(어느 쪽이 먼저 와도 결과가 같다).
+    property string lutGhostDropped: ""
     // LUT 아틀라스 리비전. ★같은 이름의 .cube 를 다시 가져오면 목록 **내용이 안 바뀌므로**
     // `curSimKey` 도 그대로고, source 가 같은 Image 는 **다시 요청하지 않는다**(cache:false 는
     // 픽맵 캐시만 우회한다 — 실측). 그러면 프로바이더·CPU export 는 새 파일인데 셰이더만 옛
@@ -1086,6 +1091,7 @@ ApplicationWindow {
     // 생략하면 '내 기본값' — 사이드카 없는 새 사진의 로드 경로가 그쪽이다(아래 주석).
     function resetAllEdits(factoryStamp) {
         win.missingSimKey = ""
+        win.lutGhostDropped = ""
         expSlider.value = 0.0; conSlider.value = 1.0
         hiSlider.value = 0.0; shSlider.value = 0.0; whSlider.value = 0.0; blSlider.value = 0.0
         texSlider.value = 0.0; claritySlider.value = 0.0; dehazeSlider.value = 0.0
@@ -7400,13 +7406,22 @@ ApplicationWindow {
                     // ⚠️`onActivated` 는 **사용자 조작에만** 온다(프로그램 대입은
                     //   currentIndexChanged 만). 그래서 '누락 키를 지켜준다'를 놓는 지점이
                     //   여기다 — 사용자가 직접 고른 값이 저장돼야 한다.
-                    onActivated: { win.missingSimKey = ""; win.refreshHistogram() }
+                    onActivated: {
+                        // 사용자가 직접 고른 값이 저장돼야 하므로 미해결 상태를 놓는다.
+                        // ⚠️단 방금 reconcile 이 유령 LUT 을 내려 강제로 None 이 된 경우는
+                        //   '직접 None 을 골랐다'가 아니다 — 그때는 토큰만 소비하고 배너를
+                        //   유지한다(안 그러면 그 사진의 필름시뮬이 조용히 사라진다).
+                        if (win.lutGhostDropped !== "") win.lutGhostDropped = ""
+                        else win.missingSimKey = ""
+                        win.refreshHistogram()
+                    }
                     // 시뮬이 바뀌면 보정 노출 재계산(프로그램 복원 포함 → currentIndexChanged).
                     // ⚠️여기서 **파일이 아직 있는지도 한 번 확인**한다. 앱이 모르게 .cube 가
                     //   지워졌으면 목록에는 남아 있고 프로바이더는 구워둔 아틀라스를 들고 있어
                     //   프리뷰만 계속 그려지는데 CPU export 는 실패한다(프리뷰≠export).
                     //   선택이 바뀔 때만 도는 is_file() 한 번이라 프레임 경로에 안 걸린다.
                     onCurrentIndexChanged: {
+                        win.lutGhostDropped = ""     // 이번 전환의 토큰만 유효하게
                         // ★⚠️여기서 `win.curSimKey` 를 읽으면 **갱신 전 값**이 나온다(실측:
                         //   velvia 로 바꿨는데 직전 키가 돌아왔다). 바인딩 재평가보다 이 핸들러가
                         //   먼저 돈다 — 그걸 검사하면 '떠나는 키'를 지워 사용자의 새 선택이
@@ -7419,6 +7434,7 @@ ApplicationWindow {
                             // 되돌아오며 그 핸들러가 syncFilmSim 을 돌린다. 여기서는 키만
                             // 지켜준다(editParams 가 되돌려 써서 사이드카를 보존한다).
                             win.missingSimKey = k
+                            win.lutGhostDropped = k
                             return
                         }
                         win.syncFilmSim(true)

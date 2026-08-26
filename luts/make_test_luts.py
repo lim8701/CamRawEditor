@@ -2,7 +2,7 @@
 
 무료 LUT 팩은 대개 이메일 가입을 요구하고 버전마다 내용이 달라져 회귀 기준으로 못 쓴다.
 여기서 만드는 세트는 **정상 7개 + 반드시 거부돼야 하는 3개**로, 가져오기 경로의 분기를
-전부 밟는다(N=17/32/33/64/65 · 파일명 새니타이저 · 1D · 비표준 DOMAIN · 개수 불일치).
+전부 밟는다(N=17/32/33/64/65/100 · 파일명 새니타이저 · 1D · 비표준 DOMAIN · 개수 불일치).
 
 사용법 (프로젝트 venv 에서):
   python luts/make_test_luts.py [출력폴더]     # 기본 = 저장소 루트의 testluts/
@@ -100,10 +100,15 @@ def main(out):
         lutmod._write_cube(os.path.join(out, fn), arr, n, title=title)
         made.append((fn, f"N={n}", "정상"))
 
-    # N=65 → 가져오기에서 64 로 리샘플되어야 한다(배너에 note).
+    # N=65 = DaVinci Resolve 기본 export 크기. **손대지 않고 그대로** 실려야 한다.
     a, _ = teal_orange(65)
-    lutmod._write_cube(os.path.join(out, "Huge Grid 65.cube"), a, 65, title="Huge Grid 65")
-    made.append(("Huge Grid 65.cube", "N=65", "→ 64 로 리샘플 + note"))
+    lutmod._write_cube(os.path.join(out, "Resolve 65.cube"), a, 65, title="Resolve 65")
+    made.append(("Resolve 65.cube", "N=65", f"그대로(<= MAX_N {lutmod.MAX_N})"))
+
+    # 상한 초과 → 가져오기에서 MAX_N 으로 리샘플되어야 한다(배너에 note).
+    a, _ = teal_orange(100)
+    lutmod._write_cube(os.path.join(out, "Oversize 100.cube"), a, 100, title="Oversize 100")
+    made.append(("Oversize 100.cube", "N=100", f"→ {lutmod.MAX_N} 로 리샘플 + note"))
 
     # 파일명 새니타이저: '#' 과 '%' 는 프로바이더 URL 을 깬다 → 이름이 바뀌어 저장돼야 한다.
     a, _ = cool_bleach(17)

@@ -117,8 +117,12 @@ def atlas_qimage(lut: np.ndarray, size: int) -> QImage:
 # 우리가 읽고 바로 닫으므로 그냥 지우면 된다.
 
 USER_PREFIX = "user:"   # 사용자 LUT 키 접두사. 번들 카탈로그 키(provia…)와 절대 겹치지 않는다.
-MAX_N = 64              # 아틀라스 폭이 N² 라 이보다 크면 GPU 텍스처 한도(보통 16384)에 걸린다
-                        # (N=144 → 20736px). `luts/hald_to_cube.py` 가 내린 것과 같은 판단.
+# 아틀라스 폭이 N² px 라 GPU 2D 텍스처 한도(D3D11 등 통상 16384)가 실질 상한이다
+# (N=144 → 20736px 로 초과). 다만 한도에 딱 붙이지 않고 여유를 둔다: 96² = 9216px.
+# ★**64 가 아니라 96 인 이유**: 65³ 는 DaVinci Resolve 의 기본 export 크기라 인터넷 LUT 에서
+#   가장 흔한 값 중 하나인데, 65² = 4225px 는 한도에서 한참 멀다. 상한을 64 로 두면 그 흔한
+#   파일이 이유 없이 리샘플되고 "Resampled" 경고까지 뜬다.
+MAX_N = 96
 
 
 def is_user(key) -> bool:
@@ -228,7 +232,11 @@ def add_user_lut(src):
         arr, n = load_cube(str(srcp), strict_domain=True)
         safe = _safe_name(srcp.name)
         dst = user_luts_dir(create=True) / safe
-        if safe != srcp.name:
+        # ⚠️번호 붙이기는 **`_UNSAFE` 문자가 실제로 접힌 경우에만** 한다. `safe != srcp.name`
+        #   으로 판정하면 `_safe_name` 이 확장자를 항상 소문자로 다시 붙이므로 `LOOK.CUBE`,
+        #   공백이 접힌 이름, 끝 점이 있는 이름이 전부 '이름이 바뀐 것'으로 잡혀, 같은 파일을
+        #   다시 가져올 때마다 `LOOK (2)`, `LOOK (3)` … 이 쌓인다.
+        if any(c in _UNSAFE for c in os.path.basename(str(srcp.name))):
             # ⚠️새니타이즈는 **서로 다른 이름을 같은 이름으로 접을 수 있다**
             #   (`Kodak#1.cube` / `Kodak%1.cube` → 둘 다 `Kodak 1.cube`). 이건 같은 파일을 다시
             #   고른 경우가 아니므로 덮어쓰면 **남의 LUT 이 사라지고**, 그 키를 저장한 사진·레시피가
@@ -248,7 +256,12 @@ def add_user_lut(src):
         if n > MAX_N:
             # 원본을 그대로 두면 아틀라스가 GPU 한도를 넘어 프리뷰만 죽는다. 파일 하나 = N 하나로
             # 맞춰야 프리뷰·GPU export·CPU export 가 같은 N 을 본다.
-            _write_cube(dst, _resample(arr, n, MAX_N), MAX_N, title=dst.stem)
+            # ⚠️`dst` 가 고른 파일 자신일 수 있다(사용자가 폴더에 직접 넣어둔 큰 큐브를
+            #   Add 로 고른 경우). 제자리에 바로 쓰면 실패 시 **절단된 파일만 남는다** →
+            #   임시 파일에 쓰고 원자적으로 교체한다(export 저장과 같은 규칙).
+            _tmp = dst.with_name(dst.name + ".part")
+            _write_cube(_tmp, _resample(arr, n, MAX_N), MAX_N, title=dst.stem)
+            os.replace(_tmp, dst)
             note = ((note + " " if note else "")
                     + f"Resampled {n}³ → {MAX_N}³ "
                       f"(larger LUTs exceed GPU texture limits).")
@@ -266,7 +279,10 @@ def remove_user_lut(key) -> bool:
     if not is_user(key):
         return False
     try:
-        lut_path(key).unlink()
+        # ⚠️`missing_ok` — 파일이 이미 없어도 **성공**으로 본다. False 를 돌려주면 UI 가
+        #   "Could not delete that file." 을 띄우고 `filmSimsChanged` 도 안 나가서, 죽은
+        #   항목이 목록에 남고 프로바이더가 옛 아틀라스를 계속 내준다.
+        lut_path(key).unlink(missing_ok=True)
         return True
     except Exception as exc:
         print(f"[lut] 삭제 실패: {exc}")

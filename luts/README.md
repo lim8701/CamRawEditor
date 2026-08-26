@@ -25,12 +25,13 @@ Any cube size works (the loader auto-detects N per file).
 > - **Log-input LUTs are not supported.** A LUT expecting S-Log3 / V-Log / Cineon input
 >   (any `DOMAIN_MIN`/`DOMAIN_MAX` outside `[0,1]`) is rejected on import — the app feeds
 >   display-referred sRGB into the LUT, so such a LUT would silently produce wrong colour.
->   1D-only LUTs are rejected too. Cubes larger than 64³ are resampled to 64³ on import
->   (the atlas is N² pixels wide, so bigger cubes exceed common GPU texture limits).
+>   1D-only LUTs are rejected too. Cubes larger than 96³ are resampled to 96³ on import
+>   (the atlas is N² pixels wide, so bigger cubes exceed common GPU texture limits). 65³ --
+>   DaVinci Resolve's default export size -- is imported untouched.
 >
 > To exercise all of that without hunting for downloads, the source repo ships
 > [`luts/make_test_luts.py`](make_test_luts.py) (not included in installed builds)
-> — it writes a fixture set of 7 valid LUTs across N=17/32/33/64/65 plus the three
+> — it writes a fixture set of valid LUTs across N=17/32/33/64/65/100 plus the three
 > that must be rejected.
 
 ## Keys (filename → simulation)

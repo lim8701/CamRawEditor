@@ -629,10 +629,19 @@ class LutProvider(QQuickImageProvider):
     def load_one(self, path, key: str) -> bool:
         """.cube 하나를 아틀라스로 굽는다. 실패는 스킵+경고(그 룩만 미로드, 나머지는 정상) —
         손상/헤더누락/1D 파일 하나가 앱 시작이나 목록을 통째로 막지 않게 한다."""
+        import lut as lut_mod
         try:
             arr, n = load_cube(str(path))
         except Exception as exc:
             print(f"[lut] ⚠️로드 실패로 스킵: {Path(path).name} ({exc})")
+            return False
+        # ⚠️가져오기(add_user_lut)는 MAX_N 초과를 리샘플하지만, 사용자가 폴더에 **직접 넣은**
+        #   파일은 그 경로를 안 탄다. 그대로 구우면 아틀라스 폭이 N²px 라 GPU 업로드가 실패해
+        #   프리뷰는 빈 LUT, CPU export 는 파일을 다시 읽어 정상 적용 → 프리뷰≠export 가 된다.
+        #   목록에 올리지 않으면 선택 자체가 불가능해져 두 경로가 함께 '미적용'으로 맞는다.
+        if n > lut_mod.MAX_N:
+            print(f"[lut] ⚠️N={n} 은 상한 {lut_mod.MAX_N} 초과(아틀라스 폭 {n * n}px) — 스킵: "
+                  f"{Path(path).name}. 앱의 Add LUT… 으로 가져오면 리샘플된다.")
             return False
         self._atlases[key] = atlas_qimage(arr, n)
         self._sizes[key] = n
