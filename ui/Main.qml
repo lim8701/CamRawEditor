@@ -7402,7 +7402,27 @@ ApplicationWindow {
                     //   여기다 — 사용자가 직접 고른 값이 저장돼야 한다.
                     onActivated: { win.missingSimKey = ""; win.refreshHistogram() }
                     // 시뮬이 바뀌면 보정 노출 재계산(프로그램 복원 포함 → currentIndexChanged).
-                    onCurrentIndexChanged: win.syncFilmSim(true)
+                    // ⚠️여기서 **파일이 아직 있는지도 한 번 확인**한다. 앱이 모르게 .cube 가
+                    //   지워졌으면 목록에는 남아 있고 프로바이더는 구워둔 아틀라스를 들고 있어
+                    //   프리뷰만 계속 그려지는데 CPU export 는 실패한다(프리뷰≠export).
+                    //   선택이 바뀔 때만 도는 is_file() 한 번이라 프레임 경로에 안 걸린다.
+                    onCurrentIndexChanged: {
+                        // ★⚠️여기서 `win.curSimKey` 를 읽으면 **갱신 전 값**이 나온다(실측:
+                        //   velvia 로 바꿨는데 직전 키가 돌아왔다). 바인딩 재평가보다 이 핸들러가
+                        //   먼저 돈다 — 그걸 검사하면 '떠나는 키'를 지워 사용자의 새 선택이
+                        //   목록 갱신에 휩쓸린다. 그래서 **도착하는 키를 직접 계산**한다.
+                        //   (바인딩으로 쓰는 `win.curSimKey` 자체는 다음 프레임에 정상 값이다.)
+                        var k = (currentIndex >= 0 && currentIndex < win.simKeys.length)
+                                ? win.simKeys[currentIndex] : "identity"
+                        if (controller.reconcileLut(k)) {
+                            // 그 .cube 가 사라졌다 → 목록에서 내려가고 ComboBox 가 None 으로
+                            // 되돌아오며 그 핸들러가 syncFilmSim 을 돌린다. 여기서는 키만
+                            // 지켜준다(editParams 가 되돌려 써서 사이드카를 보존한다).
+                            win.missingSimKey = k
+                            return
+                        }
+                        win.syncFilmSim(true)
+                    }
                     // 드롭다운 닫히면 포커스 해제(단축키 복구 — captionLevelCombo 와 동일)
                     Connections {
                         target: simCombo.popup

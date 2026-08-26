@@ -5430,6 +5430,35 @@ class Controller(QObject):
         return res
 
     @Slot(str, result=bool)
+    def reconcileLut(self, key: str) -> bool:   # noqa: N802 (QML 슬롯)
+        """선택된 LUT 의 파일이 아직 있는지 확인하고, **없으면 목록에서 내린다**.
+
+        앱이 모르게 파일이 지워질 수 있다(탐색기에서 삭제·폴더 정리). 그러면 목록에는 남아 있고
+        프로바이더는 시작 시 구워둔 아틀라스를 메모리에 들고 있어서 **프리뷰만 계속 그 룩으로
+        그려지는데 CPU export 는 파일이 없어 실패**한다 — 프리뷰≠export 다.
+        ⚠️폴더 감시(watcher)는 두지 않는다. 이 확인은 **선택이 바뀌는 시점에만** 도는
+        `is_file()` 한 번이라 슬라이더 드래그 같은 프레임 경로에 걸리지 않는다(사용자 폰트가
+        `has_font` 를 매 프레임 부르다 mkdir 로 문제가 됐던 것과 같은 이유로 경로를 고른 것).
+
+        반환: True = 사라져서 내렸음(QML 이 배너를 켜고 None 으로 떨어진다)."""
+        import lut as lut_mod
+        if not key or key == "identity":
+            return False
+        try:
+            if lut_mod.lut_path(key, LUTS_DIR).is_file():
+                return False
+        except Exception:
+            return False        # 경로를 못 만들면 판단하지 않는다(기존 거동 유지)
+        if LUT_PROVIDER is not None:
+            LUT_PROVIDER.drop_one(key)
+        self._lut_cache.pop(key, None)
+        print(f"[lut] 파일이 사라져 목록에서 내림: {key}")
+        # 목록이 바뀌면 ComboBox 가 인덱스를 0 으로 되돌리고 그 핸들러가 다시 돌지만,
+        # 그때 키는 'identity' 라 여기서 즉시 False 로 끝난다(재귀 종료).
+        self.filmSimsChanged.emit()
+        return True
+
+    @Slot(str, result=bool)
     def removeUserLut(self, key: str) -> bool:  # noqa: N802 (QML 슬롯)
         """추가한 LUT 을 지운다. 그 LUT 을 쓰던 사진은 목록에 없는 키가 되므로 경고와 함께
         None(필름시뮬 미적용)으로 열린다 — 번들에서 빠진 ARR 흑백 LUT 과 같은 경로."""
