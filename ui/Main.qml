@@ -896,8 +896,17 @@ ApplicationWindow {
             "whites": whSlider.value, "blacks": blSlider.value,
             "temp": tempSlider.value, "tint": tintSlider.value,
             // simKey(문자열)=복원 기준(목록 변동에 안전). simIndex=구버전 폴백용 유지.
-            "simKey": (simCombo.currentIndex >= 0 && simCombo.currentIndex < win.simKeys.length)
-                      ? win.simKeys[simCombo.currentIndex] : "identity",
+            // ★없는 LUT 을 가리키던 사진은 **그 키를 그대로 되돌려 쓴다.** `applyEdits` 가
+            //   콤보를 None 으로 떨어뜨리므로 여기서 그대로 resolve 하면 `identity` 로 덮이고,
+            //   사진을 넘기는 순간(flushEdits) 키가 **영구 소실**된다 — 배너의 "Add the .cube
+            //   to restore it" 이 거짓이 되는 지점이다(실측으로 확인). 렌더는 `lutEnabled=false`
+            //   라 정직하게 '미적용'이고, **저장되는 키만** 지킨다.
+            //   사용자가 콤보를 직접 건드리면 `simCombo.onActivated` 가 missingSimKey 를 비우므로
+            //   그때부터는 고른 값이 저장된다(= 의도적으로 None 을 고르는 길이 막히지 않는다).
+            "simKey": (win.missingSimKey !== "" && simCombo.currentIndex === 0)
+                      ? win.missingSimKey
+                      : ((simCombo.currentIndex >= 0 && simCombo.currentIndex < win.simKeys.length)
+                         ? win.simKeys[simCombo.currentIndex] : "identity"),
             "simIndex": simCombo.currentIndex, "simStrength": simStrengthSlider.value,
             "texture": texSlider.value, "clarity": claritySlider.value, "dehaze": dehazeSlider.value,
             "vibrance": vibSlider.value, "saturation": satSlider.value,
@@ -7388,7 +7397,10 @@ ApplicationWindow {
                     id: simCombo
                     Layout.fillWidth: true
                     currentIndex: 0
-                    onActivated: win.refreshHistogram()
+                    // ⚠️`onActivated` 는 **사용자 조작에만** 온다(프로그램 대입은
+                    //   currentIndexChanged 만). 그래서 '누락 키를 지켜준다'를 놓는 지점이
+                    //   여기다 — 사용자가 직접 고른 값이 저장돼야 한다.
+                    onActivated: { win.missingSimKey = ""; win.refreshHistogram() }
                     // 시뮬이 바뀌면 보정 노출 재계산(프로그램 복원 포함 → currentIndexChanged).
                     onCurrentIndexChanged: win.syncFilmSim(true)
                     // 드롭다운 닫히면 포커스 해제(단축키 복구 — captionLevelCombo 와 동일)
