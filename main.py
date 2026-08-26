@@ -5395,6 +5395,22 @@ class Controller(QObject):
     # 룩 지문 채우기가 같은 표를 봐야 배지가 정직해진다 — 이유는 그쪽 주석.
     lookDefaults = Property("QVariantMap", _get_look_defaults, constant=True)
 
+    def _get_shortcut_help(self):
+        import shortcuts
+        return [{"title": g, "rows": [{"keys": k, "desc": d} for k, _t, d in rows]}
+                for g, rows in shortcuts.KEYS]
+
+    def _get_mouse_help(self):
+        import shortcuts
+        return [{"title": g, "rows": [{"keys": k, "desc": d} for k, d in rows]}
+                for g, rows in shortcuts.MOUSE]
+
+    # 단축키/마우스 조작 목록(`shortcuts.py` 단일 진실원) → `?`·F1 오버레이가 그린다.
+    # ⚠️목록을 QML 에 옮겨 적지 말 것 — `python shortcuts.py` 가 이 표와 실제 `Shortcut{}`
+    #   선언을 대조하므로, 표를 우회하면 검사가 무력해진다.
+    shortcutHelp = Property("QVariantList", _get_shortcut_help, constant=True)
+    mouseHelp = Property("QVariantList", _get_mouse_help, constant=True)
+
     def _get_adjust_coeffs(self):
         import coeffs
         return coeffs.as_qml_dict()

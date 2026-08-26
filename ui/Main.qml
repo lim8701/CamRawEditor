@@ -205,6 +205,15 @@ ApplicationWindow {
     // 디스플레이 색관리(프리뷰 전용 sRGB→모니터 색역 보정) 토글.
     Shortcut { sequence: "Ctrl+Shift+M"; onActivated: win.displayCM = !win.displayCM }
 
+    // 단축키 목록 오버레이. 목록은 `shortcuts.py` 가 갖고 있고 여기서는 열고 닫기만 한다.
+    // ⚠️`_typing` 가드 필수 — `?` 는 Shift+/ 라 텍스트 입력 중에 눌리면 오버레이가 뜬다.
+    Shortcut {
+        sequences: ["?", "F1"]
+        enabled: !win._typing
+        onActivated: shortcutHelp.visible ? shortcutHelp.close() : shortcutHelp.open()
+    }
+    ShortcutHelp { id: shortcutHelp }
+
 
     // 컬러 그레이딩 Hue 슬라이더 위에 두는 무지개 스펙트럼 막대(슬라이더 위치↔색상 가이드).
     // (네이티브 스타일은 Slider.background 커스터마이즈 미지원 → 별도 막대로 표시)

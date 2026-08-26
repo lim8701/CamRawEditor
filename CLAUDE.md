@@ -163,6 +163,7 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
 | `lens.py` | RAF 내장 샷별 렌즈 보정(FujiIFD 0xf00b/0f/10 파싱 — 후지 전 기종, 기종 등록 불필요) |
 | `date_stamp.py` | 필름 데이트백: DSEG7 날짜+글로우 렌더, 프리뷰/export 합성. 색·글로우·영역은 **사진별 슬라이더**이고 색은 한 색에서 3색 램프를 파생한다. ⚠️**프리뷰와 export 의 합성식이 다르다**(export 는 screen 70%+source-over 30%) — 산출물이 정확한 쪽. ⚠️파라미터를 늘리면 **호출부 3곳**(CPU export·GPU export·프리뷰)과 **export dict** 를 함께 볼 것. 상세는 `docs/date_stamp.md` |
 | `make_luts.py` | 근사 필름룩을 .cube 로 베이크(폴백용) |
+| `shortcuts.py` | **단축키·마우스 조작 목록의 단일 진실원**. 앱 안 `?`/`F1` 오버레이(`ui/ShortcutHelp.qml`)가 `controller.shortcutHelp`/`mouseHelp` 로 받아 그린다 — 목록을 QML/문서에 옮겨 적지 말 것. ★**단축키를 추가/변경하면 `python shortcuts.py`** — 표와 `ui/Main.qml` 의 실제 `Shortcut{}` 선언(+ `PreviewWindow.qml` 의 `Keys.on*Pressed`)을 토큰 단위로 대조한다. ⚠️`MOUSE` 는 파싱 대상이 아니라 수동 목록이라 검사기가 못 잡는다 |
 | `presets.py` | 레시피 프리셋(`.frpreset`) — 룩만 담는 JSON + 출처 기록, 파일명 새니타이저, 검증기. ★**`LOOK_DEFAULTS` = 룩 키 44개의 공장 기본값 단일 진실원**(QML `applyEdits` 폴백 == `controller.lookDefaults` == 룩 지문 보정). ⚠️**한 키에 기본값은 하나**여야 이 구조가 성립한다. ★**룩 키를 추가하면 `python presets.py`** — 키 집합·QML 기본값·`applyEdits` 폴백·`resetAllEdits` 네 면을 대조해 드리프트를 잡는다. 설계 경위는 `docs/recipe_presets.md` |
 | `pipeline.py` | **풀해상도 export** (numpy, 셰이더와 동일 파이프라인 재현) |
 | `ui/Main.qml` | 전체 UI (좌: 이미지 / 우: 스크롤 패널) |

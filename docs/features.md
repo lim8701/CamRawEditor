@@ -2,6 +2,10 @@
 
 The full feature reference. For the short version, see the [README](../README.md).
 
+> **Every shortcut is listed in the app** — press `?` (or `F1`) for the full
+> keyboard and mouse reference, including the gestures that are easy to miss
+> (double-click a slider to reset it, double-click the photo to zoom 1:1).
+
 ## Develop
 - **Scene-linear + filmic** tone pipeline — physically-grounded base render with a single highlight-rolloff tone curve (no per-scene heuristics)
 - **White balance** — absolute Kelvin + tint via the Planckian locus, with as-shot estimation for off-locus illuminants
