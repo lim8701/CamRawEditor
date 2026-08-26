@@ -32,9 +32,6 @@ ApplicationWindow {
     //   우리 손에 있고 Windows 와도 동일하다. 아이콘은 SVG(assets/icons/, 잉크가 viewBox 정중앙).
     component IconBtn: Rectangle {
         property alias icon: img.source
-        // SVG 대신 문자 글리프로도 쓸 수 있다(`?` 처럼 새로 그릴 필요가 없는 경우).
-        // 크롬(크기·라운드·테두리·호버)은 아이콘 버튼과 완전히 같게 유지된다.
-        property string glyph: ""
         property bool active: true      // false = 비활성(흐리게 + 클릭 무시)
         property string tip: ""
         signal clicked()
@@ -48,19 +45,10 @@ ApplicationWindow {
         ToolTip.text: tip
         Image {
             id: img
-            visible: parent.glyph === ""
             anchors.centerIn: parent
             width: 16; height: 16
             sourceSize.width: 32; sourceSize.height: 32   // HiDPI 선명도
             smooth: true
-        }
-        Text {
-            visible: parent.glyph !== ""
-            anchors.centerIn: parent
-            text: parent.glyph
-            color: "#c8c8c8"
-            font.pixelSize: 15
-            font.bold: true
         }
         HoverHandler { id: hov }
         MouseArea {
@@ -6928,13 +6916,6 @@ ApplicationWindow {
                         tip: "Reset (clear adjustments — including geometry)"
                         onClicked: win.resetAndClearEdits()   // 모든 편집 초기화 + 사이드카 삭제(파일명 앰버 해제)
                     }
-                    // 단축키 목록 — 사진과 무관한 앱 전역 항목이지만, 단축키를 찾는 순간은
-                    // 편집 중이라 좌측 푸터보다 이 줄이 눈에 띈다.
-                    IconBtn {
-                        glyph: "?"
-                        tip: "Shortcuts (? or F1)"
-                        onClicked: shortcutHelp.visible ? shortcutHelp.close() : shortcutHelp.open()
-                    }
                     // 편집 복사/붙여넣기 메뉴(이미지 간) — Reset 우측 "⋯" 드롭다운.
                     IconBtn {
                         id: editClipBtn
@@ -10658,6 +10639,36 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                         ToolTip.text: modelData.tip + "  (" + modelData.key + ")"
                     }
                 }
+            }
+
+            // ── 단축키 목록: 후원 버튼 바로 위 ──
+            // 이 레일 하단은 이미 '패널 선택과 무관한 앱 전역 항목'의 자리다(아래 ♥ 주석).
+            // 상단 편집 줄(undo/redo/reset/⋯)은 **사진에 대한 동작**만 모인 곳이라 어울리지
+            // 않았고, 좌측 푸터(AI Models/GitHub)는 `B` 로 탐색기를 접으면 같이 사라진다.
+            // 아이콘은 새로 그리지 않고 ♥ 와 같은 글리프 방식을 쓴다.
+            Rectangle {
+                width: 40; height: 40
+                radius: 6
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 8 + 40 + 4          // ♥(40) + 간격
+                anchors.horizontalCenter: parent.horizontalCenter
+                color: helpMouse.containsMouse ? "#33373f" : "transparent"
+                Label {
+                    anchors.centerIn: parent
+                    text: "?"
+                    color: helpMouse.containsMouse ? "#8ab4f8" : "#8a8a8a"
+                    font.pixelSize: 21; font.bold: true
+                }
+                MouseArea {
+                    id: helpMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: shortcutHelp.visible ? shortcutHelp.close() : shortcutHelp.open()
+                }
+                ToolTip.visible: helpMouse.containsMouse
+                ToolTip.delay: 800
+                ToolTip.text: "Shortcuts  (? or F1)"
             }
 
             // ── 후원 버튼: 셀렉터 바 맨 하단(패널 선택과 무관 → 위쪽 그룹과 떨어뜨림) ──
