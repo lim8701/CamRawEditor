@@ -84,6 +84,11 @@ ApplicationWindow {
     property string stampFontError: ""    // 폰트 추가 실패 안내(빈 문자열=숨김)
     property string lutNotice: ""         // LUT 추가 결과 안내(실패 사유 또는 변경 통지)
     property bool lutNoticeWarn: false    // true=실패(붉게), false=정보(호박색)
+    // ⚠️이 안내는 **라이브러리 작업의 결과**라 사진과 무관하다 — 계속 떠 있으면 한참 뒤에도
+    //   "Added …" 가 남아 지금 상태를 잘못 말한다. 값이 설정될 때마다 타이머를 되돌려 스스로
+    //   사라지게 한다(세터가 세 곳이라 각각에 넣지 않고 여기 한 곳에서 처리).
+    onLutNoticeChanged: if (win.lutNotice !== "") lutNoticeTimer.restart(); else lutNoticeTimer.stop()
+    Timer { id: lutNoticeTimer; interval: 6000; onTriggered: win.lutNotice = "" }
     // 사이드카/레시피가 가리키는 LUT 이 이 기계에 없을 때 그 키(빈 문자열=정상).
     // ⚠️예전엔 조용히 None 으로 떨어지고 다음 저장에서 **영구 소실**됐다 — 사용자 LUT 이
     //   생기면 '다른 PC 에서 열었더니 룩이 날아감'이 실제 시나리오라 알려야 한다.
@@ -7527,12 +7532,18 @@ ApplicationWindow {
                         text: "Add LUT…"
                         font.pixelSize: 11
                         implicitHeight: 24
+                        // 두 버튼 폭을 같게 — Landscape/Portrait 와 같은 방식(fillWidth +
+                        // preferredWidth 0). 뒤에 스페이서를 두면 폭이 글자 길이로 갈린다.
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 0
                         onClicked: { win.lutNotice = ""; userLutDialog.open() }
                     }
                     DarkButton {
                         text: "Remove"
                         font.pixelSize: 11
                         implicitHeight: 24
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 0
                         // 번들 필름시뮬은 지울 수 없다(설치 자산) — 추가한 LUT 에만 활성.
                         enabled: win.curSimKey.indexOf(win.userLutPrefix) === 0
                         onClicked: {
@@ -7546,7 +7557,6 @@ ApplicationWindow {
                             }
                         }
                     }
-                    Item { Layout.fillWidth: true }
                 }
                 Label {
                     Layout.fillWidth: true
@@ -9586,17 +9596,21 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                 DarkButton {
                                     text: "Add font…"
                                     font.pixelSize: 11
+                                    // 두 버튼 폭 동일(Add LUT 행과 같은 방식)
+                                    Layout.fillWidth: true
+                                    Layout.preferredWidth: 0
                                     enabled: win.dateStamp
                                     onClicked: stampFontDialog.open()
                                 }
                                 DarkButton {
                                     text: "Remove"
                                     font.pixelSize: 11
+                                    Layout.fillWidth: true
+                                    Layout.preferredWidth: 0
                                     // 번들 폰트는 지울 수 없다(설치 자산) — 추가한 폰트에만 활성.
                                     enabled: win.dateStamp && controller.stampFont.indexOf("user:") === 0
                                     onClicked: controller.removeStampFont(controller.stampFont)
                                 }
-                                Item { Layout.fillWidth: true }
                             }
                             // 남의 사용자 폰트로 만든 사이드카/레시피를 열면 그 파일이 없는 것이 정상이다.
                             // 조용히 다른 모습으로 렌더되지 않도록 알린다(렌더는 기본 데이트백 폰트로 폴백).
