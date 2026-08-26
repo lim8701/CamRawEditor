@@ -94,6 +94,8 @@ ApplicationWindow {
     // 아틀라스를 쓰는 프리뷰≠export 가 된다. 리비전을 쿼리스트링으로 붙여 강제 재요청한다
     // (`requestImage` 가 `?` 뒤를 잘라낸다). N 이 바뀌었을 수도 있어 lutSize 도 같이 묶는다.
     property int lutAtlasRev: 0
+    // 사용자 LUT 키 접두사(= lut.USER_PREFIX). 리터럴을 여러 곳에 흩지 않는다.
+    readonly property string userLutPrefix: "user:"
     Connections {
         target: controller
         function onFilmSimsChanged() { win.lutAtlasRev++ }
@@ -7484,7 +7486,7 @@ ApplicationWindow {
                         font.pixelSize: 11
                         implicitHeight: 24
                         // 번들 필름시뮬은 지울 수 없다(설치 자산) — 추가한 LUT 에만 활성.
-                        enabled: win.curSimKey.indexOf("user:") === 0
+                        enabled: win.curSimKey.indexOf(win.userLutPrefix) === 0
                         onClicked: {
                             if (controller.removeUserLut(win.curSimKey)) {
                                 simCombo.currentIndex = 0        // 목록이 줄어드니 None 으로
@@ -7531,16 +7533,27 @@ ApplicationWindow {
                             win.lutNoticeWarn = true
                             return
                         }
-                        // note 는 '리샘플됨/이름 바뀜/덮어씀' 통지 — 없으면 배너도 안 뜬다.
-                        win.lutNotice = r.note
+                        // 이제 추가해도 선택이 안 바뀌므로 **성공 자체를 알려야** 한다
+                        //   (예전엔 새 LUT 이 바로 적용돼 그게 피드백이었다).
+                        //   note 는 '리샘플됨/이름 바뀜/덮어씀' 통지이고, 있으면 앞에 붙는다.
+                        var added = win.simKeys.indexOf(r.key)
+                        win.lutNotice = (r.note ? r.note + " " : "") + "Added "
+                                        + (added >= 0 ? win.simLabels[added] : r.key)
+                                        + " — pick it from the list to apply."
                         win.lutNoticeWarn = false
-                        // 새 LUT 을 곧바로 선택해 결과를 보여준다(폰트 추가와 같은 흐름).
-                        // 못 찾으면 **원래 선택으로 되돌린다**(리셋된 채 두지 않는다).
-                        var i = win.simKeys.indexOf(r.key)
-                        if (i < 0) i = win.simKeys.indexOf(prevKey)
+                        // 추가는 **라이브러리 등록**이다 — 이 사진의 룩을 바꾸지 않는다.
+                        // 쓰려면 위 목록에서 고른다. ⚠️그래도 대입은 해야 한다: 목록 내용이
+                        // 바뀌면 ComboBox 가 인덱스를 0 으로 리셋하므로(위 주석) 그냥 두면
+                        // 사진이 조용히 None 이 되고 사이드카까지 덮어쓴다.
+                        var keep = prevKey
+                        // 단 하나의 예외: 이 사진이 **바로 그 LUT 을 찾고 있었다면**(누락 배너)
+                        // 복원한다 — 배너가 "Add the .cube to restore it" 이라고 약속한 동작이다.
+                        if (r.key === win.missingSimKey) {
+                            keep = r.key
+                            win.missingSimKey = ""
+                        }
+                        var i = win.simKeys.indexOf(keep)
                         if (i >= 0) simCombo.currentIndex = i
-                        // 배너가 "이 LUT 이 없다"고 말하는 중이었다면 이제 거짓이다.
-                        if (win.missingSimKey === r.key) win.missingSimKey = ""
                     }
                 }
 
