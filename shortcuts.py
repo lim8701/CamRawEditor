@@ -28,6 +28,7 @@ KEYS = [
         ("\\", ("\\\\",), "Compare with the original"),
         ("B",  ("B",),   "Show or hide the file explorer"),
         ("G",  ("G",),   "Contact sheet (the folder as a grid)"),
+        ("R",  ("R",),   "RAW Peek - the sensor data before demosaic (RAW only)"),
     ]),
     ("Panels", [
         ("Ctrl+1", ("Ctrl+1",), "Edit"),
@@ -60,6 +61,13 @@ KEYS = [
         ("Space", ("Keys.onSpacePressed",),                      "Like or unlike"),
         ("Esc",   ("Keys.onEscapePressed",),                     "Close the preview"),
     ]),
+    ("RAW Peek", [
+        ("1 ~ 4", ("Keys.onDigit1Pressed", "Keys.onDigit2Pressed", "Keys.onDigit3Pressed",
+                   "Keys.onDigit4Pressed"),
+         "Gray / CFA / Planes / Demosaic"),
+        ("+ -",   (), "Zoom in or out (1x to 32x)"),
+        ("Esc",   ("Keys.onEscapePressed",), "Close RAW Peek"),
+    ]),
     ("Help", [
         ("? / F1", ("?", "F1"), "This list"),
     ]),
@@ -70,6 +78,11 @@ MOUSE = [
     ("Photo", [
         ("Double-click", "Zoom to 1:1 and back, centred where you clicked"),
         ("Drag",         "Pan while zoomed in"),
+    ]),
+    ("RAW Peek", [
+        ("Wheel", "Zoom the sensor mosaic in or out"),
+        ("Drag",  "Pan while zoomed in"),
+        ("Click", "On the minimap, jump to that part of the frame"),
     ]),
     ("Sliders", [
         ("Double-click", "Reset that slider to its default"),
@@ -115,9 +128,11 @@ def declared_tokens():
         # "…" 문자열들 + StandardKey.X 식별자들
         out.update(re.findall(r'"((?:[^"\\]|\\.)*)"', body))
         out.update(re.findall(r"StandardKey\.\w+", body))
-    prev = os.path.join(_root(), "ui", "PreviewWindow.qml")
-    with open(prev, encoding="utf-8") as f:
-        out.update(re.findall(r"Keys\.on\w+Pressed", f.read()))
+    # 전체화면 오버레이들은 Shortcut{} 이 아니라 Keys.on*Pressed 로 키를 받는다.
+    # ⚠️새 오버레이 .qml 을 만들면 여기에 추가할 것 — 안 넣으면 그 파일의 키는 검사에서 빠진다.
+    for fn in ("PreviewWindow.qml", "RawPeekWindow.qml"):
+        with open(os.path.join(_root(), "ui", fn), encoding="utf-8") as f:
+            out.update(re.findall(r"Keys\.on\w+Pressed", f.read()))
     return out
 
 

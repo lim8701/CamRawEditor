@@ -15,6 +15,7 @@ The README is the short version. Everything below is the long one.
 |---|---|
 | [Architecture](architecture.md) | The render pipeline, the preview-equals-export rule, and what each module does |
 | [RAW demosaic policy](raw_demosaic.md) 🇰🇷 | Why X-Trans and Bayer take different decode paths |
+| [RAW Peek](raw_peek.md) 🇰🇷 | The sensor mosaic before demosaic: the `R` overlay, its timings, and what the masked margins actually contain |
 
 ## The models behind the looks
 

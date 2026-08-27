@@ -162,8 +162,9 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
 | `ai_denoise.py` | AI 디노이즈(NAFNet ONNX, 고정 512 타일, DirectML 우선) — nrBase 대체용 luma(numpy 독립) |
 | `lens.py` | RAF 내장 샷별 렌즈 보정(FujiIFD 0xf00b/0f/10 파싱 — 후지 전 기종, 기종 등록 불필요) |
 | `date_stamp.py` | 필름 데이트백: DSEG7 날짜+글로우 렌더, 프리뷰/export 합성. 색·글로우·영역은 **사진별 슬라이더**이고 색은 한 색에서 3색 램프를 파생한다. ⚠️**프리뷰와 export 의 합성식이 다르다**(export 는 screen 70%+source-over 30%) — 산출물이 정확한 쪽. ⚠️파라미터를 늘리면 **호출부 3곳**(CPU export·GPU export·프리뷰)과 **export dict** 를 함께 볼 것. 상세는 `docs/date_stamp.md` |
+| `raw_peek.py` | **RAW Peek**(`R`) — 디모자이크 **이전** 센서 데이터 뷰(Gray/CFA/Planes 모자이크 + 패턴 유닛·채널 레인 히스토그램·마진 판정 텍스트, Demosaic 전후 비교). 읽기 전용 진단이라 **셰이더 uniform·룩 키가 0개**이고 디코드 경로(`raw_loader`/`pipeline`/`wb`/`shaders`)를 안 건드린다 — ★ 렌더 경로 체크리스트 무관. 그림은 numpy→QImage 로 그려 `RawPeekProvider` 로 넘긴다(`adjust.frag` 샘플러 16/16 이라 셰이더 확장 불가). ⚠️`QT_QPA_PLATFORM=offscreen` 은 폰트 DB 가 비어 라벨이 전부 두부가 된다 — 이 모듈 그림을 헤드리스로 뽑을 때 offscreen 금지. 실측·함정·마진 판정은 `docs/raw_peek.md` |
 | `make_luts.py` | 근사 필름룩을 .cube 로 베이크(폴백용) |
-| `shortcuts.py` | **단축키·마우스 조작 목록의 단일 진실원**. 앱 안 `?`/`F1` 오버레이(`ui/ShortcutHelp.qml`)가 `controller.shortcutHelp`/`mouseHelp` 로 받아 그린다 — 목록을 QML/문서에 옮겨 적지 말 것. ★**단축키를 추가/변경하면 `python shortcuts.py`** — 표와 `ui/Main.qml` 의 실제 `Shortcut{}` 선언(+ `PreviewWindow.qml` 의 `Keys.on*Pressed`)을 토큰 단위로 대조한다. ⚠️`MOUSE` 는 파싱 대상이 아니라 수동 목록이라 검사기가 못 잡는다 |
+| `shortcuts.py` | **단축키·마우스 조작 목록의 단일 진실원**. 앱 안 `?`/`F1` 오버레이(`ui/ShortcutHelp.qml`)가 `controller.shortcutHelp`/`mouseHelp` 로 받아 그린다 — 목록을 QML/문서에 옮겨 적지 말 것. ★**단축키를 추가/변경하면 `python shortcuts.py`** — 표와 `ui/Main.qml` 의 실제 `Shortcut{}` 선언(+ **전체화면 오버레이 QML** 의 `Keys.on*Pressed` — `PreviewWindow.qml`·`RawPeekWindow.qml`, 목록은 `declared_tokens()` 안에 있다)을 토큰 단위로 대조한다. ⚠️새 오버레이 .qml 을 만들면 그 목록에 추가할 것. ⚠️`MOUSE` 는 파싱 대상이 아니라 수동 목록이라 검사기가 못 잡는다 |
 | `presets.py` | 레시피 프리셋(`.frpreset`) — 룩만 담는 JSON + 출처 기록, 파일명 새니타이저, 검증기. ★**`LOOK_DEFAULTS` = 룩 키 44개의 공장 기본값 단일 진실원**(QML `applyEdits` 폴백 == `controller.lookDefaults` == 룩 지문 보정). ⚠️**한 키에 기본값은 하나**여야 이 구조가 성립한다. ★**룩 키를 추가하면 `python presets.py`** — 키 집합·QML 기본값·`applyEdits` 폴백·`resetAllEdits` 네 면을 대조해 드리프트를 잡는다. 설계 경위는 `docs/recipe_presets.md` |
 | `pipeline.py` | **풀해상도 export** (numpy, 셰이더와 동일 파이프라인 재현) |
 | `ui/Main.qml` | 전체 UI (좌: 이미지 / 우: 스크롤 패널) |
@@ -249,6 +250,12 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   **직전 키**가 돌아온다(실측: velvia 로 바꿨는데 이전 키). 바인딩 재평가보다 핸들러가 먼저
   돈다 — 핸들러에서는 **원천 값으로 직접 계산**할 것(바인딩으로 쓰는 것 자체는 정상).
   이걸로 '떠나는 키'를 검사해 사용자의 새 선택이 목록 갱신에 휩쓸리는 버그가 한 번 났다.
+- ★⚠️**QML 핸들러 안에서 파이썬으로 들어와 그 자리에서 같은 notify 시그널을 쏘면 바인딩이
+  재평가되지 않는다**(재진입). `image://.../x?v=N` 캐시버스트 URL 을 쓰는 provider 에서
+  `Image.source` 가 옛 v 에 멈춘 채 컨트롤러 쪽만 올라가는 증상으로 나타난다("버튼은 반응하는데
+  화면이 안 바뀐다" — RAW Peek 에서 실제로 났고 publish 가 113번 도는 피드백 루프까지 됐다).
+  → `QTimer.singleShot(0, sig.emit)` 로 한 턴 미룰 것. ⚠️검증은 **컨트롤러 프로퍼티가 아니라
+  `Image` 아이템의 `source`/`sourceSize`** 를 읽어야 잡힌다. 상세는 `docs/raw_peek.md`.
 - 셰이더 텍스처는 image provider 경로(Image→sampler)가 검증됨. Canvas→ShaderEffectSource 직접
   바인딩은 과거 검정화면 유발(커브 LUT를 provider 방식으로 전환해 해결).
 - **날짜 스탬프**: 좌측 셀렉터의 **독립 탭**(`Ctrl+4`). '내 기본값'(`stamp.json`)을 기억하고

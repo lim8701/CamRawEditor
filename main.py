@@ -579,6 +579,32 @@ class RawProvider(QQuickImageProvider):
         return self._img
 
 
+class RawPeekProvider(QQuickImageProvider):
+    """RAW Peek(디모자이크 이전 센서 뷰)의 그림들을 'image://rawpeek/<kind>?v=N' 로 제공.
+
+    kind = main(모자이크/디모자이크/경계) · pattern · hist. `SkyMaskProvider` 와 동형이고,
+    오버레이를 닫으면 clear() 로 참조를 버린다(26MP 기준 수십 MB)."""
+
+    KINDS = ("main", "pattern", "hist", "mini")
+
+    def __init__(self):
+        super().__init__(QQuickImageProvider.ImageType.Image)
+        self._imgs = {}
+
+    def set_image(self, kind: str, img: QImage) -> None:
+        self._imgs[kind] = img
+
+    def clear(self) -> None:
+        self._imgs = {}
+
+    def requestImage(self, image_id, size, requested_size):  # noqa: N802 (Qt API)
+        im = self._imgs.get(image_id.split("?", 1)[0])
+        if im is None:                       # 아직 없음 → 유효한 1x1(깨진 이미지 아이콘 방지)
+            im = QImage(1, 1, QImage.Format.Format_RGB888)
+            im.fill(0x1a1a1c)
+        return im
+
+
 class RawFullProvider(QQuickImageProvider):
     """GPU export 용 풀해상도 16bit(RGBA64) 헤드룸 인코딩 이미지를 'image://rawfull/...' 로 제공.
 
@@ -1186,6 +1212,8 @@ class Controller(QObject):
     # 깊이 범위 자동 시드 확정 → QML 이 'depth@auto' 센티넬을 실제 값으로 교체하고 슬라이더에 반영.
     # (켜는 순간엔 거리 맵이 없어 범위를 정할 수 없다 — 맵이 나온 뒤에야 분포에서 시드된다)
     depthAutoResolved = Signal(int, float, float, float)   # layer, near, far, feather
+    rawPeekChanged = Signal()    # RAW Peek(디모자이크 이전 뷰) 그림/정보/상태 갱신 알림
+    _rawPeekSig = Signal(object)  # (내부) RAW Peek 워커 -> 메인 (seq, kind, payload)
     _renderReady = Signal(object)  # (내부) 워커 스레드 -> 메인 스레드 결과 전달
     _fullDecoded = Signal(bool)  # (내부) 풀해상도 디코드 워커 -> 메인 스레드
     _skyReady = Signal(object)   # (내부) 마스크 워커 -> 메인 스레드 (img_gen, layer, lseq, mask, strokes)
@@ -1220,8 +1248,27 @@ class Controller(QObject):
                  haze_provider: "HazeProvider" = None,
                  nr_provider: "NrBaseProvider" = None,
                  face_provider: "FaceThumbProvider" = None,
-                 mist_provider: "MistProvider" = None):
+                 mist_provider: "MistProvider" = None,
+                 peek_provider: "RawPeekProvider" = None):
         super().__init__()
+        # --- RAW Peek(디모자이크 이전 센서 뷰) — 진단 전용, 룩/export 와 무관 ---
+        self._peek_provider = peek_provider
+        self._peek = None            # raw_peek.RawPeek (오버레이 열려 있는 동안만)
+        self._peek_path = ""
+        self._peek_info = ""
+        self._peek_busy = False
+        self._peek_seq = 0           # 오래된 워커 결과 폐기용
+        self._peek_counter = 0       # 'image://rawpeek/...?v=N' 캐시버스트
+        self._peek_url = "image://rawpeek/main?v=0"
+        self._peek_pattern_url = "image://rawpeek/pattern?v=0"
+        self._peek_hist_url = "image://rawpeek/hist?v=0"
+        self._peek_mini_url = "image://rawpeek/mini?v=0"
+        self._peek_job = None        # 대기 중인 최신 무거운 렌더 요청(코얼레싱)
+        self._peek_running = False
+        # 메인 뷰 캡션 — ★이미지에 굽지 않고 QML 이 고정 높이 밴드에 그린다(raw_peek.py 주석 참조)
+        self._peek_caption = ""
+        self._peek_status = ""       # 후보 디코드 진행 표시(오래 걸리는 첫 렌더)
+        self._peek_center = (0.5, 0.5)   # 오픈 시 기본 팬 위치(디테일 있는 곳)
         self._face_provider = face_provider      # 얼굴 선택 타일 썸네일
         self._provider = provider
         self._cm_provider = cm_provider          # 디스플레이 색관리 LUT(프리뷰 전용)
@@ -1428,6 +1475,7 @@ class Controller(QObject):
         self._pending_edits = {}    # 현재 파일의 사이드카 편집(로드 시 1회 읽어 둠, editsForCurrent 반환용)
         self._ui_path = ""          # UI 가 현재 반영 중인 파일(=복원 완료된 파일). 저장은 이 경로 기준.
         self._fresh_load = False    # 새 파일 로드의 첫 디코딩 대기 중(완료 시 editsReady 발화)
+        self._rawPeekSig.connect(self._on_raw_peek)
         self._renderReady.connect(self._on_render_ready)
         self._fullDecoded.connect(self._on_full_decoded)
         self._skyReady.connect(self._on_sky_ready)
@@ -3744,6 +3792,278 @@ class Controller(QObject):
         return self._histogram
 
     histogram = Property("QVariantList", _get_histogram, notify=histogramChanged)
+
+    # ---------------------------------------------------------------- RAW Peek
+    # 디모자이크 **이전**(pre-demosaic) 센서 데이터 뷰. 읽기 전용 진단이라 룩 파라미터·셰이더
+    # uniform·export dict 를 하나도 건드리지 않는다(CLAUDE.md '★ 렌더 경로' 체크리스트 무관).
+
+    def _get_raw_peek_available(self) -> bool:
+        """현재 사진이 RAW 인가 — 일반 이미지(JPG/PNG/TIFF)는 CFA 가 없어 뷰가 성립하지 않는다."""
+        p = self._ui_path or self._path
+        return bool(p) and os.path.splitext(p)[1].lower() in RAW_EXTS
+
+    rawPeekAvailable = Property(bool, _get_raw_peek_available, notify=imageChanged)
+
+    def _get_raw_peek_open(self) -> bool:
+        # ★"데이터 준비됨"만 뜻한다(로딩 중은 rawPeekBusy). 여기에 `or self._peek_busy` 를
+        #   넣었더니 QML 이 '열림' 전이를 로딩 중에 감지해 첫 렌더를 요청하고, 그때 _peek 이
+        #   아직 None 이라 rawPeekView 가 조용히 반환해 **화면이 비었다.**
+        return self._peek is not None
+
+    def _get_raw_peek_busy(self) -> bool:
+        return self._peek_busy
+
+    def _get_raw_peek_info(self) -> str:
+        return self._peek_info
+
+    def _get_raw_peek_url(self) -> str:
+        return self._peek_url
+
+    def _get_raw_peek_pattern_url(self) -> str:
+        return self._peek_pattern_url
+
+    def _get_raw_peek_hist_url(self) -> str:
+        return self._peek_hist_url
+
+    # visible 크기 — QML 팬이 화면 이동량을 센서 픽셀로 환산할 때 쓴다.
+    def _get_raw_peek_vis_w(self) -> int:
+        return int(self._peek.vis_w) if self._peek is not None else 0
+
+    def _get_raw_peek_vis_h(self) -> int:
+        return int(self._peek.vis_h) if self._peek is not None else 0
+
+    rawPeekVisW = Property(int, _get_raw_peek_vis_w, notify=rawPeekChanged)
+    rawPeekVisH = Property(int, _get_raw_peek_vis_h, notify=rawPeekChanged)
+
+    def _get_raw_peek_caption(self) -> str:
+        return self._peek_caption
+
+    rawPeekCaption = Property(str, _get_raw_peek_caption, notify=rawPeekChanged)
+
+    def _get_raw_peek_status(self) -> str:
+        return self._peek_status
+
+    rawPeekStatus = Property(str, _get_raw_peek_status, notify=rawPeekChanged)
+
+    def _get_raw_peek_default_cx(self) -> float:
+        return float(self._peek_center[0])
+
+    def _get_raw_peek_default_cy(self) -> float:
+        return float(self._peek_center[1])
+
+    # 오픈 시 기본 팬 위치 — 화면 중앙은 평탄면일 때가 많고, 그러면 Demosaic 후보 4개가
+    # 똑같아 보여 비교가 무의미해진다. 미니맵용 축소본에서 디테일 있는 중간톤을 고른다.
+    rawPeekDefaultCx = Property(float, _get_raw_peek_default_cx, notify=rawPeekChanged)
+    rawPeekDefaultCy = Property(float, _get_raw_peek_default_cy, notify=rawPeekChanged)
+
+    def _get_raw_peek_mini_url(self) -> str:
+        return self._peek_mini_url
+
+    rawPeekMiniUrl = Property(str, _get_raw_peek_mini_url, notify=rawPeekChanged)
+
+    def _get_raw_peek_rect(self) -> list:
+        """미니맵의 '지금 보는 영역' — 센서 픽셀 [x, y, w, h]. 해당 없으면 빈 리스트.
+
+        ⚠️QML 이 zoom/뷰크기로 추정하면 모드마다 틀린다(Planes 는 폭을 색 수로 나누고,
+        Demosaic 는 정사각, Boundary 는 크롭 개념이 없다) → raw_peek 이 실제로 자른 값을 쓴다."""
+        r = getattr(self._peek, "last_rect", None) if self._peek is not None else None
+        return [int(v) for v in r] if r else []
+
+    rawPeekRect = Property("QVariantList", _get_raw_peek_rect, notify=rawPeekChanged)
+
+    def _get_raw_peek_scale(self) -> float:
+        """지금 그려진 배율(표시 픽셀 / 센서 픽셀) — QML 드래그가 화면 이동량을 센서 픽셀로
+        환산할 때 쓴다. ⚠️`zoom` 으로 환산하면 안 된다: Demosaic 은 패널이 화면의 1/n 이고
+        고배율에서 캡도 걸려 요청 zoom 과 실제 배율이 다르다."""
+        v = getattr(self._peek, "last_scale", 1.0) if self._peek is not None else 1.0
+        return float(v) if v else 1.0
+
+    rawPeekScale = Property(float, _get_raw_peek_scale, notify=rawPeekChanged)
+
+    # 모드·뷰포트별로 **실제로 서로 다른 결과가 나오는** 줌 범위. QML 이 휠/버튼을 이 안으로
+    # 클램프한다 — 안 하면 무동작 칸이나 같은 상태가 두 번 생긴다(raw_peek.zoom_range 주석).
+    # 상태 순서 문제를 피하려고 프로퍼티가 아니라 인자를 받는 슬롯으로 둔다.
+    @Slot(int, int, int, result=int)
+    def rawPeekZoomMin(self, mode: int, w: int, h: int) -> int:  # noqa: N802
+        return self._raw_peek_zoom_range(mode, w, h)[0]
+
+    @Slot(int, int, int, result=int)
+    def rawPeekZoomMax(self, mode: int, w: int, h: int) -> int:  # noqa: N802
+        return self._raw_peek_zoom_range(mode, w, h)[1]
+
+    def _raw_peek_zoom_range(self, mode: int, w: int, h: int):
+        if self._peek is None:
+            return 1, 32
+        import raw_peek
+        try:
+            return raw_peek.zoom_range(self._peek, int(mode), int(w), int(h))
+        except Exception:
+            return 1, 32
+
+    rawPeekOpened = Property(bool, _get_raw_peek_open, notify=rawPeekChanged)
+    rawPeekBusy = Property(bool, _get_raw_peek_busy, notify=rawPeekChanged)
+    rawPeekInfo = Property(str, _get_raw_peek_info, notify=rawPeekChanged)
+    rawPeekUrl = Property(str, _get_raw_peek_url, notify=rawPeekChanged)
+    rawPeekPatternUrl = Property(str, _get_raw_peek_pattern_url, notify=rawPeekChanged)
+    rawPeekHistUrl = Property(str, _get_raw_peek_hist_url, notify=rawPeekChanged)
+
+    @Slot()
+    def rawPeekOpen(self) -> None:  # noqa: N802 (QML 슬롯)
+        """현재 사진의 디모자이크 이전 데이터를 워커에서 읽어들인다(rawpy.imread ~0.6s)."""
+        path = self._ui_path or self._path
+        if not path or not self._get_raw_peek_available():
+            return
+        if self._peek is not None and self._peek_path == path:
+            self.rawPeekChanged.emit()        # 같은 사진 → 이미 로드된 것을 그대로 쓴다
+            return
+        self._peek_seq += 1
+        seq = self._peek_seq
+        self._peek = None
+        self._peek_path = path
+        self._peek_busy = True
+        self._peek_info = ""
+        self.rawPeekChanged.emit()
+        threading.Thread(target=self._raw_peek_load_worker, args=(seq, path),
+                         daemon=True).start()
+
+    def _raw_peek_load_worker(self, seq: int, path: str) -> None:
+        try:
+            import raw_peek
+            st = raw_peek.RawPeek(path)
+            # 오픈당 1회짜리 것들을 여기서 미리 만든다(패턴 21ms / 히스토그램 795ms).
+            payload = (st, raw_peek.summary(st), raw_peek.pattern_chart(st),
+                       raw_peek.histogram(st), raw_peek.minimap(st),
+                       raw_peek.default_center(st))
+            self._rawPeekSig.emit((seq, "loaded", payload))
+        except Exception as e:
+            self._rawPeekSig.emit((seq, "error", f"{type(e).__name__}: {e}"))
+
+    @Slot()
+    def rawPeekClose(self) -> None:  # noqa: N802 (QML 슬롯)
+        """오버레이를 닫을 때 배열을 놓아준다(26MP 기준 raw+colors ≈ 80MB)."""
+        self._peek_seq += 1                   # 진행 중 워커 결과 무효화
+        self._peek = None
+        self._peek_path = ""
+        self._peek_info = ""
+        self._peek_caption = ""
+        self._peek_status = ""
+        self._peek_center = (0.5, 0.5)
+        self._peek_busy = False
+        self._peek_job = None
+        # URL 도 되돌린다 — 프로바이더를 비웠으므로 옛 URL 이 남으면 QML 이 재요청하지 않아
+        # 다음 오픈에서 빈 텍스처를 그대로 들고 있게 된다.
+        self._peek_counter += 1
+        self._peek_url = f"image://rawpeek/main?v={self._peek_counter}"
+        if self._peek_provider is not None:
+            self._peek_provider.clear()
+        self.rawPeekChanged.emit()
+
+    @Slot(int, float, float, int, int, int)
+    def rawPeekView(self, mode: int, cx: float, cy: float, zoom: int,  # noqa: N802
+                    w: int, h: int) -> None:
+        """현재 모드/팬/줌으로 main 그림을 갱신한다.
+
+        ★가벼운 것(모자이크 zoom>=2, 경계)은 **동기** — 22~100ms 라 드래그가 즉시 따라온다.
+          무거운 것(전체보기 zoom==1 250~385ms, 디모자이크 비교 = LibRaw 재디코드 ~1.1s)만
+          워커로 보내고 **코얼레싱**한다(`_stamp_worker` 와 같은 패턴). 드래그마다 스레드를
+          띄우면 요청이 쌓여 오히려 늦는다.
+        """
+        st = self._peek
+        if st is None:
+            return
+        import raw_peek
+        if not raw_peek.is_heavy(st, mode, zoom, w, h, cx, cy):
+            try:
+                img, cap = raw_peek.render(st, mode, cx, cy, zoom, w, h)
+            except Exception as e:
+                print(f"[rawpeek] render 실패: {type(e).__name__}: {e}")
+                return
+            self._raw_peek_publish(img, cap)
+            return
+
+        self._peek_job = (mode, cx, cy, zoom, w, h)
+        if self._peek_running:
+            return                            # 진행 중 — 최신 요청만 남기고 이어 받는다
+        self._peek_running = True
+        self._peek_busy = True
+        self.rawPeekChanged.emit()
+        threading.Thread(target=self._raw_peek_render_worker,
+                         args=(self._peek_seq,), daemon=True).start()
+
+    def _raw_peek_render_worker(self, seq: int) -> None:
+        import raw_peek
+        try:
+            while True:
+                job = self._peek_job
+                self._peek_job = None
+                if job is None or seq != self._peek_seq:
+                    break
+                st = self._peek
+                if st is None:
+                    break
+                mode, cx, cy, zoom, w, h = job
+
+                def _prog(done, total, name, _seq=seq):
+                    # 후보 디코드는 종당 1.1~3.6s 다 — 침묵하면 멈춘 것처럼 보인다.
+                    txt = "" if done >= total else f"decoding {name} ({done + 1}/{total})…"
+                    self._rawPeekSig.emit((_seq, "status", txt))
+
+                out = raw_peek.render(st, mode, cx, cy, zoom, w, h, progress=_prog)
+                self._rawPeekSig.emit((seq, "view", out))
+        except Exception as e:
+            self._rawPeekSig.emit((seq, "error", f"{type(e).__name__}: {e}"))
+        finally:
+            self._peek_running = False
+            self._rawPeekSig.emit((seq, "idle", None))
+
+    def _raw_peek_publish(self, img, caption=None) -> None:
+        if self._peek_provider is None:
+            return
+        if caption is not None:
+            self._peek_caption = "\n".join(caption)
+        self._peek_provider.set_image("main", img)
+        self._peek_counter += 1
+        self._peek_url = f"image://rawpeek/main?v={self._peek_counter}"
+        # ★알림을 **다음 이벤트 루프 턴으로 미룬다.** 동기 렌더 경로는 QML 의
+        #   `onModeChanged`/`onRawPeekChanged` 핸들러 **안에서** 여기까지 들어오는데, 그 상태로
+        #   같은 시그널을 다시 쏘면 재진입이라 QML 이 바인딩을 재평가하지 않는다 — 실측으로
+        #   `Image.source` 가 `?v=112` 에 멈춘 채 controller 쪽만 113·114·115 로 올라갔다
+        #   ("버튼은 반응하는데 화면이 안 바뀐다"의 원인). 한 턴 미루면 사람이 느낄 지연은 없다.
+        QTimer.singleShot(0, self.rawPeekChanged.emit)
+
+    def _on_raw_peek(self, msg) -> None:
+        seq, kind, payload = msg
+        if seq != self._peek_seq:
+            return                            # 다른 사진/닫힌 뒤의 결과 — 버린다
+        if kind == "loaded":
+            st, info, pattern_img, hist_img, mini_img, center = payload
+            self._peek_center = center
+            self._peek = st
+            self._peek_info = info["text"]
+            self._peek_busy = False
+            if self._peek_provider is not None:
+                self._peek_provider.set_image("pattern", pattern_img)
+                self._peek_provider.set_image("hist", hist_img)
+                self._peek_provider.set_image("mini", mini_img)
+                self._peek_counter += 1
+                self._peek_pattern_url = f"image://rawpeek/pattern?v={self._peek_counter}"
+                self._peek_hist_url = f"image://rawpeek/hist?v={self._peek_counter}"
+                self._peek_mini_url = f"image://rawpeek/mini?v={self._peek_counter}"
+            self.rawPeekChanged.emit()
+        elif kind == "view":
+            img, cap = payload
+            self._raw_peek_publish(img, cap)
+        elif kind == "status":
+            self._peek_status = payload
+            self.rawPeekChanged.emit()
+        elif kind == "idle":
+            self._peek_busy = False
+            self._peek_status = ""
+            self.rawPeekChanged.emit()
+        elif kind == "error":
+            self._peek_busy = False
+            self._peek_info = f"RAW Peek failed\n{payload}"
+            self.rawPeekChanged.emit()
 
     @Slot(QUrl)
     def load(self, file_url: QUrl) -> None:  # noqa: N802 (QML 슬롯, FileDialog QUrl)
@@ -6094,9 +6414,12 @@ def main() -> int:
     mist_provider = MistProvider()
     engine.addImageProvider("mist", mist_provider)
 
+    peek_provider = RawPeekProvider()          # RAW Peek(디모자이크 이전 센서 뷰)
+    engine.addImageProvider("rawpeek", peek_provider)
+
     controller = Controller(provider, curve_provider, stamp_provider, full_provider,
                             sky_provider, cm_provider, haze_provider, nr_provider,
-                            face_provider, mist_provider)
+                            face_provider, mist_provider, peek_provider)
     ctx = engine.rootContext()
     ctx.setContextProperty("controller", controller)
     # ⚠️예전엔 여기서 `lutN`(전역 하나)을 넘겼다 — LUT 마다 N 이 다를 수 있으므로

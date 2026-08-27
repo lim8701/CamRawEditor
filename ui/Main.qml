@@ -23,6 +23,10 @@ ApplicationWindow {
         return !!it && (it instanceof TextInput || it instanceof TextEdit
                         || it instanceof ComboBox)
     }
+    // 창 단위 Shortcut 은 포커스와 무관하게 발화하므로, 전체화면 오버레이가 떠 있는 동안에도
+    // 뒤의 편집 상태를 바꿀 수 있다(Ctrl+Z·D 처럼 실제 부작용이 있는 것들 포함).
+    // ⚠️새 단축키를 추가할 때는 `_typing` 이 아니라 **`_keysBlocked`** 를 가드로 쓸 것.
+    readonly property bool _keysBlocked: win._typing || rawPeekWin.visible
 
                     // 아이콘 버튼(우측 패널 공용) — ♥/☑/태그/위로가기와 같은 커스텀 패턴.
     // ⚠️네이티브 Button 을 쓰지 않는다: macOS 스타일이 **베젤을 아이템 안에서 치우쳐** 그린다
@@ -77,7 +81,7 @@ ApplicationWindow {
 
     // 촬영정보 플로팅 패널 표시 여부 (I 키로 토글)
     property bool infoOverlay: true
-    Shortcut { sequence: "I"; enabled: !win._typing; onActivated: win.infoOverlay = !win.infoOverlay }
+    Shortcut { sequence: "I"; enabled: !win._keysBlocked; onActivated: win.infoOverlay = !win.infoOverlay }
 
     // 날짜 스탬프(필름 데이트백) 표시 여부 (D 키로 토글). 기본 off.
     property bool dateStamp: false
@@ -143,17 +147,17 @@ ApplicationWindow {
             o["stampStyle"] = controller.stampFont
         controller.rememberStampPrefs(o)
     }
-    Shortcut { sequence: "D"; enabled: !win._typing
+    Shortcut { sequence: "D"; enabled: !win._keysBlocked
                onActivated: { win.dateStamp = !win.dateStamp; win.rememberStamp() } }
 
     // AI 캡션 오버레이 표시 여부 (C 키로 토글). 끄면 로드 시 자동 생성도 중단(연산 낭비 방지).
     property bool captionOverlay: true
     onCaptionOverlayChanged: controller.setCaptionEnabled(captionOverlay)
-    Shortcut { sequence: "C"; enabled: !win._typing; onActivated: win.captionOverlay = !win.captionOverlay }
+    Shortcut { sequence: "C"; enabled: !win._keysBlocked; onActivated: win.captionOverlay = !win.captionOverlay }
 
     // 좌측 File Explorer 패널 표시 여부 (B 키로 토글)
     property bool showExplorer: true
-    Shortcut { sequence: "B"; enabled: !win._typing; onActivated: win.showExplorer = !win.showExplorer }
+    Shortcut { sequence: "B"; enabled: !win._keysBlocked; onActivated: win.showExplorer = !win.showExplorer }
 
     // 컨택트 시트(폴더 격자) 모드. ★규칙은 **두 줄뿐**이다:
     //   ① G 키(또는 상단 표시줄 ▦ 버튼)로 켜고 끈다.  ② 아직 사진을 안 열었으면 켜져 있다.
@@ -161,7 +165,7 @@ ApplicationWindow {
     //   경우마다 달라 혼란스럽다**는 보고를 받고 걷어냈다(폴더를 옮겨도 편집 중인 사진은 그대로).
     //   조건을 하나 더 붙이고 싶어지면 이 보고를 먼저 떠올릴 것.
     property bool gridPinned: false
-    Shortcut { sequence: "G"; enabled: !win._typing; onActivated: win.gridPinned = !win.gridPinned }
+    Shortcut { sequence: "G"; enabled: !win._keysBlocked; onActivated: win.gridPinned = !win.gridPinned }
     // **다른 사진을 열면** 격자를 닫는다(격자/탐색기/프리뷰 어디서 열든 동일).
     // ⚠️경로 비교 없이 imageChanged 만 보면 WB 커밋 같은 재디코딩에도 닫혀 '왜 꺼졌지'가 된다.
     property string _gridLastPath: ""
@@ -178,7 +182,7 @@ ApplicationWindow {
 
     // 원본 비교(Before/After): true 면 프리뷰가 무편집 현상(dispPre)으로 전환. 버튼/\ 키로 토글.
     property bool compareOn: false
-    Shortcut { sequence: "\\"; onActivated: win.compareOn = !win.compareOn }
+    Shortcut { sequence: "\\"; enabled: !win._keysBlocked; onActivated: win.compareOn = !win.compareOn }
 
     // 디스플레이 색관리(프리뷰 전용 sRGB→모니터 색역 보정, display_cm.py). Ctrl+Shift+M 토글. export 불변.
     property bool displayCM: true
@@ -187,32 +191,41 @@ ApplicationWindow {
 
     // 클리핑 경고 오버레이(프리뷰): 하이라이트=빨강 / 섀도=파랑. J 키로 토글(라이트룸과 동일).
     property bool clipWarn: false
-    Shortcut { sequence: "J"; enabled: !win._typing; onActivated: win.clipWarn = !win.clipWarn }
+    Shortcut { sequence: "J"; enabled: !win._keysBlocked; onActivated: win.clipWarn = !win.clipWarn }
     // 존 시스템 오버레이(프리뷰): 휘도를 안셀 아담스 존 0..X(1존=1스톱, V=18% 그레이)로
     // 양자화 표시. Z 키 토글. export 불변(진단 전용).
     property bool zoneOverlay: false
-    Shortcut { sequence: "Z"; enabled: !win._typing; onActivated: win.zoneOverlay = !win.zoneOverlay }
+    Shortcut { sequence: "Z"; enabled: !win._keysBlocked; onActivated: win.zoneOverlay = !win.zoneOverlay }
     // Undo / Redo (편집 스냅샷)
-    Shortcut { sequences: [StandardKey.Undo]; onActivated: win.undo() }                    // Ctrl+Z
-    Shortcut { sequences: [StandardKey.Redo, "Ctrl+Shift+Z"]; onActivated: win.redo() }    // Ctrl+Y / Ctrl+Shift+Z
+    Shortcut { sequences: [StandardKey.Undo]; enabled: !win._keysBlocked; onActivated: win.undo() }                    // Ctrl+Z
+    Shortcut { sequences: [StandardKey.Redo, "Ctrl+Shift+Z"]; enabled: !win._keysBlocked; onActivated: win.redo() }    // Ctrl+Y / Ctrl+Shift+Z
     // 우측 패널 전환: Edit / Crop·Geometry / Masking / Wallpaper
-    Shortcut { sequence: "Ctrl+1"; onActivated: win.activePanel = 0 }
-    Shortcut { sequence: "Ctrl+2"; onActivated: win.activePanel = 1 }
-    Shortcut { sequence: "Ctrl+3"; onActivated: win.activePanel = 2 }
-    Shortcut { sequence: "Ctrl+4"; onActivated: win.activePanel = 3 }
-    Shortcut { sequence: "Ctrl+5"; enabled: controller.wallpaperEnabled; onActivated: win.activePanel = 4 }
+    Shortcut { sequence: "Ctrl+1"; enabled: !win._keysBlocked; onActivated: win.activePanel = 0 }
+    Shortcut { sequence: "Ctrl+2"; enabled: !win._keysBlocked; onActivated: win.activePanel = 1 }
+    Shortcut { sequence: "Ctrl+3"; enabled: !win._keysBlocked; onActivated: win.activePanel = 2 }
+    Shortcut { sequence: "Ctrl+4"; enabled: !win._keysBlocked; onActivated: win.activePanel = 3 }
+    Shortcut { sequence: "Ctrl+5"; enabled: controller.wallpaperEnabled && !win._keysBlocked; onActivated: win.activePanel = 4 }
 
     // 디스플레이 색관리(프리뷰 전용 sRGB→모니터 색역 보정) 토글.
-    Shortcut { sequence: "Ctrl+Shift+M"; onActivated: win.displayCM = !win.displayCM }
+    Shortcut { sequence: "Ctrl+Shift+M"; enabled: !win._keysBlocked; onActivated: win.displayCM = !win.displayCM }
 
     // 단축키 목록 오버레이. 목록은 `shortcuts.py` 가 갖고 있고 여기서는 열고 닫기만 한다.
     // ⚠️`_typing` 가드 필수 — `?` 는 Shift+/ 라 텍스트 입력 중에 눌리면 오버레이가 뜬다.
     Shortcut {
         sequences: ["?", "F1"]
-        enabled: !win._typing
+        enabled: !win._keysBlocked
         onActivated: shortcutHelp.visible ? shortcutHelp.close() : shortcutHelp.open()
     }
     ShortcutHelp { id: shortcutHelp }
+
+    // RAW Peek — 디모자이크 이전 센서 데이터 뷰(`R`). RAW 일 때만 열린다(일반 이미지는 CFA 가
+    // 없다). 읽기 전용 진단이라 룩/export 배선과 무관하다.
+    Shortcut {
+        sequence: "R"
+        enabled: !win._typing && !previewWin.visible && controller.rawPeekAvailable
+        onActivated: rawPeekWin.visible ? rawPeekWin.close() : rawPeekWin.open()
+    }
+    RawPeekWindow { id: rawPeekWin }
 
 
     // 컬러 그레이딩 Hue 슬라이더 위에 두는 무지개 스펙트럼 막대(슬라이더 위치↔색상 가이드).
@@ -296,22 +309,22 @@ ApplicationWindow {
     // 최적. 용어는 라이트룸 마스킹(Add/Subtract)과 동일 — Erase 는 도구 은유가 섞여 기각.
     Shortcut {
         sequence: "A"
-        enabled: !win._typing && win.activePanel === 2 && controller.imagePath !== ""
+        enabled: !win._keysBlocked && win.activePanel === 2 && controller.imagePath !== ""
         onActivated: win.setBrushMode(1)
     }
     Shortcut {
         sequence: "S"
-        enabled: !win._typing && win.activePanel === 2 && controller.imagePath !== ""
+        enabled: !win._keysBlocked && win.activePanel === 2 && controller.imagePath !== ""
         onActivated: win.setBrushMode(2)
     }
     // O = 마스크 오버레이(빨강) 토글 — 라이트룸 Show Overlay 와 동일 키. 마스킹 패널 한정.
     Shortcut {
         sequence: "O"
-        enabled: !win._typing && win.activePanel === 2 && controller.imagePath !== ""
+        enabled: !win._keysBlocked && win.activePanel === 2 && controller.imagePath !== ""
         onActivated: win.showSkyMask = !win.showSkyMask
     }
     // ESC = 브러시 끄기(브러시 켜졌을 때만 — 다른 ESC 소비자와 enabled 로 비충돌)
-    Shortcut { sequence: "Escape"; enabled: win.brushMode !== 0; onActivated: win.brushMode = 0 }
+    Shortcut { sequence: "Escape"; enabled: win.brushMode !== 0 && !win._keysBlocked; onActivated: win.brushMode = 0 }
     // 마스킹 패널을 떠나면 브러시도 끔(다른 패널에서 오조작 방지)
     onActivePanelChanged: if (activePanel !== 2) win.brushMode = 0
     // 로컬 마스크 레이어(동적 생성/삭제, 최대 5) — 각 {keys, invert, 10 조정}. 슬라이더/체크박스는
@@ -1998,10 +2011,10 @@ ApplicationWindow {
         if (sel)
             Qt.callLater(function() { win.selectInExplorer(sel) })   // 목록 바인딩 갱신 뒤 스크롤
     }
-    Shortcut { sequence: "L"; enabled: !win._typing; onActivated: win.toggleLikedOnly() }
+    Shortcut { sequence: "L"; enabled: !win._keysBlocked; onActivated: win.toggleLikedOnly() }
     // 짝 JPEG 펼치기/접기 — 선택 항목이 사라져 인덱스가 다른 파일을 가리키는 것 방지(L 과 동일 규율)
     Shortcut {
-        sequence: "P"; enabled: !win._typing
+        sequence: "P"; enabled: !win._keysBlocked
         onActivated: {
             var sel = ""
             if (fileListView.currentIndex >= 0 && win.explorerFiles[fileListView.currentIndex])
@@ -2012,7 +2025,7 @@ ApplicationWindow {
     }
     // H = 폴더 태그 워드 클라우드 토글(열기/닫기). 폴더가 있어야 열림.
     Shortcut {
-        sequence: "H"; enabled: !win._typing
+        sequence: "H"; enabled: !win._keysBlocked
         onActivated: {
             if (win.showTagCloud) win.showTagCloud = false
             else if (controller.currentFolder !== "") win.openTagCloud()
