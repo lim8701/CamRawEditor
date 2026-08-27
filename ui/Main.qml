@@ -245,7 +245,9 @@ ApplicationWindow {
         var _v4 = function (v) { return [v.x, v.y, v.z, v.w] }
         return {
             // 자동노출 단계는 −autoEV 에서 0 으로 옮긴다 → 그 크기를 알려 준다.
-            "_autoEV": controller.autoExposureEV,
+            // ⚠️표시용 `autoExposureEV` 가 아니라 **조건 없는 디코드 게인**이어야 한다 —
+            //   토글을 끈 사진에서 그 단계가 거꾸로 돈다(main.py 의 주석 참조).
+            "_autoEV": controller.autoExposureDecodeEV,
             "filmicMix": 1.0,          // 항상 걸린다 — 중립 0 에서 1 로 올린다
             // 날짜 스탬프는 셰이더가 아니라 QML 오버레이라 uniform 이 없다 — 이 사진에
             // 스탬프가 있는지만 알려 주면 develop_anim 이 단계를 넣거나 뺀다.
@@ -272,7 +274,9 @@ ApplicationWindow {
             "clarity": claritySlider.value,
             "sharpenAmt": sharpAmtSlider.value,
             "dehaze": dehazeSlider.value,
-            "lutStrength": simStrengthSlider.value,
+            // ⚠️필름시뮬이 None 이면 강도 슬라이더는 1.0 그대로인데 셰이더가 `lutEnabled`
+            //   로 걷어낸다. 그 값을 그대로 넣으면 **아무 변화 없는 빈 단계**가 생긴다.
+            "lutStrength": simCombo.currentIndex === 0 ? 0.0 : simStrengthSlider.value,
             "simExpEV": controller.simExpEV,
             "saturation": satSlider.value,
             "vibrance": vibSlider.value,
@@ -5888,7 +5892,11 @@ ApplicationWindow {
                                 anchors.centerIn: parent
                                 hideSource: true
                                 smooth: true
-                                live: true
+                                // Develop 중에는 RAW Peek 오버레이가 화면을 다 덮으므로 이
+                                // 텍스처는 보이지 않는다 — 그런데도 live 로 두면 무거운
+                                // adjust.frag 패스가 **프레임당 한 번 더** 돈다(devShader 와
+                                // 중복). 재생 12초 내내 두 배로 돌던 것을 멈춘다.
+                                live: !win.morphOn
                                 // transform 리스트는 나열 순서대로 적용(앞=먼저=안쪽): 플립 -> 회전 -> 줌.
                                 transform: [
                                     Scale {

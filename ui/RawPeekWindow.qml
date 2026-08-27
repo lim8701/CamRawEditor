@@ -118,13 +118,10 @@ Item {
     function devBegin() {
         if (!controller.rawPeekOpened) return
         controller.developBegin(win.morphSnapshot())   // 최종 값 스냅샷(읽기만 한다)
-        // ⚠️요청 크기는 **표시 사각형** 기준이다. 뷰 크기로 요청하면 그림이 프레임보다 커져
-        //   Qt 가 축소 필터링을 하고, 그러면 nearest 로 남긴 CFA 반점이 평균돼 버린다.
-        //   (devFrame 이 아직 안 잡힌 첫 호출은 뷰 크기로 폴백 — 리사이즈 때 다시 요청된다)
-        var fw = devFrame.width > 1 ? devFrame.width : view.width
-        var fh = devFrame.height > 1 ? devFrame.height : view.height
-        controller.developMosaic(Math.max(64, Math.round(fw)),
-                                Math.max(64, Math.round(fh)))
+        // ★여기서는 그림을 요청하지 않는다. `devFrame` 은 `devSrcItem` 이 정해진 **다음**
+        //   턴에 크기가 잡히므로, 지금 요청하면 뷰 크기로 한 번 그리고 100ms 뒤 올바른 크기로
+        //   또 그린다 — 전체 프레임 패스를 두 번 버리는 셈이다(검토에서 지적).
+        //   `devFrame` 의 onWidthChanged/onHeightChanged 가 devReq 로 한 번만 요청한다.
         win.morphOn = true                             // Loader 가 pipeAnim 을 만든다
         // Loader 가 아이템을 만든 **다음** 턴에 참조를 잡는다(같은 턴엔 아직 null).
         Qt.callLater(function () {
@@ -153,8 +150,9 @@ Item {
         devStampOpacity = r.stamp
         devLabel = r.label
         devNote = r.note
-        var it = pipeAnimItem()
-        if (it) it.applyValues(r.uniforms)
+        // ⚠️매 16ms 프레임이다 — 여기서 트리를 다시 훑으면 안 된다(`pipeAnimItem()` 은
+        //   11k 줄 UI 전체를 재귀 탐색한다). `devBegin` 이 잡아 둔 참조를 쓴다.
+        if (peekWin.devSrcItem) peekWin.devSrcItem.applyValues(r.uniforms)
     }
     // pipeAnim 은 Main.qml 의 Loader 안에 있다 — objectName 으로 찾는다.
     function pipeAnimItem() {
@@ -171,6 +169,11 @@ Item {
     }
 
     // 이전/다음 **활성 단계**의 끝으로 점프(단계별로 비교하기 위한 것).
+    // ⚠️단계 경계(t1)에 정확히 착지하면 `values()` 가 **다음 단계**를 현재로 고른다
+    //   (`t >= t0` 판정이고 t1_i == t0_{i+1}) — 캡션과 n/N 이 한 칸씩 밀렸다(검토에서 잡힘).
+    //   그래서 경계 **바로 앞**에 세운다. 0.001 은 단계 길이의 1% 남짓이라(12단계면 8.3%)
+    //   smoothstep 값이 0.9996 — 적용은 사실상 끝난 상태다.
+    readonly property real devEdgeEps: 0.001
     function devStep(dir) {
         devPlaying = false
         var ms = controller.developMarks
@@ -178,10 +181,12 @@ Item {
         for (var i = 0; i < ms.length; i++) if (ms[i].active) ts.push(ms[i].t1)
         if (ts.length === 0) return
         if (dir > 0) {
-            for (var a = 0; a < ts.length; a++) if (ts[a] > devT + 1e-4) { devT = ts[a]; return }
+            for (var a = 0; a < ts.length; a++)
+                if (ts[a] - devEdgeEps > devT + 1e-4) { devT = ts[a] - devEdgeEps; return }
             devT = 1.0
         } else {
-            for (var b = ts.length - 1; b >= 0; b--) if (ts[b] < devT - 1e-4) { devT = ts[b]; return }
+            for (var b = ts.length - 1; b >= 0; b--)
+                if (ts[b] - devEdgeEps < devT - 1e-4) { devT = ts[b] - devEdgeEps; return }
             devT = 0.0
         }
     }
@@ -462,7 +467,7 @@ Item {
                 onHeightChanged: devReq.restart()
                 Timer {
                     id: devReq
-                    interval: 100
+                    interval: 60          // 첫 그림이 이만큼 늦게 뜬다 — 짧게 잡는다
                     onTriggered: if (peekWin.isDevelop && controller.rawPeekOpened)
                         controller.developMosaic(Math.max(64, Math.round(devFrame.width)),
                                                  Math.max(64, Math.round(devFrame.height)))
@@ -570,6 +575,9 @@ Item {
                 property real py: 0
                 onPressed: function (e) { px = e.x; py = e.y }
                 onPositionChanged: function (e) {
+                    // ⚠️Develop 은 줌/팬이 없다. 막지 않으면 드래그가 **다른 탭의 팬 위치**를
+                    //   몰래 바꾼다(화면은 그대로라 알 수도 없다).
+                    if (peekWin.isDevelop) return
                     if (!pressed || !canPan) return
                     var visW = controller.rawPeekVisW
                     var visH = controller.rawPeekVisH
@@ -585,6 +593,8 @@ Item {
                     peekWin.refresh()
                 }
                 onWheel: function (e) {
+                    // ⚠️막지 않으면 스크럽하려고 휠을 돌린 것이 **다른 탭의 줌**을 몰래 바꾼다.
+                    if (peekWin.isDevelop) { e.accepted = true; return }
                     if (e.angleDelta.y > 0) peekWin.setZoom(peekWin.zoom * 2)
                     else if (e.angleDelta.y < 0) peekWin.setZoom(peekWin.zoom / 2)
                 }
@@ -783,12 +793,13 @@ Item {
                 Repeater {
                     model: controller.developMarks
                     Rectangle {
-                        visible: modelData.active
+                        // marks() 는 활성 단계만 돌려준다(스킵 단계엔 줄 위치가 없다).
+                        visible: true
                         x: trackBg.width * modelData.t1 - width / 2
                         anchors.verticalCenter: trackBg.verticalCenter
                         width: 2; height: 12; radius: 1
                         color: "#7a7a80"
-                        opacity: modelData.active ? 0.9 : 0.25
+                        opacity: 0.9
                     }
                 }
                 Rectangle {                              // 핸들

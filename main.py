@@ -1278,6 +1278,7 @@ class Controller(QObject):
         self._dev_marks = []
         self._dev_mosaic_url = "image://rawpeek/develop?v=0"
         self._dev_gray_url = "image://rawpeek/developgray?v=0"
+        self._dev_mosaic_size = None      # develop 그림을 마지막으로 만든 크기(재요청 스킵용)
         self._face_provider = face_provider      # 얼굴 선택 타일 썸네일
         self._provider = provider
         self._cm_provider = cm_provider          # 디스플레이 색관리 LUT(프리뷰 전용)
@@ -4023,12 +4024,16 @@ class Controller(QObject):
         if st is None or self._peek_provider is None:
             return
         import raw_peek
+        # ★같은 크기 재요청은 건너뛴다 — 창 리사이즈·정보 패널 토글이 같은 크기로 되돌아오는
+        #   경우가 흔하고, 한 번이 전체 프레임 패스라 싸지 않다.
+        if getattr(self, "_dev_mosaic_size", None) == (w, h):
+            return
         try:
-            cfa = raw_peek.develop_mosaic(st, w, h)
-            gray = raw_peek.develop_mosaic(st, w, h, gray=True)
+            gray, cfa = raw_peek.develop_pair(st, w, h)
         except Exception as e:
             print(f"[develop] 모자이크 실패: {type(e).__name__}: {e}")
             return
+        self._dev_mosaic_size = (w, h)
         self._peek_provider.set_image("develop", cfa)
         self._peek_provider.set_image("developgray", gray)
         self._peek_counter += 1
@@ -4041,6 +4046,7 @@ class Controller(QObject):
     @Slot()
     def rawPeekClose(self) -> None:  # noqa: N802 (QML 슬롯)
         """오버레이를 닫을 때 배열을 놓아준다(26MP 기준 raw+colors ≈ 80MB)."""
+        self._dev_mosaic_size = None      # 다음 오픈은 새로 그린다(사진이 바뀔 수 있다)
         self._peek_seq += 1                   # 진행 중 워커 결과 무효화
         self._peek = None
         self._peek_path = ""
@@ -4140,6 +4146,8 @@ class Controller(QObject):
         if kind == "loaded":
             st, info, pattern_img, hist_img, mini_img, center = payload
             self._peek_center = center
+            # 새 사진의 상태다 — develop 그림 캐시 키를 버린다(크기가 같아도 내용이 다르다).
+            self._dev_mosaic_size = None
             self._peek = st
             self._peek_info = info["text"]
             self._peek_busy = False
@@ -5969,6 +5977,18 @@ class Controller(QObject):
 
     autoExposure = Property(bool, _get_auto_exp, notify=autoExpChanged)
     autoExposureEV = Property(float, _get_auto_ev, notify=autoExpChanged)
+
+    def _get_auto_decode_ev(self) -> float:
+        """디코드에 **항상** 적용된 자동노출(EV) — 토글과 무관하다.
+
+        ★Develop 애니메이션의 `autoExpEV` 중립값(= −이 값)이다. 표시용 `autoExposureEV` 는
+          토글이 꺼지면 0 을 돌려주므로 그걸 쓰면 **끈 사진에서 단계가 거꾸로 돈다**
+          (중립 0 → 실제 −게인 이라 자동노출 단계가 어두워지고, 그 앞 단계들은 게인이 남아
+          그만큼 밝다). 검토에서 잡힌 실제 버그다.
+        """
+        return float(self._auto_ev)
+
+    autoExposureDecodeEV = Property(float, _get_auto_decode_ev, notify=autoExpChanged)
     # 셰이더 uniform(pipe/pipeFull autoExpEV). export 는 render_full 이 자체 계산한다.
     autoExposureOffsetEV = Property(float, _get_auto_off_ev, notify=autoExpChanged)
 

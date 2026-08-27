@@ -141,9 +141,23 @@ class RawPeek:
         with rawpy.imread(path) as r:
             self.full = r.raw_image.copy()               # 마스크(광학 블랙) 마진 포함
             self.vis = r.raw_image_visible.copy()
-            self.colors = r.raw_colors_visible.copy()
-            self.pattern = (None if getattr(r, "raw_pattern", None) is None
-                            else r.raw_pattern.copy())
+            # ★★색 맵은 `raw_colors_visible` 배열이 아니라 **`raw_color()`(LibRaw 의 COLOR()
+            #   매크로)를 타일링**해서 만든다. X-T5/X-H2(40MP X-Trans 5 HR) 파일에서 그 배열이
+            #   **쓰레기값**으로 나온다 — 6x6 에 0이 31개, 1·3·9·18 이 하나씩. 그러면 CFA_RGB[9]
+            #   에서 IndexError 로 RAW Peek 이 죽는다(사용자 보고).
+            #   ⚠️편집 경로는 무죄다 — LibRaw 는 이 파일을 제대로 디모자이크한다(프록시가 임베드
+            #     JPEG 와 채널별 상관 0.85~0.97). 배열 노출만 어긋난 것이다.
+            #   전 코퍼스 대조 결과 `raw_color()` 타일은 배열이 정상인 파일에서 **100% 동일**하고
+            #   (X100V·X100VI 15장 / NEF / CR2 / ARW / DNG 3종), T5 에서만 22.22% 다르다
+            #   (= 배열이 틀린 쪽). 그래서 조건 분기 없이 항상 이쪽을 쓴다.
+            self.colors = self._color_map(r)
+            # ⚠️`raw_pattern` **값**도 T5 에서 쓰레기다(위 `_color_map` 주석). 주기(모양)는
+            #   그쪽에서 받고 **값은 방금 만든 색 맵의 좌상단 주기 블록**에서 가져온다.
+            #   (`period`·`is_xtrans`·`pattern_chart` 가 이 배열을 쓴다)
+            self.pattern = None
+            if getattr(r, "raw_pattern", None) is not None:
+                _p = max(1, int(r.raw_pattern.shape[0]))
+                self.pattern = self.colors[:_p, :_p].copy()
             s = r.sizes
             self.top, self.left = int(s.top_margin), int(s.left_margin)
             # LibRaw 의 flip 코드. RAW Peek 의 다른 탭은 **센서 공간**을 그대로 보여 주지만
@@ -191,6 +205,22 @@ class RawPeek:
         self.last_scale = 1.0
 
     # ---- 정규화: v = (raw - black[c]) / (white - black) -------------
+    @staticmethod
+    def _color_map(r):
+        """`raw_color()` 를 패턴 주기만큼 찍어 visible 전체로 타일링한다.
+
+        파이썬 호출은 주기²번(X-Trans 36 / 베이어 4)뿐이라 비용이 없다. 좌상단은 **visible
+        원점**(top/left 마진)에 맞춘다 — `raw_color()` 는 절대 좌표를 받는다.
+        """
+        s = r.sizes
+        p = int(r.raw_pattern.shape[0]) if getattr(r, "raw_pattern", None) is not None else 2
+        p = max(1, p)
+        top, left = int(s.top_margin), int(s.left_margin)
+        tile = np.array([[r.raw_color(top + y, left + x) for x in range(p)]
+                         for y in range(p)], np.uint8)
+        h, w = int(s.height), int(s.width)
+        return np.tile(tile, (h // p + 1, w // p + 1))[:h, :w].copy()
+
     def norm_vis(self):
         return np.clip((self.vis.astype(np.float32) - self._bmap) / self._span, 0.0, 1.0)
 
@@ -741,6 +771,17 @@ GRID_PX = 8
 GRID_DIM = 0.45
 
 
+def develop_pair(st: RawPeek, out_w: int, out_h: int):
+    """Develop 머리 그림 **두 장**(gray, cfa)을 한 번에 만든다.
+
+    ★`develop_mosaic` 을 두 번 부르면 `norm_vis()`(40MP float32 = 160MB 전이 배열)와
+      `_box_down` 전체 프레임 패스가 **두 번** 돈다. 실측으로 그 한 패스가 0.25~0.38s 라
+      (`is_heavy` 가 워커로 보내는 기준이 그것이다) GUI 스레드가 그만큼 멈춘다. 두 그림은
+      표본 위치·게인·격자까지 공유하므로 한 번에 만드는 것이 자연스럽다.
+    """
+    return _develop_render(st, out_w, out_h, both=True)
+
+
 def develop_mosaic(st: RawPeek, out_w: int, out_h: int, gray: bool = False):
     """Develop 탭 머리 프레임 — **전체 프레임** 모자이크(라벨 없음, 뷰포트에 맞춤).
 
@@ -769,6 +810,11 @@ def develop_mosaic(st: RawPeek, out_w: int, out_h: int, gray: bool = False):
       (선형 그대로)으로 시작하므로 여기 sRGB 인코딩을 걸면 밝기가 튀어 연결이 끊긴다.
       선형끼리 이어야 filmic 단계가 "선형 → 눈이 보는 밝기" 라는 제 몫을 한다.
     """
+    return _develop_render(st, out_w, out_h, gray=gray)
+
+
+def _develop_render(st: RawPeek, out_w: int, out_h: int, gray: bool = False, both: bool = False):
+    """`develop_mosaic` / `develop_pair` 의 공용 본체. `both=True` 면 (gray, cfa) 튜플."""
     out_w, out_h = max(16, int(out_w)), max(16, int(out_h))
     # 회전이 걸리는 사진은 out_w/out_h 가 **프록시 방향**으로 들어온다 — 센서 공간 기준으로
     # 바꿔서 배율을 잡아야 요청한 사각형을 채운다.
@@ -797,17 +843,28 @@ def develop_mosaic(st: RawPeek, out_w: int, out_h: int, gray: bool = False):
     hsh = (ii * 73856093) ^ (jj * 19349663)          # 공간 해시 상용 소수
     ys = np.clip(ii * f + hsh % f, 0, vh - 1)
     xs = np.clip(jj * f + (hsh >> 8) % f, 0, vw - 1)
-    if gray:
-        rgb = np.repeat(np.clip(base * g, 0.0, 1.0)[..., None], 3, axis=2)
-    else:
+    def _gray():
+        return np.repeat(np.clip(base * g, 0.0, 1.0)[..., None], 3, axis=2)
+
+    def _cfa():
         lin = np.clip(norm[ys, xs] * g, 0.0, 1.0)
         col = st.colors[ys, xs]
-        rgb = np.zeros(lin.shape + (3,), np.float32)
+        out = np.zeros(lin.shape + (3,), np.float32)
         for ci in st.present:
             m = (col == ci)
             for ch in range(3):
-                rgb[..., ch] += m * lin * CFA_RGB[ci][ch]
+                out[..., ch] += m * lin * CFA_RGB[ci][ch]
+        return out
 
+    if both:
+        return tuple(_finish_dev(x, out_w, out_h, k) for x in (_gray(), _cfa()))
+    rgb = _gray() if gray else _cfa()
+
+    return _finish_dev(rgb, out_w, out_h, k)
+
+
+def _finish_dev(rgb, out_w, out_h, k):
+    """정확한 크기로 맞추고 → 격자선 → 회전 → QImage. (두 그림이 공유하는 마무리)"""
     # ★★요청 크기와 **정확히 같게** 맞춘다(nearest). ny x nx 는 축소배율 f 의 정수 나눗셈이라
     #   요청과 몇 px 어긋나는데(실측 595x892 vs 600x900), 그러면 QML 이 1.009 배로 늘려 그리고
     #   **1px 격자선이 어떤 곳은 2px, 어떤 곳은 사라진다**(세로 사진에서 굵기가 들쭉날쭉하다는
