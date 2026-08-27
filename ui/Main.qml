@@ -252,6 +252,15 @@ ApplicationWindow {
             // 날짜 스탬프는 셰이더가 아니라 QML 오버레이라 uniform 이 없다 — 이 사진에
             // 스탬프가 있는지만 알려 주면 develop_anim 이 단계를 넣거나 뺀다.
             "_hasStamp": win.dateStamp && controller.stampText !== "",
+            // WB 상대 게인 — `pipe` 의 `wbGain` 과 **같은 식**이어야 한다(그쪽은 이 함수를 쓴다).
+            // as-shot(카메라가 읽은 색온도) 게인 — `wb` 단계의 **끝값**이다. 사용자가 색온도를
+            // 만졌으면 그 뒤 `wbuser` 단계가 여기서 슬라이더 값까지 이어 간다.
+            "_wbAsShotR": win.wbPreview(controller.asShotKelvin, controller.asShotTint).x,
+            "_wbAsShotG": win.wbPreview(controller.asShotKelvin, controller.asShotTint).y,
+            "_wbAsShotB": win.wbPreview(controller.asShotKelvin, controller.asShotTint).z,
+            "wbR": win.wbPreview(tempSlider.value, tintSlider.value).x,
+            "wbG": win.wbPreview(tempSlider.value, tintSlider.value).y,
+            "wbB": win.wbPreview(tempSlider.value, tintSlider.value).z,
             "camM0": win.camM[0],
             "camM1": win.camM[1],
             "camM2": win.camM[2],

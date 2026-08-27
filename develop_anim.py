@@ -15,14 +15,20 @@ uniform 이 어떤 값이어야 하는지** 계산한다. 렌더는 기존 `adju
 `onValueChanged` → 파이썬 호출(WB 는 **RAW 재디코드**)까지 줄줄이 발동한다. 그래서 QML 은
 **별도 인스턴스(`pipeAnim`)의 자체 프로퍼티**에만 이 값을 써 넣는다.
 
+⚠️**WB 는 한동안 "못 보여준다"고 적어 뒀는데 틀렸다.** 디코드가 굽는 것은 TREF(5500K)
+  **기준뿐**이고, 사용자 색온도는 셰이더의 `wbR/G/B` 가 상대 게인으로 올린다 — 즉 평소에도
+  (1,1,1) 이 아니다. 셰이더 주석의 "(커밋되면 1)" 을 그대로 믿은 것이 원인이었다.
+  지금은 `wb` 단계로 들어가 있다.
+
 ## 이 단계들은 애니메이션하지 않는다 (uniform 이 없다)
 
 | 단계 | 왜 |
 |---|---|
 | 디모자이크 | 다이얼이 아니다 → CFA 모자이크 그림과 **교차 페이드** 로 표현 |
-| WB(화이트밸런스) | 디코드에 TREF 로 **베이크**돼 있다. 커밋된 상태의 셰이더 게인은 (1,1,1) 이라 되돌릴 손잡이가 없다 |
 | 렌즈 보정 | 디코드에 이미 적용(프록시가 보정된 상태) |
 | 톤 커브 | 값이 아니라 **텍스처**(`curve` 샘플러)라 uniform 으로 못 섞는다 |
+| 선형화/헤드룸 | 이미지 연산이 아니라 표현 방식의 변환이라 '적용 전' 이 의미가 없다 |
+| 하이라이트 디새추(`hlDesat`) | **의도적으로 없음**. RAW 에서 값이 항상 1.0 이라 단계로 넣으면 늘 활성인데, 실측 표본 34장 중 영향 화소가 0 이 아닌 것이 3장·최대 0.31% 뿐이다(6장은 게인>헤드룸이라 게이트 자체가 꺼짐). 넣으려면 영향 화소율을 스냅샷에 계산해 게이팅해야 한다 — `docs/develop_anim.md` |
 
 → 애니메이션은 "디모자이크된 카메라 원본(매트릭스 항등 · 자동노출 되돌림)" 에서 시작한다.
    캡션이 이 사실을 말해 주어야 한다 — 안 보여주는 것과 없는 것은 다르다.
@@ -53,6 +59,9 @@ _VEC4 = frozenset((
 # 3x3 매트릭스의 대각 성분(항등이 1.0)
 _CAM_DIAG = frozenset(("camM0", "camM4", "camM8"))
 
+# WB 상대 게인 — 중립이 1.0(0 이 아니다). green 은 항상 1 이라 사실상 R/B 만 움직인다.
+_WB_UNITY = frozenset(("wbR", "wbG", "wbB"))
+
 # ★단계 순서는 `shaders/adjust.frag` main() 의 번호 주석과 같아야 한다.
 #   (label = 타임라인/캡션 표시, note = "무엇을 하는가" 한 줄)
 STAGES = [
@@ -75,6 +84,15 @@ STAGES = [
     dict(key="mist", label="Mist", uniforms=["mistAmt"],
          note="Scatter is computed in camera-native space, before white balance and exposure, "
               "so the field never depends on the sliders."),
+    # ★셰이더에서 `cam *= vec3(wbR,wbG,wbB)` 는 미스트 뒤, 매트릭스 앞이다.
+    #   중립 (1,1,1) = 디코드가 구운 **TREF(5500K 데이라이트) 그대로**. "WB 를 아예 안 건 상태" 는
+    #   이 렌더 경로가 만들 수 없다 — 절대 색온도를 정확히 하려고 디코드가 항상 기준을 굽는다.
+    #   그래서 이 단계는 "고정 기준 → 이 사진의 색온도" 다. 촬영 색온도가 5500K 근처면 중립과
+    #   같아져 단계가 자동으로 빠진다.
+    dict(key="wb", label="White balance (as shot)", uniforms=["wbR", "wbG", "wbB"],
+         end={"wbR": "_wbAsShotR", "wbG": "_wbAsShotG", "wbB": "_wbAsShotB"},
+         note="From the fixed 5500K daylight reference the decode bakes in, "
+              "to the white balance the camera read."),
     dict(key="matrix", label="Colour matrix",
          note="The camera's own colour response, converted to sRGB.",
          uniforms=["camM0", "camM1", "camM2", "camM3", "camM4",
@@ -88,11 +106,16 @@ STAGES = [
     #   묶는 쪽이 이야기가 된다.
     #   ⚠️uniform 이 여러 셰이더 위치에 걸치지만 **덩이끼리는 겹치지 않는다**
     #     (전 ≤137줄 < filmsim 149 < 후 ≤208 < grain 219) → 순서 검사가 그대로 성립한다.
-    dict(key="predev", label="Tone & detail",
-         uniforms=["exposure", "highlights", "shadows", "whites", "blacks",
+    # ★`wbR/G/B` 가 여기 또 나온다 — `wb` 단계가 as-shot 까지 올려 두고, **내가 바꾼 만큼**은
+    #   이 그룹에서 나머지 보정과 함께 움직인다(사용자 요청). 카메라가 읽은 것과 내가 만진 것을
+    #   가르는 지점이고, 셰이더가 WB 곱셈을 필름시뮬보다 앞에서 하므로 '앞 그룹'이 순서에 맞다.
+    #   안 만진 사진에서는 시작==끝이라 이 uniform 이 아무 일도 하지 않는다.
+    dict(key="predev", label="Temp, tone & detail",
+         uniforms=["wbR", "wbG", "wbB",
+                   "exposure", "highlights", "shadows", "whites", "blacks",
                    "lumaNR", "colorNR", "texAmt", "clarity", "sharpenAmt", "dehaze"],
-         note="Exposure, tone zones, noise reduction, texture, clarity, sharpening and dehaze - "
-              "the corrections that shape the frame before the film look goes on."),
+         note="Your own corrections before the film look goes on: temperature and tint, "
+              "exposure, tone zones, noise reduction, texture, clarity, sharpening, dehaze."),
     dict(key="filmsim", label="Film simulation", uniforms=["lutStrength", "simExpEV"],
          note="The 3D LUT. simExpEV cancels the tone curve the LUT would apply a second time."),
     dict(key="finish", label="Colour & finishing",
@@ -151,6 +174,9 @@ def neutral(name, snap):
         return 0.0
     if name == "contrast":
         return 1.0
+    if name in _WB_UNITY:
+        # 중립 = 디코드가 구운 TREF 기준(상대 게인 1). 위 STAGES 의 `wb` 주석 참조.
+        return 1.0
     if name == "autoExpEV":
         # 자동노출은 디코드에 이미 곱해져 있다. `autoExpEV` 는 원래 '끄기' 오프셋이므로
         # −autoEV 에서 0 으로 옮기면 자동노출이 걸리는 과정이 그대로 보인다.
@@ -177,19 +203,47 @@ def _same(a, b, eps=1e-6):
     return abs(float(a) - float(b)) <= eps
 
 
+def _end_of(st, u, snap):
+    """단계 `st` 에서 uniform `u` 가 **끝나는 값**. 기본은 스냅샷의 최종값."""
+    key = (st.get("end") or {}).get(u)
+    if key:
+        return snap.get(key, snap.get(u, 0.0))
+    return snap.get(u, neutral(u, snap))
+
+
+def _spans(snap):
+    """[(단계, {uniform: (시작, 끝)})] — STAGES 순서.
+
+    ★한 uniform 이 **여러 단계**에 걸릴 수 있다(WB: 카메라가 읽은 것 / 내가 바꾼 것). 그 경우
+      각 단계는 '직전 단계의 끝값 → 자기 끝값' 으로 움직인다. 스킵된 단계는 시작==끝이라
+      사슬을 흔들지 않는다.
+    """
+    cur, out = {}, []
+    for st in STAGES:
+        seg = {}
+        for u in st["uniforms"]:
+            start = cur.get(u, neutral(u, snap))
+            end = _end_of(st, u, snap)
+            seg[u] = (start, end)
+            cur[u] = end
+        out.append((st, seg))
+    return out
+
+
 def active_stages(snap):
     """이 사진에서 **실제로 무언가 바뀌는** 단계만. 나머지는 건너뛴다.
 
     편집하지 않은 파라미터의 단계를 다 보여주면 대부분이 '아무 일도 안 일어나는 구간'이 된다.
     """
     out = []
-    for st in STAGES:
+    for st, seg in _spans(snap):
         if not st["uniforms"]:
             # 교차 페이드 구간은 항상 남긴다. 단 스탬프는 그 사진에 스탬프가 있을 때만.
             on = bool(snap.get("_hasStamp")) if st["key"] == "stamp" else True
             out.append(dict(st, active=on))
             continue
-        moved = any(not _same(neutral(u, snap), snap.get(u, 0.0)) for u in st["uniforms"])
+        # 그 단계 **안에서** 값이 움직이는지 본다(중립 대비가 아니다 — 사슬의 자기 구간).
+        moved = any(not _same(a, b) for a, b in seg.values())
         out.append(dict(st, active=bool(moved)))
     return out
 
@@ -232,17 +286,24 @@ def values(t, snap):
     # ★**모든** 단계의 uniform 을 먼저 실제값으로 채운다. 스킵된 단계(중립==실제)의 값이 dict 에
     #   빠지면 `pipeAnim` 의 그 프로퍼티가 기본값(0)으로 남아 `contrast`(1 이어야) 나
     #   `skyC*`(invert/hasMask) 가 틀어진다 — 검증에서 걸린 실제 버그다.
+    segs = {}
     uni = {}
-    for st in STAGES:
-        for u in st["uniforms"]:
-            uni[u] = snap.get(u, neutral(u, snap))
+    for st, seg in _spans(snap):
+        segs[st["key"]] = seg
+        for u, (_a, b) in seg.items():
+            uni[u] = b            # 마지막으로 정해지는 값 = 그 uniform 의 최종값
     cur = sch[0][0] if sch else None
+    # ★한 uniform 이 여러 단계에 걸리면 **누적값**에서 이어 가야 한다. 단계의 선언된 시작값을
+    #   그대로 쓰면, 아직 시작하지 않은 뒤 단계(w=0)가 자기 시작값으로 앞 단계의 진행 결과를
+    #   덮어쓴다 — t=0 에서 WB 가 이미 as-shot 이 되는 버그가 그것이었다.
+    run = {}
     for st, t0, t1 in sch:
         w = 0.0 if t <= t0 else (1.0 if t >= t1 else _smoothstep((t - t0) / max(t1 - t0, 1e-9)))
-        for u in st["uniforms"]:
-            uni[u] = _lerp(neutral(u, snap), snap.get(u, 0.0), w)
+        for u, (a, b) in segs[st["key"]].items():
+            run[u] = _lerp(run.get(u, a), b, w)
         if t >= t0:
             cur = st
+    uni.update(run)
 
     # ---- 머리 구간 두 그림 레이어의 불투명도 ----
     # 쌓임(아래→위) = 셰이더 렌더 → CFA 그림 → Gray 그림. 위에 있는 것이 먼저 사라진다.

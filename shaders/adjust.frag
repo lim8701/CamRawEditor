@@ -18,7 +18,10 @@ layout(std140, binding = 0) uniform buf {
     // 여기서 −log2(게인) 을 도로 빼는 것으로 구현한다(곱셈이라 동일, 재디코드 없이 즉시 반응).
     float autoExpEV;
     float contrast;     // 대비 (1.0=무변화)
-    float wbR;          // WB 프리뷰 게인 (커밋되면 1)
+    // WB 게인 — 디코드가 굽는 것은 TREF(5500K) 기준**뿐**이고, 사용자 색온도는 여기서 올린다.
+    // ⚠️"커밋되면 1" 이 아니다 — 촬영 색온도가 TREF 와 다르면 평소에도 1 이 아니다(실측 6~25%).
+    //   그 주석을 믿고 Develop 애니메이션에서 WB 단계를 한동안 빼 뒀다.
+    float wbR;
     float wbG;
     float wbB;
     float highlights;   // 톤 영역 (-1..1)
