@@ -146,6 +146,9 @@ class RawPeek:
                             else r.raw_pattern.copy())
             s = r.sizes
             self.top, self.left = int(s.top_margin), int(s.left_margin)
+            # LibRaw 의 flip 코드. RAW Peek 의 다른 탭은 **센서 공간**을 그대로 보여 주지만
+            # (그게 관찰 대상이다) Develop 탭은 프록시 렌더와 겹쳐야 하므로 회전을 맞춰야 한다.
+            self.flip = int(s.flip)
             self.raw_h, self.raw_w = int(s.raw_height), int(s.raw_width)
             self.black = [int(v) for v in list(r.black_level_per_channel)[:4]]
             self.white = int(r.white_level)
@@ -723,6 +726,107 @@ def _slots(panels, titles, slot, gap, title_h):
     pnt.end()
     return img
 
+
+# --------------------------------------------- Develop 애니메이션용 모자이크
+# LibRaw flip 코드 → np.rot90 의 k. ★**추측이 아니라 실측**이다: 모자이크 gray 를 네 방향으로
+# 돌려 프록시 휘도와 상관계수를 재 가장 높은 것을 골랐다(0/3/5 각각 +0.84 / +0.79 / +0.84~0.87,
+# 반대 방향은 −0.27). flip=6 만 샘플이 없어 dcraw 대칭으로 둔 값이다(모르는 코드는 회전 없음).
+_ROT_K = {0: 0, 3: 2, 5: 1, 6: 3}
+
+# 격자선 — ★**표시 픽셀 단위의 가독성 값이고 CFA 패턴 유닛이 아니다.** 전체 프레임 축소본에서
+# 출력 1px 은 광전자 우물 f개(실측 f=7~12)에 해당하므로 패턴 유닛(X-Trans 6, 베이어 2)은
+# 1px 도 안 된다 — 격자로 그릴 수 있는 크기가 아니다. 그래서 "센서는 격자다" 를 말해 주는
+# 순수한 표시 보조선으로 두고, 간격을 정수 px 로 고정해 굵기가 일정하게 나오도록 한다.
+GRID_PX = 8
+GRID_DIM = 0.45
+
+
+def develop_mosaic(st: RawPeek, out_w: int, out_h: int, gray: bool = False):
+    """Develop 탭 머리 프레임 — **전체 프레임** 모자이크(라벨 없음, 뷰포트에 맞춤).
+
+    `gray=True` 면 CFA 색을 칠하지 않고 **센서가 기록한 밝기 하나**만 그린다
+    (Develop 애니메이션의 첫 단계 "Sensor readout").
+
+    ★두 그림은 축소 방식이 **다르다.** 서로 교차 페이드하므로 크기·밝기는 같아야 하지만
+      성격은 각 단계가 말하려는 것이 다르다:
+
+    ★축소 방식이 다르다:
+      - `gray` = **박스 평균**(깨끗한 값). 여기서 nearest 로 뽑으면 R/G/B 우물의 값 차이가
+        그대로 남아 **그냥 노이즈로 보인다** — 지터를 규칙적으로 줘도(격자 무늬), 해시로
+        흩어도(모래알) 둘 다 기각됐다(사용자 보고 2회, 후보 도판으로 확인).
+      - `cfa` = **nearest 표본**. 박스 평균으로 줄이면 R/G/B 가 섞여 그냥 사진처럼 보이고
+        "픽셀마다 색 하나뿐" 이 전달되지 않는다.
+
+    ★대신 **격자선을 그린다**(두 그림 모두). 센서가 격자라는 것은 값의 반점이 아니라 선으로
+      보여주는 게 읽힌다. ⚠️이 선은 **표시 보조선이고 CFA 패턴 유닛이 아니다** — 전체 프레임
+      축소본에서 출력 1px 이 광전자 우물 f개라 패턴 유닛은 1px 도 안 된다. 디모자이크 단계에서
+      두 그림이 걷히면 격자도 함께 사라진다 — 그게 디모자이크가 하는 일이다.
+
+    ★게인은 **박스 평균본에서 한 번** 구해 둘 다에 쓴다 — 표본에서 각자 구하면 교차 페이드
+      도중 밝기가 튄다.
+
+    ⚠️감마를 걸지 않는다(다른 RAW Peek 탭의 `_gamma8` 과 다르다). 셰이더가 `filmicMix=0`
+      (선형 그대로)으로 시작하므로 여기 sRGB 인코딩을 걸면 밝기가 튀어 연결이 끊긴다.
+      선형끼리 이어야 filmic 단계가 "선형 → 눈이 보는 밝기" 라는 제 몫을 한다.
+    """
+    out_w, out_h = max(16, int(out_w)), max(16, int(out_h))
+    # 회전이 걸리는 사진은 out_w/out_h 가 **프록시 방향**으로 들어온다 — 센서 공간 기준으로
+    # 바꿔서 배율을 잡아야 요청한 사각형을 채운다.
+    k = _ROT_K.get(st.flip, 0)
+    if k % 2 == 1:
+        out_w, out_h = out_h, out_w
+    vh, vw = st.vis.shape
+    f = max(1, int(np.ceil(max(vh / out_h, vw / out_w))))
+    ny, nx = max(1, vh // f), max(1, vw // f)
+
+    norm = st.norm_vis()
+    base = _box_down(norm, f)[:ny, :nx]          # 두 그림 공통 — 게인의 기준
+    g = _auto_gain(base)
+
+    # ★★블록 안에서 어느 픽셀을 뽑느냐가 곧 어느 색을 뽑느냐다. stride 를 그냥 f 로 쓰면
+    #   X-Trans(주기 6)에서 **모든 표본이 같은 위상**에 떨어져 화면이 전부 초록이 됐다
+    #   (실측: G 가 55.6% 인데 stride==period 면 사실상 100% G).
+    #   ★위상은 **정수 해시**로 뽑는다. 후보를 재서 골랐다 — 초록 표본 여부의 공간 자기상관
+    #     (가로·세로·대각 두 방향 × lag 1..7 중 최악):
+    #       행/열 1차 램프    **1.000**  ← 완전 주기적. 이게 "조악한 격자 무늬"였다(사용자 보고)
+    #       2D 선형 혼합       0.494     ← 평면이라 대각선 줄이 남는다
+    #       XOR 해시           **0.011**  ← 채택 (잡음 수준)
+    #     결정론적이라 프레임마다 깜빡이지 않고, 뽑힌 색 분포는 실제 CFA 비율과 같다.
+    ii = np.arange(ny, dtype=np.int64)[:, None]
+    jj = np.arange(nx, dtype=np.int64)[None, :]
+    hsh = (ii * 73856093) ^ (jj * 19349663)          # 공간 해시 상용 소수
+    ys = np.clip(ii * f + hsh % f, 0, vh - 1)
+    xs = np.clip(jj * f + (hsh >> 8) % f, 0, vw - 1)
+    if gray:
+        rgb = np.repeat(np.clip(base * g, 0.0, 1.0)[..., None], 3, axis=2)
+    else:
+        lin = np.clip(norm[ys, xs] * g, 0.0, 1.0)
+        col = st.colors[ys, xs]
+        rgb = np.zeros(lin.shape + (3,), np.float32)
+        for ci in st.present:
+            m = (col == ci)
+            for ch in range(3):
+                rgb[..., ch] += m * lin * CFA_RGB[ci][ch]
+
+    # ★★요청 크기와 **정확히 같게** 맞춘다(nearest). ny x nx 는 축소배율 f 의 정수 나눗셈이라
+    #   요청과 몇 px 어긋나는데(실측 595x892 vs 600x900), 그러면 QML 이 1.009 배로 늘려 그리고
+    #   **1px 격자선이 어떤 곳은 2px, 어떤 곳은 사라진다**(세로 사진에서 굵기가 들쭉날쭉하다는
+    #   사용자 보고). 크기가 같으면 1:1 로 그려져 선 굵기가 일정하다.
+    if (rgb.shape[0], rgb.shape[1]) != (out_h, out_w):
+        yi = np.minimum((np.arange(out_h) * rgb.shape[0]) // out_h, rgb.shape[0] - 1)
+        xi = np.minimum((np.arange(out_w) * rgb.shape[1]) // out_w, rgb.shape[1] - 1)
+        rgb = rgb[np.ix_(yi, xi)]
+
+    # 센서 격자선 — 정수 px 간격이라 굵기가 일정하다(위 GRID_PX 주석 참조).
+    rgb[::GRID_PX, :, :] *= GRID_DIM
+    rgb[:, ::GRID_PX, :] *= GRID_DIM
+
+    # ★프록시와 **같은 방향**으로 돌린다. 안 돌리면 세로 사진에서 가로 그림이 나와
+    #   레터박스가 투명하게 남고 그 틈으로 아래 셰이더가 비친다("뒷 배경이 겹쳐 보인다").
+    if k:
+        rgb = np.rot90(rgb, k, axes=(0, 1))
+    return _to_qimage(np.ascontiguousarray((np.clip(rgb, 0.0, 1.0) * 255.0 + 0.5)
+                                           .astype(np.uint8)))
 
 # ------------------------------------------------------- 기본 팬 위치
 def default_center(st: RawPeek):

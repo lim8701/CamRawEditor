@@ -585,7 +585,7 @@ class RawPeekProvider(QQuickImageProvider):
     kind = main(모자이크/디모자이크/경계) · pattern · hist. `SkyMaskProvider` 와 동형이고,
     오버레이를 닫으면 clear() 로 참조를 버린다(26MP 기준 수십 MB)."""
 
-    KINDS = ("main", "pattern", "hist", "mini")
+    KINDS = ("main", "pattern", "hist", "mini", "develop", "developgray")
 
     def __init__(self):
         super().__init__(QQuickImageProvider.ImageType.Image)
@@ -1212,7 +1212,9 @@ class Controller(QObject):
     # 깊이 범위 자동 시드 확정 → QML 이 'depth@auto' 센티넬을 실제 값으로 교체하고 슬라이더에 반영.
     # (켜는 순간엔 거리 맵이 없어 범위를 정할 수 없다 — 맵이 나온 뒤에야 분포에서 시드된다)
     depthAutoResolved = Signal(int, float, float, float)   # layer, near, far, feather
-    rawPeekChanged = Signal()    # RAW Peek(디모자이크 이전 뷰) 그림/정보/상태 갱신 알림
+    rawPeekChanged = Signal()
+    rawPeekAvailChanged = Signal()    # RAW Peek(디모자이크 이전 뷰) 그림/정보/상태 갱신 알림
+    developChanged = Signal()    # Develop 애니메이션 스냅샷/단계 목록 갱신 알림
     _rawPeekSig = Signal(object)  # (내부) RAW Peek 워커 -> 메인 (seq, kind, payload)
     _renderReady = Signal(object)  # (내부) 워커 스레드 -> 메인 스레드 결과 전달
     _fullDecoded = Signal(bool)  # (내부) 풀해상도 디코드 워커 -> 메인 스레드
@@ -1269,6 +1271,13 @@ class Controller(QObject):
         self._peek_caption = ""
         self._peek_status = ""       # 후보 디코드 진행 표시(오래 걸리는 첫 렌더)
         self._peek_center = (0.5, 0.5)   # 오픈 시 기본 팬 위치(디테일 있는 곳)
+        # --- Develop 애니메이션(RAW Peek 의 Develop 탭) ---
+        # 스냅샷 = 애니메이션 시작 시 QML 이 읽어 보낸 **최종 uniform 값**. 여기서 슬라이더를
+        # 읽거나 쓰지 않는다 — 쓰면 사이드카 저장·undo·RAW 재디코드가 발동한다(develop_anim 주석).
+        self._dev_snap = {}
+        self._dev_marks = []
+        self._dev_mosaic_url = "image://rawpeek/develop?v=0"
+        self._dev_gray_url = "image://rawpeek/developgray?v=0"
         self._face_provider = face_provider      # 얼굴 선택 타일 썸네일
         self._provider = provider
         self._cm_provider = cm_provider          # 디스플레이 색관리 LUT(프리뷰 전용)
@@ -3802,7 +3811,10 @@ class Controller(QObject):
         p = self._ui_path or self._path
         return bool(p) and os.path.splitext(p)[1].lower() in RAW_EXTS
 
-    rawPeekAvailable = Property(bool, _get_raw_peek_available, notify=imageChanged)
+    # ⚠️notify 를 `imageChanged` 로 두면 **한 장 뒤처진다** — 그 시그널은 `_ui_path` 갱신
+    #   전에 나가고 갱신 뒤에는 아무 시그널이 없다. 전용 시그널로 확정 시점에 알린다.
+    rawPeekAvailable = Property(bool, _get_raw_peek_available,
+                                notify=rawPeekAvailChanged)
 
     def _get_raw_peek_open(self) -> bool:
         # ★"데이터 준비됨"만 뜻한다(로딩 중은 rawPeekBusy). 여기에 `or self._peek_busy` 를
@@ -3938,6 +3950,94 @@ class Controller(QObject):
         except Exception as e:
             self._rawPeekSig.emit((seq, "error", f"{type(e).__name__}: {e}"))
 
+    # ------------------------------------------------- Develop 애니메이션
+    # 단계 스케줄은 `develop_anim.py` 가 단일 진실원이다. 여기서는 스냅샷을 보관하고
+    # 시간 t 의 uniform 값을 돌려주기만 한다(렌더는 기존 `adjust.frag` 가 한다).
+
+    @Slot("QVariantMap")
+    def developBegin(self, snap) -> None:  # noqa: N802 (QML 슬롯)
+        """애니메이션 시작 — QML 이 읽은 **최종 uniform 값**을 받아 스케줄을 만든다.
+
+        ⚠️vector4d 는 QML 이 `[x, y, z, w]` 배열로 보낸다(QVector4D 로 오면 보간을 못 한다)."""
+        import develop_anim
+        out = {}
+        for k, v in dict(snap).items():
+            try:
+                out[str(k)] = [float(x) for x in v] if isinstance(v, (list, tuple)) \
+                    else float(v)
+            except (TypeError, ValueError):
+                continue
+        self._dev_snap = out
+        try:
+            self._dev_marks = develop_anim.marks(out)
+        except Exception as e:
+            print(f"[develop] 스케줄 실패: {type(e).__name__}: {e}")
+            self._dev_marks = []
+        self.developChanged.emit()
+
+    @Slot()
+    def developEnd(self) -> None:  # noqa: N802 (QML 슬롯)
+        self._dev_snap = {}
+        self._dev_marks = []
+        self.developChanged.emit()
+
+    @Slot(float, result="QVariantMap")
+    def developValues(self, t: float):  # noqa: N802 (QML 슬롯)
+        """시간 t(0..1) 의 uniform 값 + 표시 정보. 스냅샷이 없으면 빈 dict."""
+        if not self._dev_snap:
+            return {}
+        import develop_anim
+        try:
+            return develop_anim.values(float(t), self._dev_snap)
+        except Exception as e:
+            print(f"[develop] values 실패: {type(e).__name__}: {e}")
+            return {}
+
+    def _get_develop_marks(self) -> list:
+        return list(self._dev_marks)
+
+    def _get_develop_ready(self) -> bool:
+        return bool(self._dev_snap)
+
+    def _get_develop_mosaic_url(self) -> str:
+        return self._dev_mosaic_url
+
+    def _get_develop_gray_url(self) -> str:
+        return self._dev_gray_url
+
+    developMarks = Property("QVariantList", _get_develop_marks, notify=developChanged)
+    developReady = Property(bool, _get_develop_ready, notify=developChanged)
+    developMosaicUrl = Property(str, _get_develop_mosaic_url, notify=developChanged)
+    developGrayUrl = Property(str, _get_develop_gray_url, notify=developChanged)
+
+    @Slot(int, int)
+    def developMosaic(self, w: int, h: int) -> None:  # noqa: N802 (QML 슬롯)
+        """애니메이션 머리 프레임 **두 장**(Gray / CFA 모자이크)을 만들어 provider 에 올린다.
+
+        RAW Peek 이 열려 있어야 한다(`_peek` 재사용) — Develop 은 그 탭이므로 항상 열려 있다.
+        ⚠️셰이더 렌더와 **교차 페이드**하므로 라벨을 굽지 않는다(크기·프레이밍이 어긋나면 안 된다).
+        ⚠️두 장 모두 **선형**이다(감마 없음) — 셰이더가 `filmicMix=0` 으로 시작하므로 감마를
+          걸면 밝기가 튄다. `raw_peek.develop_mosaic` 주석 참조.
+        """
+        st = self._peek
+        if st is None or self._peek_provider is None:
+            return
+        import raw_peek
+        try:
+            cfa = raw_peek.develop_mosaic(st, w, h)
+            gray = raw_peek.develop_mosaic(st, w, h, gray=True)
+        except Exception as e:
+            print(f"[develop] 모자이크 실패: {type(e).__name__}: {e}")
+            return
+        self._peek_provider.set_image("develop", cfa)
+        self._peek_provider.set_image("developgray", gray)
+        self._peek_counter += 1
+        self._dev_mosaic_url = f"image://rawpeek/develop?v={self._peek_counter}"
+        self._dev_gray_url = f"image://rawpeek/developgray?v={self._peek_counter}"
+        # ★재진입 방지 — 동기 렌더 경로가 QML 핸들러 안에서 여기까지 들어오므로 즉시 emit 하면
+        #   바인딩이 재평가되지 않는다(RAW Peek 에서 실제로 났던 버그).
+        QTimer.singleShot(0, self.developChanged.emit)
+
     @Slot()
     def rawPeekClose(self) -> None:  # noqa: N802 (QML 슬롯)
         """오버레이를 닫을 때 배열을 놓아준다(26MP 기준 raw+colors ≈ 80MB)."""
@@ -3948,6 +4048,8 @@ class Controller(QObject):
         self._peek_caption = ""
         self._peek_status = ""
         self._peek_center = (0.5, 0.5)
+        self._dev_snap = {}
+        self._dev_marks = []
         self._peek_busy = False
         self._peek_job = None
         # URL 도 되돌린다 — 프로바이더를 비웠으므로 옛 URL 이 남으면 QML 이 재요청하지 않아
@@ -6053,6 +6155,9 @@ class Controller(QObject):
         if self._fresh_load:
             self._fresh_load = False
             self._ui_path = self._path
+            # ★`rawPeekAvailable` 은 `_ui_path` 로 판정하므로 **여기서** 알려야 한다
+            #   (위 imageChanged 시점엔 아직 이전 사진 경로다 — 그래서 한 장 뒤처졌다).
+            self.rawPeekAvailChanged.emit()
             # 새 파일의 날짜/회전을 QML 에 알린다. ⚠️**여기여야 한다** — ①디코드 전(EXIF 단계)에
             # 알리면 아직 이전 사진의 편집 맥락이라 **빠져나온 사진이 edited 가 된다**(3645행 주석)
             # ②재디코딩(렌즈보정 토글 등)에는 editsReady 가 안 나므로, 밖에 두면 이 알림이 예약한

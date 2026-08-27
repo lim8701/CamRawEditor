@@ -16,6 +16,7 @@ The README is the short version. Everything below is the long one.
 | [Architecture](architecture.md) | The render pipeline, the preview-equals-export rule, and what each module does |
 | [RAW demosaic policy](raw_demosaic.md) 🇰🇷 | Why X-Trans and Bayer take different decode paths |
 | [RAW Peek](raw_peek.md) 🇰🇷 | The sensor mosaic before demosaic: the `R` overlay, its timings, and what the masked margins actually contain |
+| [Develop animation](develop_anim.md) 🇰🇷 | Playing the whole develop chain as one timeline: why it moves uniforms instead of sliders, and which neutrals are not zero |
 
 ## The models behind the looks
 

@@ -222,11 +222,89 @@ ApplicationWindow {
     // 없다). 읽기 전용 진단이라 룩/export 배선과 무관하다.
     Shortcut {
         sequence: "R"
+        // ⚠️여기만 `_keysBlocked` 를 쓰지 않는다 — R 은 **토글**이라 오버레이가 떠 있을 때도
+        //   살아 있어야 닫힌다(`_keysBlocked` 는 rawPeekWin.visible 을 포함한다).
+        //   `python shortcuts.py` 의 가드 검사가 이 하나만 예외로 안다.
         enabled: !win._typing && !previewWin.visible && controller.rawPeekAvailable
         onActivated: rawPeekWin.visible ? rawPeekWin.close() : rawPeekWin.open()
     }
-    RawPeekWindow { id: rawPeekWin }
+    RawPeekWindow { id: rawPeekWin; objectName: "rawPeekWin" }
 
+
+    // ---------------------------------------------- Develop 애니메이션
+    // RAW Peek 의 Develop 탭이 켜는 '현상 과정 재생'. 켜져 있는 동안 `pipeView` 가 `pipe` 대신
+    // `pipeAnim` 을 그린다 — 편집 상태(슬라이더/win 프로퍼티)는 **하나도 건드리지 않는다.**
+    property bool morphOn: false
+
+    // 애니메이션의 **최종 값** 스냅샷. 시작할 때 한 번만 읽는다.
+    // ★값의 식은 `pipe` 의 바인딩에서 **생성**했다(gen_morph_wiring.py) — 손으로 옮기면
+    //   슬라이더 id 오타가 uniform 하나를 조용히 0 으로 만든다.
+    // ⚠️읽기 전용이다. 슬라이더에 쓰면 editSaveWatch → 사이드카 저장 + undo push,
+    //   onValueChanged → 파이썬 호출(WB 는 RAW 재디코드)까지 발동한다.
+    function morphSnapshot() {
+        var _v4 = function (v) { return [v.x, v.y, v.z, v.w] }
+        return {
+            // 자동노출 단계는 −autoEV 에서 0 으로 옮긴다 → 그 크기를 알려 준다.
+            "_autoEV": controller.autoExposureEV,
+            "filmicMix": 1.0,          // 항상 걸린다 — 중립 0 에서 1 로 올린다
+            // 날짜 스탬프는 셰이더가 아니라 QML 오버레이라 uniform 이 없다 — 이 사진에
+            // 스탬프가 있는지만 알려 주면 develop_anim 이 단계를 넣거나 뺀다.
+            "_hasStamp": win.dateStamp && controller.stampText !== "",
+            "camM0": win.camM[0],
+            "camM1": win.camM[1],
+            "camM2": win.camM[2],
+            "camM3": win.camM[3],
+            "camM4": win.camM[4],
+            "camM5": win.camM[5],
+            "camM6": win.camM[6],
+            "camM7": win.camM[7],
+            "camM8": win.camM[8],
+            "autoExpEV": controller.autoExposureOffsetEV,
+            "exposure": expSlider.value,
+            "mistAmt": mistAmtSlider.value,
+            "highlights": hiSlider.value,
+            "shadows": shSlider.value,
+            "whites": whSlider.value,
+            "blacks": blSlider.value,
+            "lumaNR": lumaNrSlider.value,
+            "colorNR": colorNrSlider.value,
+            "texAmt": texSlider.value,
+            "clarity": claritySlider.value,
+            "sharpenAmt": sharpAmtSlider.value,
+            "dehaze": dehazeSlider.value,
+            "lutStrength": simStrengthSlider.value,
+            "simExpEV": controller.simExpEV,
+            "saturation": satSlider.value,
+            "vibrance": vibSlider.value,
+            "hslHa": _v4(Qt.vector4d(win.hslH[0], win.hslH[1], win.hslH[2], win.hslH[3])),
+            "hslHb": _v4(Qt.vector4d(win.hslH[4], win.hslH[5], win.hslH[6], win.hslH[7])),
+            "hslSa": _v4(Qt.vector4d(win.hslS[0], win.hslS[1], win.hslS[2], win.hslS[3])),
+            "hslSb": _v4(Qt.vector4d(win.hslS[4], win.hslS[5], win.hslS[6], win.hslS[7])),
+            "hslLa": _v4(Qt.vector4d(win.hslL[0], win.hslL[1], win.hslL[2], win.hslL[3])),
+            "hslLb": _v4(Qt.vector4d(win.hslL[4], win.hslL[5], win.hslL[6], win.hslL[7])),
+            "contrast": conSlider.value,
+            "cgSatSh": cgShSatSlider.value,
+            "cgSatMid": cgMidSatSlider.value,
+            "cgSatHi": cgHiSatSlider.value,
+            "skyA0": _v4(win.skyA0),
+            "skyB0": _v4(win.skyB0),
+            "skyC0": _v4(win.skyC0),
+            "skyA1": _v4(win.skyA1),
+            "skyB1": _v4(win.skyB1),
+            "skyC1": _v4(win.skyC1),
+            "skyA2": _v4(win.skyA2),
+            "skyB2": _v4(win.skyB2),
+            "skyC2": _v4(win.skyC2),
+            "skyA3": _v4(win.skyA3),
+            "skyB3": _v4(win.skyB3),
+            "skyC3": _v4(win.skyC3),
+            "skyA4": _v4(win.skyA4),
+            "skyB4": _v4(win.skyB4),
+            "skyC4": _v4(win.skyC4),
+            "vignette": vignetteSlider.value,
+            "grainAmt": grainSlider.value,
+        }
+    }
 
     // 컬러 그레이딩 Hue 슬라이더 위에 두는 무지개 스펙트럼 막대(슬라이더 위치↔색상 가이드).
     // (네이티브 스타일은 Slider.background 커스터마이즈 미지원 → 별도 막대로 표시)
@@ -2752,7 +2830,8 @@ ApplicationWindow {
     // Alt+↑: 상위 폴더로 이동(Windows 탐색기 관례). 위로가기 버튼과 동일하게 직전 폴더 선택 유지.
     Shortcut {
         sequence: "Alt+Up"
-        enabled: !win.batchActive && !win.wallActive && !previewWin.visible
+        enabled: !win._keysBlocked && !win.batchActive && !win.wallActive
+                 && !previewWin.visible
         onActivated: {
             win._selectAfterScan = controller.currentFolder
             controller.goUp()
@@ -2763,7 +2842,10 @@ ApplicationWindow {
     // 배치 중에는 비활성(Enter 가 각자의 용도로 쓰이거나 조작 차단 상태).
     Shortcut {
         sequences: ["Return", "Enter"]
-        enabled: win.showExplorer && fileListView.currentIndex >= 0
+        // ★`_keysBlocked` 를 반드시 볼 것 — 개별 조건만 적어 뒀다가 **RAW Peek 오버레이가 떠
+        //   있는데 Enter 로 프리뷰가 열렸다**(사용자 보고). `Shortcut` 은 앱 전역이라 오버레이의
+        //   Keys 핸들러보다 먼저 잡는다.
+        enabled: !win._keysBlocked && win.showExplorer && fileListView.currentIndex >= 0
                  && !previewWin.visible && !stampField.activeFocus && !win.batchActive
                  && !win.wallActive
         onActivated: {
@@ -5082,6 +5164,9 @@ ApplicationWindow {
                         property real mistLogK: controller.adjustCoeffs["mistLogK"]
                         property real mistColor: mistColorSlider.value
                         property real mistColorFloor: controller.adjustCoeffs["mistColorFloor"]
+                        // ★Develop 애니메이션 전용 손잡이 — 여기서는 **1.0 고정**이다(=filmic 항상 적용,
+                        //   기존 동작과 비트 동일). 움직이는 것은 `pipeAnim` 인스턴스뿐이다.
+                        property real filmicMix: 1.0
                         fragmentShader: "../shaders/adjust.frag.qsb"
                     }
                 }}
@@ -5373,6 +5458,7 @@ ApplicationWindow {
                     // 파이프라인 셰이더: 프록시 해상도에서만 렌더(직접 표시 안 함)
                     ShaderEffect {
                         id: pipe
+                        objectName: "pipe"      // 헤드리스 검증에서 찾기 위한 이름
                         width: viewport.procW
                         height: viewport.procH
                         visible: false
@@ -5524,9 +5610,234 @@ ApplicationWindow {
                         property real mistLogK: controller.adjustCoeffs["mistLogK"]
                         property real mistColor: mistColorSlider.value
                         property real mistColorFloor: controller.adjustCoeffs["mistColorFloor"]
+                        // ★Develop 애니메이션 전용 손잡이 — 여기서는 **1.0 고정**이다(=filmic 항상 적용,
+                        //   기존 동작과 비트 동일). 움직이는 것은 `pipeAnim` 인스턴스뿐이다.
+                        property real filmicMix: 1.0
 
                         fragmentShader: "../shaders/adjust.frag.qsb"
                     }
+
+                    // ------------------------------------------------------------------
+                    // Develop 애니메이션 전용 렌더 (RAW Peek 의 Develop 탭).
+                    //
+                    // ★이 인스턴스는 **프리뷰 전용 장식이고 CLAUDE.md ★렌더 경로의
+                    //   4중 계약(pipe/pipeFull/pipeline/comparePipe)의 일부가 아니다.**
+                    //   `pipeline.render_full` 과 동기화하려 들지 말 것 — export 에 아무
+                    //   영향이 없고, 룩 파라미터를 새로 만들 때 여기까지 배선할 필요는 없다
+                    //   (다만 uniform 을 **추가**하면 프로퍼티 이름 집합이 갈라지므로
+                    //    `python presets.py` 의 대조 검사가 잡아 준다).
+                    //
+                    // ⚠️애니메이션 값은 파이썬(`develop_anim.py`)이 계산해 넣는다. 슬라이더를
+                    //   건드리면 사이드카 저장·undo·RAW 재디코드가 발동하므로 **읽기만** 한다.
+                    // ⚠️유휴 시 GPU 비용 0 을 위해 Loader 안에 있다(gpuExportLoader 와 같은 이유).
+                    Loader {
+                        id: pipeAnimLoader
+                        active: win.morphOn
+                        sourceComponent: Component { ShaderEffect {
+                        id: pipeAnim
+                        objectName: "pipeAnim"
+                        width: viewport.procW
+                        height: viewport.procH
+                        visible: false
+
+                        // 파이썬이 대입하는 값들을 한 번에 적용(모드 진입/스크럽마다).
+                        function applyValues(u) {
+                            for (var k in u) {
+                                var v = u[k]
+                                // ★⚠️파이썬에서 온 리스트는 **QVariantList** 라
+                                //   `Array.isArray(v)` 가 **false** 다. 그걸로 판정했다가
+                                //   vec4 대입에서 "Cannot assign QVariantList to QVector4D"
+                                //   예외가 나 **루프 전체가 중단**됐고, 뒤쪽 uniform 과
+                                //   캡션까지 통째로 안 들어갔다(검증에서 잡힌 실제 버그).
+                                //   → length 로 판정한다.
+                                if (v !== null && typeof v === "object" && v.length === 4)
+                                    pipeAnim[k] = Qt.vector4d(v[0], v[1], v[2], v[3])
+                                else
+                                    pipeAnim[k] = v
+                            }
+                        }
+
+
+                        // 셰이더 uniform 과 이름이 일치해야 함
+                        property variant src: srcImage
+                        property variant dispSrc: dispSrcTex
+                        property variant lut: lutImage
+                        property variant curve: curveImage
+                        property variant texBlur: texBlurTex
+                        property variant claBlur: claBlurTex
+                        property variant sharpBlur: sharpBlurTex
+                        property real camM0: 1.0   // ← develop_anim 이 대입
+                        property real camM1: 0.0   // ← develop_anim 이 대입
+                        property real camM2: 0.0   // ← develop_anim 이 대입
+                        property real camM3: 0.0   // ← develop_anim 이 대입
+                        property real camM4: 1.0   // ← develop_anim 이 대입
+                        property real camM5: 0.0   // ← develop_anim 이 대입
+                        property real camM6: 0.0   // ← develop_anim 이 대입
+                        property real camM7: 0.0   // ← develop_anim 이 대입
+                        property real camM8: 1.0   // ← develop_anim 이 대입
+                        property real stampOn: 0.0   // 스탬프는 셰이더(원본 코너)가 아니라 cropClip 위 stampOverlay 가 최종 프레임 기준으로 그림
+                        property real stampStrength: 0.92
+                        property real exposure: 0.0   // ← develop_anim 이 대입
+                        // 필름시뮬 보정 노출 — LUT 에 든 후지 톤커브가 filmic 위에 두 번 걸리는
+                        // 것을 상쇄(pipeline.film_sim_ev). 이미지×시뮬 상수라 슬라이더가 아니다.
+                        // ⚠️pipe/pipeFull/pipeline 세 곳 동일해야 함(프리뷰=Export).
+                        property real simExpEV: 0.0   // ← develop_anim 이 대입
+                        // 자동노출 끄기 오프셋 — 재디코드 대신 노출 지수에서 뺀다.
+                        // ⚠️pipe/pipeFull/pipeline 세 곳 동일해야 함(프리뷰=Export).
+                        property real autoExpEV: -0.0   // ← develop_anim 이 대입
+                        // 센서 포화 레벨 — 하이라이트 디새추를 '진짜 클립'에서만 걸리게 하는 게이트
+                        // 기준(raw_loader.clip_level). ⚠️pipe/pipeFull/comparePipe/pipeline 네 곳 동일.
+                        property real clipLevel: controller.clipLevel
+                        property real contrast: 1.0   // ← develop_anim 이 대입
+                        property real highlights: 0.0   // ← develop_anim 이 대입
+                        property real shadows: 0.0   // ← develop_anim 이 대입
+                        property real whites: 0.0   // ← develop_anim 이 대입
+                        property real blacks: 0.0   // ← develop_anim 이 대입
+                        property real texAmt: 0.0   // ← develop_anim 이 대입
+                        property real clarity: 0.0   // ← develop_anim 이 대입
+                        property real dehaze: 0.0   // ← develop_anim 이 대입
+                        property real saturation: 0.0   // ← develop_anim 이 대입
+                        property real vibrance: 0.0   // ← develop_anim 이 대입
+                        // HSL 컬러 믹서 (8색상대 → vec4 ×2씩: a=0..3, b=4..7)
+                        property vector4d hslHa: Qt.vector4d(0.0, 0.0, 0.0, 0.0)   // ← develop_anim 이 대입
+                        property vector4d hslHb: Qt.vector4d(0.0, 0.0, 0.0, 0.0)   // ← develop_anim 이 대입
+                        property vector4d hslSa: Qt.vector4d(0.0, 0.0, 0.0, 0.0)   // ← develop_anim 이 대입
+                        property vector4d hslSb: Qt.vector4d(0.0, 0.0, 0.0, 0.0)   // ← develop_anim 이 대입
+                        property vector4d hslLa: Qt.vector4d(0.0, 0.0, 0.0, 0.0)   // ← develop_anim 이 대입
+                        property vector4d hslLb: Qt.vector4d(0.0, 0.0, 0.0, 0.0)   // ← develop_anim 이 대입
+                        property real sharpenAmt: 0.0   // ← develop_anim 이 대입
+                        property real sharpenDetail: sharpDetailSlider.value
+                        property real sharpenMask: sharpMaskSlider.value
+                        property real texelW: 1.0 / Math.max(1, viewport.procW)
+                        property real texelH: 1.0 / Math.max(1, viewport.procH)
+                        property real vignette: 0.0   // ← develop_anim 이 대입
+                        property real grainAmt: 0.0   // ← develop_anim 이 대입
+                        property real grainSize: grainSizeSlider.value
+                        property real grainRough: grainRoughSlider.value
+                        property real grainColor: grainColorSlider.value
+                        // 드래그 중엔 사각 셀로 폴백 — 원판은 계산이 무거워 어떤 슬라이더를
+                        // 움직여도 매 프레임 재계산돼 끊긴다. WB 드래그 근사와 같은 패턴
+                        // (드래그=빠른 근사, 릴리즈=정확). ⚠️게이트는 editSliderDragActive —
+                        // editDragActive(globalPress 포함)를 쓰면 모든 클릭에서 결이 깜빡인다.
+                        // ★애니메이션이 **움직이는 중**에는 원판을 끈다 — `pipe` 가 슬라이더
+                        //   드래그 중에 하는 것과 같은 이유다. 원판 원시체는 샘플당 해시가
+                        //   1 → 27 개로 늘고 그것을 3층 × 3옥타브로 돈다(셰이더 diskNoise 주석,
+                        //   CPU export 실측은 사각 셀 대비 11~12배). 매 16ms 프레임으로 그리면
+                        //   그 비용이 그대로 드러난다. 멈추면 정확한 모양으로 돌아온다.
+                        //   ⚠️`grainAmt > 0` 조기 이탈이 있으므로 이 비용은 Grain 단계부터만 든다.
+                        property real grainShape: (grainShapeCheck.checked && !rawPeekWin.devMoving)
+                                                  ? 1.0 : 0.0
+                        property real grainAspect: viewport.procW / Math.max(1, viewport.procH)
+                        // 그레인 서브픽셀 평균용 출력 텍셀 — **이 인스턴스의 실제 렌더 크기** 기준.
+                        // (texelW 는 샤프닝 공간스케일용이라 pipeFull 에서도 프록시 텍셀 → 쓰면 안 됨)
+                        property real grainTexelW: 1.0 / Math.max(1, width)
+                        property real grainTexelH: 1.0 / Math.max(1, height)
+                        property real clipWarn: 0.0                       // 애니메이션 중 오버레이 없음
+                        property real zoneShow: 0.0                       // 애니메이션 중 오버레이 없음
+                        // 하이라이트 디새추 게이트 — pipeFull(GPU export)/pipeline 과 동일해야 함(위 주석).
+                        property real hlDesat: controller.isDisplayImage ? 0.0 : 1.0
+                        // 디스플레이 색관리(프리뷰 전용): 토글 ON + 유효 CM LUT 있을 때만.
+                        property real displayCM: (win.displayCM && controller.hasDisplayCM) ? 1.0 : 0.0
+                        property variant cmLut: cmLutImage
+                        property real cmLutSize: controller.cmLutN
+                        // 컬러 그레이딩(스플릿 토닝): hue 슬라이더(도) → 0..1 정규화.
+                        property real cgHueSh: cgShHueSlider.value / 360.0
+                        property real cgSatSh: 0.0   // ← develop_anim 이 대입
+                        property real cgHueMid: cgMidHueSlider.value / 360.0
+                        property real cgSatMid: 0.0   // ← develop_anim 이 대입
+                        property real cgHueHi: cgHiHueSlider.value / 360.0
+                        property real cgSatHi: 0.0   // ← develop_anim 이 대입
+                        property real cgBalance: cgBalanceSlider.value
+                        property real lumaNR: 0.0   // ← develop_anim 이 대입
+                        property real colorNR: 0.0   // ← develop_anim 이 대입
+                        // WB 게인: TREF 베이크 대비 상대게인(카메라공간). 재디코딩 없이 실시간.
+                        property vector3d wbGain: win.wbPreview(tempSlider.value, tintSlider.value)
+                        property real wbR: wbGain.x
+                        property real wbG: wbGain.y
+                        property real wbB: wbGain.z
+                        property real lutSize: win.curLutN      // LUT 별 N(리비전 의존)
+                        property real lutStrength: 0.0   // ← develop_anim 이 대입
+                        property int lutEnabled: simCombo.currentIndex === 0 ? 0 : 1
+                        // 로컬 마스크 레이어(3) — win.layers vec4 유니폼. 오버레이=활성 레이어(프리뷰 전용).
+                        property variant skyMask0: skyMaskImage0
+                        property variant skyMask1: skyMaskImage1
+                        property variant skyMask2: skyMaskImage2
+                        property variant skyMask3: skyMaskImage3
+                        property variant skyMask4: skyMaskImage4
+                        property vector4d skyA0: Qt.vector4d(0.0, 0.0, 0.0, 0.0)   // ← develop_anim 이 대입
+                        property vector4d skyB0: Qt.vector4d(0.0, 0.0, 0.0, 0.0)   // ← develop_anim 이 대입
+                        property vector4d skyC0: Qt.vector4d(0.0, 0.0, 0.0, 0.0)   // ← develop_anim 이 대입
+                        property vector4d skyA1: Qt.vector4d(0.0, 0.0, 0.0, 0.0)   // ← develop_anim 이 대입
+                        property vector4d skyB1: Qt.vector4d(0.0, 0.0, 0.0, 0.0)   // ← develop_anim 이 대입
+                        property vector4d skyC1: Qt.vector4d(0.0, 0.0, 0.0, 0.0)   // ← develop_anim 이 대입
+                        property vector4d skyA2: Qt.vector4d(0.0, 0.0, 0.0, 0.0)   // ← develop_anim 이 대입
+                        property vector4d skyB2: Qt.vector4d(0.0, 0.0, 0.0, 0.0)   // ← develop_anim 이 대입
+                        property vector4d skyC2: Qt.vector4d(0.0, 0.0, 0.0, 0.0)   // ← develop_anim 이 대입
+                        property vector4d skyA3: Qt.vector4d(0.0, 0.0, 0.0, 0.0)   // ← develop_anim 이 대입
+                        property vector4d skyB3: Qt.vector4d(0.0, 0.0, 0.0, 0.0)   // ← develop_anim 이 대입
+                        property vector4d skyC3: Qt.vector4d(0.0, 0.0, 0.0, 0.0)   // ← develop_anim 이 대입
+                        property vector4d skyA4: Qt.vector4d(0.0, 0.0, 0.0, 0.0)   // ← develop_anim 이 대입
+                        property vector4d skyB4: Qt.vector4d(0.0, 0.0, 0.0, 0.0)   // ← develop_anim 이 대입
+                        property vector4d skyC4: Qt.vector4d(0.0, 0.0, 0.0, 0.0)   // ← develop_anim 이 대입
+                        // ★애니메이션 중에는 마스크 빨간 오버레이를 **끈다**(-1 = 미표시).
+                        //   ⚠️`pipe` 의 이 바인딩은 **두 줄**이다. 생성 스크립트가 첫 줄만 치환해
+                        //     `-1.0 ? win.activeLayer : -1.0` 이 되어 -1.0 이 truthy 로 평가되고
+                        //     레이어 0 의 빨간 오버레이가 그대로 나왔다(사용자 보고). 여기에
+                        //     이어지는 줄을 만들지 말 것.
+                        property real skyShowLayer: -1.0
+                        // 현상 계수(coeffs.py 단일 진실원) uniform 주입 — pipeline.py 와 값 공유.
+                        property real dehazeKLocal: controller.adjustCoeffs["dehazeKLocal"]
+                        property real dehazeKContrast: controller.adjustCoeffs["dehazeKContrast"]
+                        property real dehazeKVeil: controller.adjustCoeffs["dehazeKVeil"]
+                        property real dehazeKSat: controller.adjustCoeffs["dehazeKSat"]
+                        property real clarityK: controller.adjustCoeffs["clarityK"]
+                        property real textureK: controller.adjustCoeffs["textureK"]
+                        property real skyTempK: controller.adjustCoeffs["skyTempK"]
+                        property real skyTintK: controller.adjustCoeffs["skyTintK"]
+                        property real toneHiShK: controller.adjustCoeffs["toneHiShK"]
+                        property real toneWhBlK: controller.adjustCoeffs["toneWhBlK"]
+                        property real vignetteK: controller.adjustCoeffs["vignetteK"]
+                        property real grainK: controller.adjustCoeffs["grainK"]
+                        property real grainToneK: controller.adjustCoeffs["grainToneK"]
+                        property real grainToneGammaK: controller.adjustCoeffs["grainToneGammaK"]
+                        property real grainToneFloorK: controller.adjustCoeffs["grainToneFloorK"]
+                        property real grainSkewK: controller.adjustCoeffs["grainSkewK"]
+                        property real sharpenK: controller.adjustCoeffs["sharpenK"]
+                        property real hslHueDegK: controller.adjustCoeffs["hslHueDegK"]
+                        property real hslLumK: controller.adjustCoeffs["hslLumK"]
+                        property real colorGradeK: controller.adjustCoeffs["colorGradeK"]
+                        // 디헤이즈 물리(DCP): 투과율 맵 + 대기광 + conf(어두운 장면 0 → 톤모델 폴백).
+                        property variant hazeT: hazeImage
+                        property real hazeAr: controller.hazeA[0]
+                        property real hazeAg: controller.hazeA[1]
+                        property real hazeAb: controller.hazeA[2]
+                        property real hazeConf: controller.hazeConf
+                        property real dehazeKTmin: controller.adjustCoeffs["dehazeKTmin"]
+                        property real dehazeKResid: controller.adjustCoeffs["dehazeKResid"]
+                        // NR 베이스: 디노이즈드 중성(준비 전엔 nrOn=0 → 무동작).
+                        // 가이디드=luma 그레이 / AI=RGB(nrChroma=1 → 컬러 NR 이 AI 크로마 사용)
+                        property variant nrBase: nrBaseImage
+                        property real nrOn: controller.nrReady ? 1.0 : 0.0
+                        property real nrChroma: controller.nrChroma ? 1.0 : 0.0
+                        // 미스트(1단계) — 커널 합성은 mistFieldPass 가 이미 했다(샘플러 슬롯 절약).
+                        // ⚠️binding 6 은 원래 stampTex 였다. adjust.frag 는 D3D11 상한인 16개를
+                        //   정확히 쓰고 있으니 새 sampler 를 추가하지 말 것(셰이더 주석 참조).
+                        property variant mistScat: mistFieldTex
+                        property real mistAmt: 0.0   // ← develop_anim 이 대입
+                        property real mistOn: controller.mistOn
+                        property real mistK: controller.adjustCoeffs["mistK"]
+                        property real mistLogA: controller.adjustCoeffs["mistLogA"]
+                        property real mistLogK: controller.adjustCoeffs["mistLogK"]
+                        property real mistColor: mistColorSlider.value
+                        property real mistColorFloor: controller.adjustCoeffs["mistColorFloor"]
+                        property real filmicMix: 0.0   // ← develop_anim 이 대입 (0=선형, 1=filmic)
+
+
+                        fragmentShader: "../shaders/adjust.frag.qsb"
+                    } }
+                    }
+
+
 
                     // 고정 크기 FBO(프록시 해상도)에 렌더 -> 회전/크롭(지오메트리)을 뷰 변환으로
                     // 적용. cropClip 이 표시 영역(편집=캔버스 전체 / 결과=크롭)으로 잘라낸다.
@@ -5566,7 +5877,11 @@ ApplicationWindow {
                             ShaderEffectSource {
                                 id: pipeView
                                 // 원본 비교 중에는 무편집 현상(dispPre)을 같은 변환/크롭으로 표시.
-                                sourceItem: win.compareOn ? comparePipe : pipe
+                                // Develop 애니메이션 중에는 pipeAnim(같은 셰이더, 애니메이션 값)을 그린다.
+                        // 이 한 줄이 전체 렌더를 갈아끼우는 유일한 지점 — 크롭/줌/기하는 전부 하류다.
+                        sourceItem: win.morphOn && pipeAnimLoader.item
+                                    ? pipeAnimLoader.item
+                                    : (win.compareOn ? comparePipe : pipe)
                                 textureSize: Qt.size(viewport.procW, viewport.procH)
                                 width: viewport.procW
                                 height: viewport.procH
@@ -10652,6 +10967,46 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                         ToolTip.text: modelData.tip + "  (" + modelData.key + ")"
                     }
                 }
+            }
+
+            // ── RAW Peek: 단축키(?) 바로 위 ──
+            // 이 레일 하단은 '패널 선택과 무관한 앱 전역 항목'의 자리다(아래 ♥ 주석). RAW Peek 은
+            // 그중 **유일하게 사진에 따라 꺼지는** 항목이라(RAW 만 CFA 가 있다) 조건부인 패널
+            // 셀렉터 쪽에 가장 가깝게 둔다 — 그리고 이렇게 얹으면 ♥·? 의 화면상 위치가 안 바뀐다
+            // (둘 다 bottom 앵커라 아래에 끼우면 기존 아이콘이 밀린다).
+            // 아이콘은 새로 그리지 않고 ♥·? 와 같은 글리프 방식(▩ = 센서 광전자 우물 격자).
+            // ⚠️`▦` 는 경로 표시줄의 컨택트 시트 토글이 이미 쓰고 있어 피했다.
+            Rectangle {
+                id: peekRailBtn
+                objectName: "peekRailBtn"
+                width: 40; height: 40
+                radius: 6
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 8 + (40 + 4) * 2      // ♥(40) + ?(40) + 간격
+                anchors.horizontalCenter: parent.horizontalCenter
+                readonly property bool avail: controller.rawPeekAvailable
+                color: (avail && peekMouse.containsMouse) ? "#33373f" : "transparent"
+                Label {
+                    anchors.centerIn: parent
+                    text: "\u25A9"
+                    // 일반 이미지에서는 **감추지 않고 회색으로 남긴다** — 사라지면 왜 없는지
+                    // 알 수 없고, bottom 앵커라 감춰도 아래 아이콘 위치는 그대로다.
+                    color: !peekRailBtn.avail ? "#4a4a4a"
+                           : (peekMouse.containsMouse ? "#8ab4f8" : "#8a8a8a")
+                    font.pixelSize: 20
+                }
+                MouseArea {
+                    id: peekMouse
+                    anchors.fill: parent
+                    enabled: peekRailBtn.avail
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: rawPeekWin.visible ? rawPeekWin.close() : rawPeekWin.open()
+                }
+                ToolTip.visible: peekMouse.containsMouse
+                ToolTip.delay: 800
+                ToolTip.text: "RAW Peek - the sensor data before demosaic, "
+                              + "and the develop animation  (R)"
             }
 
             // ── 단축키 목록: 후원 버튼 바로 위 ──

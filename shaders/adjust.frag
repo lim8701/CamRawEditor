@@ -120,6 +120,14 @@ layout(std140, binding = 0) uniform buf {
     float mistLogK;      // = log2(1 + MIST_TEX_MAX / A). coeffs.MIST_TEX_* 주석 참조
     float mistColor;     // 산란광 색 복원 0..1 (0=물리). mist.tint_scatter 와 동일 수식
     float mistColorFloor;// 색 복원이 죽는 휘도 바닥(coeffs.MIST_COLOR_FLOOR)
+    // ★Develop 애니메이션 전용 손잡이 — **룩 파라미터가 아니다.**
+    //   1 = 항상 걸리는 filmic 베이스 톤커브(정상 동작), 0 = 선형 광량을 그대로 표시.
+    //   `pipe`/`pipeFull` 은 **1.0 리터럴**로 고정하므로 프리뷰·export 는 아무 영향이 없고
+    //   `pipeline.render_full`(CPU export)도 손댈 것이 없다. 애니메이션의 `pipeAnim`
+    //   인스턴스만 0→1 로 움직여 '센서 선형 → 눈이 보는 밝기' 단계를 보여 준다.
+    //   ⚠️롤오프만 끄는 방식(OETF 유지)은 **실측 평균절대차 0.0코드**로 보이지 않아 기각했다
+    //     (|Δ|>2코드 픽셀 0.2%). 선형까지 내려가야 보인다(평균 61.5코드 = +0.94EV).
+    float filmicMix;
 } ubuf;
 
 layout(binding = 1) uniform sampler2D src;       // 원본(카메라네이티브 감마 인코딩)
@@ -485,7 +493,8 @@ void main() {
     vec3 lin = applyCamMat(cam) * pow(2.0, ubuf.exposure + ubuf.simExpEV + ubuf.autoExpEV
                  + ubuf.skyA0.x * skyM0 + ubuf.skyA1.x * skyM1 + ubuf.skyA2.x * skyM2
                  + ubuf.skyA3.x * skyM3 + ubuf.skyA4.x * skyM4);
-    vec3 rgb = filmic(lin);                                  // → display sRGB[0,1]
+    // filmicMix=1 이 정상(항상 걸린다). 0 은 Develop 애니메이션이 '선형 그대로' 를 보여줄 때만.
+    vec3 rgb = mix(clamp(lin, 0.0, 1.0), filmic(lin), ubuf.filmicMix);   // → display sRGB[0,1]
 
     // 0.5) 하이라이트 디새추레이션: near-clip 센서클립 색끼(예: 불꽃 코어 청록) 제거 → 중성.
     //      ⚠️쿨(청/녹 우세) 하이라이트만 중성화 — 밝은 빨강/주황 광원(네온·간판)은 보존.

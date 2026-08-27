@@ -18,7 +18,38 @@ Item {
     z: 1000
 
     // 표시 모드 — raw_peek.MODE_* 와 같은 순서/값이어야 한다.
-    readonly property var modeNames: ["Gray", "CFA", "Planes", "Demosaic"]
+    readonly property var modeNames: ["Gray", "CFA", "Planes", "Demosaic", "Develop"]
+
+    // ---- Develop(현상 과정 재생) ----
+    // ★렌더는 `ui/Main.qml` 의 `pipeAnim`(같은 adjust.frag)이 하고, 값은 `develop_anim.py` 가
+    //   계산한다. 이 탭은 그 결과를 보여주고 타임라인을 조작할 뿐이다.
+    readonly property bool isDevelop: mode === 4
+    property real devT: 0.0                  // 0..1 타임라인 위치
+    property bool devPlaying: false
+    property real devSeconds: 12.0           // 전체 재생 시간
+    property real devMosaicOpacity: 0.0      // CFA 모자이크 그림 불투명도(교차 페이드)
+    property real devGrayOpacity: 0.0        // Gray(센서 밝기) 그림 불투명도 — CFA 위에 얹힌다
+    property real devStampOpacity: 0.0       // 날짜 스탬프 페이드인 (Date stamp 단계)
+    // ★그림이 **움직이는 중**인가(재생 또는 스크럽 드래그). `pipe` 가 슬라이더 드래그 중에
+    //   그레인 원판을 끄는 것과 같은 용도다 — Main.qml 의 `pipeAnim.grainShape` 가 읽는다.
+    readonly property bool devMoving: devPlaying || devScrubMa.pressed
+    // "4 / 8" — 활성 단계 중 지금이 몇 번째인가. 스킵된 단계는 세지 않는다(타임라인 눈금과 같다).
+    readonly property string devStepText: {
+        if (!isDevelop) return ""
+        var ms = controller.developMarks || []
+        var n = 0, cur = 0
+        for (var i = 0; i < ms.length; i++) {
+            if (!ms[i].active) continue
+            n += 1
+            if (ms[i].label === devLabel) cur = n
+        }
+        return n > 0 && cur > 0 ? (cur + " / " + n) : ""
+    }
+    property string devLabel: ""
+    property string devNote: ""
+    // ⚠️pipeAnim 아이템 참조는 **프로퍼티에 담아 둔다**. 바인딩에서 함수를 부르면 재평가
+    //   시점이 불안정해 소스가 null 로 남는다.
+    property var devSrcItem: null
     property int mode: 1                  // 기본 CFA (이 기능의 핵심 컷)
     property int zoom: 8
     property real cx: 0.5                 // visible 안의 정규화 팬 중심(0..1)
@@ -41,6 +72,7 @@ Item {
         keyScope.forceActiveFocus()
     }
     function close() {
+        devEnd()
         visible = false
         _wasReady = false
         controller.rawPeekClose()
@@ -62,15 +94,112 @@ Item {
     // 파이썬에 그림을 요청한다. 뷰포트 크기를 함께 넘겨 화면에 들어갈 픽셀만 만들게 한다.
     function refresh() {
         if (!visible || !controller.rawPeekOpened) return
+        // Develop 은 셰이더 렌더라 provider 모자이크 경로를 타지 않는다(mode 4 는 그쪽 모드가
+        // 아니다 — 넘기면 raw_peek.render 의 디스패치에 없는 값이 들어간다).
+        if (mode === 4) return
         controller.rawPeekView(mode, cx, cy, zoom,
                                Math.max(64, Math.round(view.width)),
                                Math.max(64, Math.round(view.height)))
     }
 
     onModeChanged: {
+        // Develop 은 셰이더 렌더(pipeAnim)를 쓰므로 provider 렌더 경로를 타지 않는다.
+        // ★⚠️핸들러 안에서 파생 프로퍼티(`isDevelop`)를 읽으면 **갱신 전 값**이 온다
+        //   (CLAUDE.md 의 그 함정). 실제로 그렇게 짰다가 **탭을 나갈 때 애니메이션이 시작**됐다.
+        //   → 원천 값(`mode`)으로 직접 판정한다.
+        if (mode === 4) { devBegin(); return }
+        devEnd()
         var before = zoom
         setZoom(zoom)
         if (zoom === before) refresh()      // 값이 바뀌면 onZoomChanged 가 대신 부른다
+    }
+
+    // ---- Develop 시작/종료 ----
+    function devBegin() {
+        if (!controller.rawPeekOpened) return
+        controller.developBegin(win.morphSnapshot())   // 최종 값 스냅샷(읽기만 한다)
+        // ⚠️요청 크기는 **표시 사각형** 기준이다. 뷰 크기로 요청하면 그림이 프레임보다 커져
+        //   Qt 가 축소 필터링을 하고, 그러면 nearest 로 남긴 CFA 반점이 평균돼 버린다.
+        //   (devFrame 이 아직 안 잡힌 첫 호출은 뷰 크기로 폴백 — 리사이즈 때 다시 요청된다)
+        var fw = devFrame.width > 1 ? devFrame.width : view.width
+        var fh = devFrame.height > 1 ? devFrame.height : view.height
+        controller.developMosaic(Math.max(64, Math.round(fw)),
+                                Math.max(64, Math.round(fh)))
+        win.morphOn = true                             // Loader 가 pipeAnim 을 만든다
+        // Loader 가 아이템을 만든 **다음** 턴에 참조를 잡는다(같은 턴엔 아직 null).
+        Qt.callLater(function () {
+            peekWin.devSrcItem = peekWin.pipeAnimItem()
+            peekWin.devT = 0.0
+            peekWin.devApply()
+            peekWin.devPlaying = true
+        })
+    }
+    function devEnd() {
+        devPlaying = false
+        devSrcItem = null
+        if (win.morphOn) {
+            win.morphOn = false
+            controller.developEnd()
+        }
+    }
+    // 현재 t 의 uniform 값을 pipeAnim 에 넣는다.
+    function devApply() {
+        var r = controller.developValues(devT)
+        if (!r || !r.uniforms) return
+        // ★표시 상태를 **먼저** 세운다 — uniform 대입에서 예외가 나도 캡션·타임라인은 살아 있게.
+        //   (예전에 applyValues 가 중간에 던져 캡션이 통째로 빈 채였다)
+        devMosaicOpacity = r.mosaic
+        devGrayOpacity = r.gray
+        devStampOpacity = r.stamp
+        devLabel = r.label
+        devNote = r.note
+        var it = pipeAnimItem()
+        if (it) it.applyValues(r.uniforms)
+    }
+    // pipeAnim 은 Main.qml 의 Loader 안에 있다 — objectName 으로 찾는다.
+    function pipeAnimItem() {
+        return win.contentItem ? _findByName(win.contentItem, "pipeAnim") : null
+    }
+    function _findByName(node, nm) {
+        if (!node) return null
+        if (node.objectName === nm) return node
+        for (var i = 0; i < node.children.length; i++) {
+            var r = _findByName(node.children[i], nm)
+            if (r) return r
+        }
+        return null
+    }
+
+    // 이전/다음 **활성 단계**의 끝으로 점프(단계별로 비교하기 위한 것).
+    function devStep(dir) {
+        devPlaying = false
+        var ms = controller.developMarks
+        var ts = []
+        for (var i = 0; i < ms.length; i++) if (ms[i].active) ts.push(ms[i].t1)
+        if (ts.length === 0) return
+        if (dir > 0) {
+            for (var a = 0; a < ts.length; a++) if (ts[a] > devT + 1e-4) { devT = ts[a]; return }
+            devT = 1.0
+        } else {
+            for (var b = ts.length - 1; b >= 0; b--) if (ts[b] < devT - 1e-4) { devT = ts[b]; return }
+            devT = 0.0
+        }
+    }
+
+    onDevTChanged: if (isDevelop) devApply()
+
+    // 재생 — 프레임 동기 타이머. 값 대입만이라 가볍다.
+    Timer {
+        id: devTimer
+        interval: 16
+        repeat: true
+        running: peekWin.visible && peekWin.isDevelop && peekWin.devPlaying
+        onTriggered: {
+            var step = (interval / 1000.0) / Math.max(0.5, peekWin.devSeconds)
+            var nt = peekWin.devT + step
+            if (nt >= 1.0) { peekWin.devT = 1.0; peekWin.devPlaying = false }
+            else peekWin.devT = nt
+        }
     }
     onZoomChanged: refresh()
     // 로드가 끝나는 순간(rawPeekOpened false→true) 첫 그림을 요청한다.
@@ -86,6 +215,10 @@ Item {
                 peekWin.cx = controller.rawPeekDefaultCx
                 peekWin.cy = controller.rawPeekDefaultCy
                 peekWin.refresh()
+                // ★"reading sensor data" 가 끝나기 **전에** Develop 탭으로 옮기면 `devBegin` 이
+                //   `rawPeekOpened` 가 false 라 그냥 빠져나가고 다시 시도하지 않아 애니메이션이
+                //   아예 안 돌았다(사용자 보고). 준비되는 이 순간에 다시 시작한다.
+                if (peekWin.mode === 4 && !win.morphOn) peekWin.devBegin()
             }
             peekWin._wasReady = ready
         }
@@ -103,6 +236,13 @@ Item {
         Keys.onDigit2Pressed: peekWin.mode = 1
         Keys.onDigit3Pressed: peekWin.mode = 2
         Keys.onDigit4Pressed: peekWin.mode = 3
+        Keys.onDigit5Pressed: peekWin.mode = 4
+        Keys.onSpacePressed: if (peekWin.isDevelop) {
+            if (peekWin.devT >= 1.0) peekWin.devT = 0.0
+            peekWin.devPlaying = !peekWin.devPlaying
+        }
+        Keys.onLeftPressed: if (peekWin.isDevelop) peekWin.devStep(-1)
+        Keys.onRightPressed: if (peekWin.isDevelop) peekWin.devStep(1)
         Keys.onPressed: function (e) {
             if (e.key === Qt.Key_Plus || e.key === Qt.Key_Equal) {
                 peekWin.setZoom(peekWin.zoom * 2); e.accepted = true
@@ -117,7 +257,11 @@ Item {
         Rectangle {
             anchors.fill: parent
             color: "#141416"
-            MouseArea { anchors.fill: parent }
+            // ⚠️`hoverEnabled: true` 가 있어야 **hover 도** 흡수된다. 없으면 오버레이 아래
+            //   패널의 HoverHandler 가 계속 반응해 **ToolTip 이 오버레이 위로 떠오른다**
+            //   (사용자 보고). 툴팁은 87곳에 흩어져 있어 개별로 막을 수 없다 — 이 한 줄이
+            //   전부를 막는 지점이다(클릭을 흡수하는 것과 같은 이유).
+            MouseArea { anchors.fill: parent; hoverEnabled: true }
         }
 
         // ---------------- 상단 바 ----------------
@@ -158,6 +302,7 @@ Item {
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
+                    visible: !peekWin.isDevelop
                     // 요청 zoom 이 아니라 그려진 실제 배율 — Demosaic 은 크롭 하한 때문에 다르다.
                     text: (peekWin.isMosaic && peekWin.zoom <= 1) ? "whole frame"
                           : (controller.rawPeekScale > 0
@@ -182,11 +327,11 @@ Item {
                     }
                 }
                 BarButton {
-                    label: "−"
+                    label: "−"; visible: !peekWin.isDevelop
                     onClicked: peekWin.setZoom(peekWin.zoom / 2)
                 }
                 BarButton {
-                    label: "+"
+                    label: "+"; visible: !peekWin.isDevelop
                     onClicked: peekWin.setZoom(peekWin.zoom * 2)
                 }
                 BarButton {
@@ -205,9 +350,14 @@ Item {
         Rectangle {
             id: caption
             anchors { top: topBar.bottom; left: parent.left; right: parent.right }
-            height: 40
+            // Develop 은 단계 이름과 설명을 **2단**으로 쓴다. 한 줄에 몰아넣으면 elide 로 설명이
+            // 잘려 "왜 이 순서인가" 가 사라진다 — 그게 이 화면의 요점이다.
+            height: peekWin.isDevelop ? 64 : 40
             color: "#1b1b1e"
+
+            // 다른 탭 — 파이썬이 만든 캡션 한 덩어리
             Text {
+                visible: !peekWin.isDevelop
                 anchors { fill: parent; leftMargin: 12; rightMargin: 12; topMargin: 3 }
                 text: controller.rawPeekCaption
                 color: "#d8d8d8"
@@ -218,13 +368,57 @@ Item {
                 elide: Text.ElideRight
                 wrapMode: Text.NoWrap
             }
+
+            // Develop — [n / N] 칩 + 단계 이름(크게) + 설명(작게, 줄바꿈)
+            Item {
+                visible: peekWin.isDevelop
+                anchors { fill: parent; leftMargin: 12; rightMargin: 12 }
+
+                Rectangle {
+                    id: stepChip
+                    anchors { left: parent.left; verticalCenter: parent.verticalCenter }
+                    width: 52; height: 22; radius: 3
+                    color: "#26303f"; border.color: "#3d6fb5"
+                    Text {
+                        anchors.centerIn: parent
+                        text: peekWin.devStepText
+                        color: "#a8c4f0"; font.family: "Consolas"; font.pixelSize: 12
+                    }
+                }
+                Column {
+                    anchors {
+                        left: stepChip.right; leftMargin: 10
+                        right: parent.right
+                        verticalCenter: parent.verticalCenter
+                    }
+                    spacing: 3
+                    Text {
+                        objectName: "devLabelText"
+                        width: parent.width
+                        text: peekWin.devLabel
+                        color: "#f2f2f2"; font.pixelSize: 15; font.bold: true
+                        elide: Text.ElideRight
+                    }
+                    Text {
+                        objectName: "devNoteText"
+                        width: parent.width
+                        text: peekWin.devNote
+                        color: "#9a9a9a"; font.pixelSize: 12
+                        // ⚠️줄바꿈 + 2줄 허용. 예전엔 NoWrap + elide 라 긴 설명이 통째로 잘렸다.
+                        wrapMode: Text.WordWrap
+                        maximumLineCount: 2
+                        elide: Text.ElideRight
+                    }
+                }
+            }
         }
 
         // ---------------- 좌: 모자이크 뷰 ----------------
         Item {
             id: view
             anchors {
-                top: caption.bottom; bottom: parent.bottom
+                top: caption.bottom
+                bottom: peekWin.isDevelop ? devBar.top : parent.bottom
                 left: parent.left; right: peekWin.infoOpen ? infoPane.left : parent.right
             }
             // 안전망: 파이썬이 뷰포트보다 큰 그림을 돌려주더라도 정보 패널 위로 넘치지 않게.
@@ -240,9 +434,105 @@ Item {
                 onTriggered: peekWin.refresh()
             }
 
+            // ---- Develop: 셰이더 렌더 + 머리 그림 두 장(Gray/CFA)의 순차 교차 페이드 ----
+            // `pipeView` 는 Main.qml 이 이미 pipeAnim 을 그리고 있으므로 그 텍스처를 그대로 쓴다.
+            //
+            // ★⚠️세 레이어가 **정확히 같은 사각형**을 차지해야 한다. 예전에는 그림 쪽 크기를
+            //   축마다 따로 `Math.min(implicit, parent)` 로 잡았는데, 그러면 아이템 상자의 비율이
+            //   그림 비율과 달라지고 `PreserveAspectFit` 의 레터박스가 **투명하게** 남는다.
+            //   그 틈으로 아래 셰이더가 비쳐 "뒷 배경이 겹쳐 보여 시각화가 애매하다"는 보고를
+            //   받았다. → 프레임 Item 하나를 비율에 맞춰 두고 전부 `anchors.fill` 로 채운다.
+            Item {
+                id: devFrame
+                anchors.centerIn: parent
+                visible: peekWin.isDevelop && peekWin.devSrcItem !== null
+                // 프록시(=pipeAnim) 비율을 기준으로 뷰에 맞춘다.
+                readonly property real srcW: (peekWin.devSrcItem && peekWin.devSrcItem.width > 0)
+                        ? peekWin.devSrcItem.width : parent.width
+                readonly property real srcH: (peekWin.devSrcItem && peekWin.devSrcItem.height > 0)
+                        ? peekWin.devSrcItem.height : parent.height
+                readonly property real fit: (srcW > 0 && srcH > 0)
+                        ? Math.min(parent.width / srcW, parent.height / srcH) : 1.0
+                width: Math.max(1, Math.round(srcW * fit))
+                height: Math.max(1, Math.round(srcH * fit))
+
+                // 표시 사각형이 정해진 뒤(그리고 창 리사이즈마다) 그 크기로 다시 요청한다.
+                // devBegin 의 첫 요청은 devSrcItem 이 아직 null 이라 뷰 크기 폴백이다.
+                onWidthChanged: devReq.restart()
+                onHeightChanged: devReq.restart()
+                Timer {
+                    id: devReq
+                    interval: 100
+                    onTriggered: if (peekWin.isDevelop && controller.rawPeekOpened)
+                        controller.developMosaic(Math.max(64, Math.round(devFrame.width)),
+                                                 Math.max(64, Math.round(devFrame.height)))
+                }
+
+                // 불투명 바닥 — 레이어가 반투명한 순간에도 창 배경이 비치지 않게.
+                Rectangle { anchors.fill: parent; color: "#000000" }
+
+                ShaderEffectSource {
+                    id: devShader
+                    anchors.fill: parent
+                    sourceItem: peekWin.devSrcItem
+                    textureSize: Qt.size(width, height)
+                    live: true
+                    hideSource: false
+                    smooth: true
+                    mipmap: false
+                }
+                // 아래: CFA 색 모자이크 / 위: Gray(센서 밝기). 위에 있는 것이 먼저 사라진다.
+                // ⚠️`smooth: false` — 파이썬이 **nearest** 로 축소해 남긴 CFA 반점이 요점이다.
+                //   보간을 켜면 반점이 평균돼 그냥 사진처럼 보이고 다음 단계와 구분이 안 된다.
+                Image {
+                    id: devMosaic
+                    anchors.fill: parent
+                    visible: opacity > 0.001
+                    opacity: peekWin.devMosaicOpacity
+                    cache: false
+                    asynchronous: false
+                    smooth: false
+                    fillMode: Image.Stretch
+                    source: (peekWin.isDevelop && controller.rawPeekOpened)
+                            ? controller.developMosaicUrl : ""
+                }
+                Image {
+                    id: devGray
+                    anchors.fill: parent
+                    visible: opacity > 0.001
+                    opacity: peekWin.devGrayOpacity
+                    cache: false
+                    asynchronous: false
+                    smooth: false
+                    fillMode: Image.Stretch
+                    source: (peekWin.isDevelop && controller.rawPeekOpened)
+                            ? controller.developGrayUrl : ""
+                }
+                // 날짜 스탬프 — 셰이더가 아니라 오버레이다(`ui/Main.qml` 의 `stampOverlay`).
+                // ⚠️지오메트리 식은 그쪽이 진실원이다. 여기서는 기준 사각형만 `devFrame` 으로
+                //   바꿔 같은 비율을 다시 쓴다 — 값이 갈라지면 프리뷰와 위치가 달라진다.
+                // ⚠️Develop 은 **크롭 전 전체 프레임**을 보여주므로 크롭이 걸린 사진에서는
+                //   메인 프리뷰와 스탬프 위치가 다르다(뷰가 다른 것이지 값이 틀린 게 아니다).
+                Image {
+                    id: devStamp
+                    source: controller.stampUrl
+                    cache: false; smooth: true; asynchronous: false
+                    visible: opacity > 0.001 && controller.stampText !== ""
+                    opacity: peekWin.devStampOpacity * 0.92   // = date_stamp.STAMP_STRENGTH
+                    property real shortEdge: Math.min(parent.width, parent.height)
+                    width: controller.stampWRatio * shortEdge
+                    height: controller.stampHRatio * shortEdge
+                    property string corner: controller.stampCorner   // br/bl/tl/tr
+                    property real margin: (controller.stampMargin - controller.stampBleed) * shortEdge
+                    x: (corner === "br" || corner === "tr") ? parent.width - width - margin : margin
+                    y: (corner === "br" || corner === "bl") ? parent.height - height - margin : margin
+                }
+            }
+
             Image {
                 id: peekImg
                 objectName: "rawPeekImage"      // 헤드리스 검증에서 찾기 위한 이름
+                visible: !peekWin.isDevelop
                 // ★들어가면 가운데, 넘치면 좌상단 정렬 — centerIn 으로 두면 넘칠 때 위아래가
                 //   똑같이 잘려 **상단 라벨이 사라진다**(사용자 보고).
                 x: Math.max(0, (view.width - width) / 2)
@@ -309,7 +599,8 @@ Item {
                 readonly property int visW: controller.rawPeekVisW
                 readonly property int visH: controller.rawPeekVisH
                 // 전체를 보고 있으면(>=95%) 표시할 게 없으므로 숨긴다.
-                visible: controller.rawPeekOpened && r.length === 4 && visW > 0 && visH > 0
+                visible: !peekWin.isDevelop && controller.rawPeekOpened
+                         && r.length === 4 && visW > 0 && visH > 0
                          && (r[2] * r[3]) < (visW * visH * 0.95)
                 anchors { right: parent.right; bottom: parent.bottom; margins: 12 }
                 width: mini.paintedWidth + 2
@@ -407,6 +698,119 @@ Item {
             }
         }
 
+
+        // ---------------- Develop 타임라인 ----------------
+        Rectangle {
+            id: devBar
+            visible: peekWin.isDevelop
+            // ★정보 패널이 열려 있으면 그만큼 줄인다 — `view` 와 같은 폭이라야 타임라인의
+            //   눈금 위치가 그림 위 어디를 가리키는지 읽힌다(사용자 보고).
+            anchors {
+                left: parent.left
+                right: peekWin.infoOpen ? infoPane.left : parent.right
+                bottom: parent.bottom
+            }
+            height: 56
+            color: "#1b1b1e"
+
+            Rectangle {                                  // 상단 구분선
+                anchors { top: parent.top; left: parent.left; right: parent.right }
+                height: 1; color: "#33333a"
+            }
+
+            // 재생/정지
+            Rectangle {
+                id: playBtn
+                anchors { left: parent.left; leftMargin: 12; verticalCenter: parent.verticalCenter }
+                width: 30; height: 30; radius: 15
+                color: playMa.containsMouse ? "#3a3a3e" : "#2c2c30"
+                border.color: "#3f3f44"
+                Text {
+                    anchors.centerIn: parent
+                    text: peekWin.devPlaying ? "\u2016" : "\u25B6"
+                    color: "#e8e8e8"; font.pixelSize: 12
+                }
+                MouseArea {
+                    id: playMa
+                    anchors.fill: parent; hoverEnabled: true
+                    onClicked: {
+                        if (peekWin.devT >= 1.0) peekWin.devT = 0.0
+                        peekWin.devPlaying = !peekWin.devPlaying
+                    }
+                }
+            }
+
+            // ⚠️퍼센트 폭을 **고정**한다. 내용에 맞춰 두면 "5%"->"100%" 로 글자가 늘 때마다
+            //   `track` 의 오른쪽 끝이 밀려 트랙 길이가 재생 중에 계속 변한다(사용자 보고).
+            //   가장 긴 문자열("100%")의 실제 폭을 재서 그만큼 잡아 둔다.
+            TextMetrics {
+                id: devPctMetrics
+                font.family: "Consolas"
+                font.pixelSize: 12
+                text: "100%"
+            }
+            Text {
+                id: devPct
+                anchors { right: parent.right; rightMargin: 12; verticalCenter: parent.verticalCenter }
+                width: Math.ceil(devPctMetrics.width)
+                horizontalAlignment: Text.AlignRight
+                text: Math.round(peekWin.devT * 100) + "%"
+                color: "#9a9a9a"; font.pixelSize: 12
+                font.family: "Consolas"
+            }
+
+            // 트랙 + 단계 눈금 + 핸들
+            Item {
+                id: track
+                anchors {
+                    left: playBtn.right; leftMargin: 12
+                    right: devPct.left; rightMargin: 12
+                    verticalCenter: parent.verticalCenter
+                }
+                height: 30
+
+                Rectangle {                              // 트랙
+                    id: trackBg
+                    anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter }
+                    height: 4; radius: 2; color: "#33333a"
+                }
+                Rectangle {                              // 진행
+                    anchors { left: trackBg.left; verticalCenter: trackBg.verticalCenter }
+                    width: trackBg.width * peekWin.devT
+                    height: 4; radius: 2; color: "#3d6fb5"
+                }
+                // 단계 눈금 — 스킵된 단계는 흐리게(그 사진에서 아무 일도 안 일어남)
+                Repeater {
+                    model: controller.developMarks
+                    Rectangle {
+                        visible: modelData.active
+                        x: trackBg.width * modelData.t1 - width / 2
+                        anchors.verticalCenter: trackBg.verticalCenter
+                        width: 2; height: 12; radius: 1
+                        color: "#7a7a80"
+                        opacity: modelData.active ? 0.9 : 0.25
+                    }
+                }
+                Rectangle {                              // 핸들
+                    x: trackBg.width * peekWin.devT - width / 2
+                    anchors.verticalCenter: trackBg.verticalCenter
+                    width: 12; height: 12; radius: 6
+                    color: "#c8dcff"; border.color: "#3d6fb5"
+                }
+                MouseArea {
+                    id: devScrubMa
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    function scrub(mx) {
+                        peekWin.devPlaying = false
+                        peekWin.devT = Math.max(0, Math.min(1, mx / Math.max(1, trackBg.width)))
+                    }
+                    onPressed: function (e) { scrub(e.x) }
+                    onPositionChanged: function (e) { if (pressed) scrub(e.x) }
+                }
+            }
+        }
+
         // ---------------- 우: 패턴 / 히스토그램 / 메타 ----------------
         Rectangle {
             id: infoPane
@@ -451,7 +855,9 @@ Item {
                         color: "#7a7a7a"
                         font.pixelSize: 11
                         wrapMode: Text.Wrap
-                        text: "1..4 = mode   +/− or wheel = zoom   drag = pan   "
+                        text: peekWin.isDevelop
+                              ? "Space = play/pause   \u2190/\u2192 = step   drag the timeline to scrub   Esc or R = close"
+                              : "1..5 = mode   +/− or wheel = zoom   drag = pan   "
                               + "click the minimap to jump   Esc or R = close"
                     }
                 }

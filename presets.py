@@ -451,6 +451,47 @@ def _drift_report(root: str = None) -> int:
         print("[X] resetAllEdits 에서 슬라이더 대입을 하나도 못 읽었다 — 검사가 헛돌고 있다")
         bad += 1
     print(f"[..] resetAllEdits 대입 {rseen}개 확인")
+
+    # ---- adjust.frag 를 쓰는 ShaderEffect 세 곳의 프로퍼티 이름 집합 대조 ----
+    # ★ 렌더 경로: 프리뷰(`pipe`) / GPU export(`pipeFull`) / Develop 애니메이션(`pipeAnim`).
+    #   uniform 을 하나 늘리고 한 곳만 배선하면 "화면은 맞는데 내보낸 파일만 다르다" 가 된다.
+    #   `pipeAnim` 은 export 에 영향이 없지만 이름이 갈라지면 그 uniform 이 조용히 기본값(0)으로
+    #   남아 애니메이션만 틀리므로 같이 본다.
+    def _shader_props(marker):
+        a = qml.index("id: " + marker + chr(10))
+        b = qml.index("fragmentShader:", a)
+        return set(_re.findall(r"property\s+\S+\s+(\w+)\s*:", qml[a:b]))
+
+    # `fullScale` 만 GPU export 전용이다(해상도 프리셋 — pipeFull 이 처음부터 그 크기로 렌더).
+    ALLOWED_EXTRA = {"pipeFull": {"fullScale"}}
+    try:
+        base = _shader_props("pipe")
+    except ValueError:
+        print("[X] ui/Main.qml 에서 pipe 블록을 못 찾았다 — 검사가 헛돌고 있다")
+        bad += 1
+        base = None
+    if base is not None:
+        if len(base) < 100:
+            print(f"[X] pipe 프로퍼티가 {len(base)}개뿐 — 블록 파싱이 깨졌다")
+            bad += 1
+        for other in ("pipeFull", "pipeAnim"):
+            try:
+                got = _shader_props(other)
+            except ValueError:
+                print(f"[X] ui/Main.qml 에서 {other} 블록을 못 찾았다")
+                bad += 1
+                continue
+            missing = sorted(base - got)
+            extra = sorted(got - base - ALLOWED_EXTRA.get(other, set()))
+            if missing:
+                print(f"[X] {other} 에 없는 pipe uniform: {missing}")
+                bad += len(missing)
+            if extra:
+                print(f"[X] {other} 에만 있는 프로퍼티: {extra}")
+                bad += len(extra)
+            if not missing and not extra:
+                print(f"[..] {other} 프로퍼티 이름 집합 == pipe ({len(got)}개)")
+
     print("[OK] 불일치 없음" if bad == 0 else f"[X] 불일치 {bad}건")
     return bad
 

@@ -163,8 +163,9 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
 | `lens.py` | RAF 내장 샷별 렌즈 보정(FujiIFD 0xf00b/0f/10 파싱 — 후지 전 기종, 기종 등록 불필요) |
 | `date_stamp.py` | 필름 데이트백: DSEG7 날짜+글로우 렌더, 프리뷰/export 합성. 색·글로우·영역은 **사진별 슬라이더**이고 색은 한 색에서 3색 램프를 파생한다. ⚠️**프리뷰와 export 의 합성식이 다르다**(export 는 screen 70%+source-over 30%) — 산출물이 정확한 쪽. ⚠️파라미터를 늘리면 **호출부 3곳**(CPU export·GPU export·프리뷰)과 **export dict** 를 함께 볼 것. 상세는 `docs/date_stamp.md` |
 | `raw_peek.py` | **RAW Peek**(`R`) — 디모자이크 **이전** 센서 데이터 뷰(Gray/CFA/Planes 모자이크 + 패턴 유닛·채널 레인 히스토그램·마진 판정 텍스트, Demosaic 전후 비교). 읽기 전용 진단이라 **셰이더 uniform·룩 키가 0개**이고 디코드 경로(`raw_loader`/`pipeline`/`wb`/`shaders`)를 안 건드린다 — ★ 렌더 경로 체크리스트 무관. 그림은 numpy→QImage 로 그려 `RawPeekProvider` 로 넘긴다(`adjust.frag` 샘플러 16/16 이라 셰이더 확장 불가). ⚠️`QT_QPA_PLATFORM=offscreen` 은 폰트 DB 가 비어 라벨이 전부 두부가 된다 — 이 모듈 그림을 헤드리스로 뽑을 때 offscreen 금지. 실측·함정·마진 판정은 `docs/raw_peek.md` |
+| `develop_anim.py` | **Develop 애니메이션**(RAW Peek 5번째 탭) — RAW 에서 최종까지를 하나의 타임라인으로 재생. 단계 스케줄과 t(0..1) 별 uniform 값의 **단일 진실원**. ★⚠️**슬라이더를 건드리지 않는다** — 사이드카 저장·undo·RAW 재디코드가 발동하므로 스냅샷을 한 번 읽고 네 번째 `adjust.frag` 인스턴스(`pipeAnim`, `Loader` 안)에만 쓴다. ⚠️`pipeAnim` 은 프리뷰 전용 장식이고 **★ 렌더 경로 4중 계약의 일부가 아니다**(export 무영향) — 다만 uniform 을 늘리면 이름 집합이 갈라지므로 `python presets.py` 가 `pipe`/`pipeFull`/`pipeAnim` 세 곳을 대조한다. ⚠️중립이 0 이 아닌 것들이 있다(`contrast`·`camM` 대각·**`skyContrast`**=1, `skyC` 의 invert/hasMask 는 실제값 유지, `autoExpEV`=−autoEV). ⚠️머리 그림(Gray/CFA)은 **선형**(감마 없음)이고 **프록시 방향으로 회전**한다 — 센서 공간 그대로 두면 세로 사진에서 레터박스가 투명하게 남아 뒤가 비친다(flip→회전은 실측 매핑). Gray/CFA 그림은 **요청 크기와 정확히 같아야** 한다(늘려 그리면 1px 격자선이 들쭉날쭉해진다). Gray 는 박스 평균 + **격자선**(값의 반점으로는 "센서가 격자"가 안 읽힌다 — 후보 4개 도판으로 결정), CFA 는 nearest + 같은 격자선. ★**단계 순서의 기준은 `adjust.frag` main() 의 실행 순서**이고 `python develop_anim.py` 가 대조한다(주석 번호는 실행 순서와 다르다). ⚠️움직이는 중에는 **그레인 원판을 끈다**(`devMoving`) — `pipe` 의 드래그 폴백과 같은 정책. ⚠️QML 바인딩용 notify 는 값이 **확정되는 지점**에서 쏠 것 — `rawPeekAvailable` 이 `imageChanged`(=`_ui_path` 갱신 전)를 쓰다가 한 장 뒤처져 `R` 과 레일 아이콘이 이전 사진 기준으로 켜져 있었다(게터 직접 호출 검증은 못 잡음). 함정·검증은 `docs/develop_anim.md` |
 | `make_luts.py` | 근사 필름룩을 .cube 로 베이크(폴백용) |
-| `shortcuts.py` | **단축키·마우스 조작 목록의 단일 진실원**. 앱 안 `?`/`F1` 오버레이(`ui/ShortcutHelp.qml`)가 `controller.shortcutHelp`/`mouseHelp` 로 받아 그린다 — 목록을 QML/문서에 옮겨 적지 말 것. ★**단축키를 추가/변경하면 `python shortcuts.py`** — 표와 `ui/Main.qml` 의 실제 `Shortcut{}` 선언(+ **전체화면 오버레이 QML** 의 `Keys.on*Pressed` — `PreviewWindow.qml`·`RawPeekWindow.qml`, 목록은 `declared_tokens()` 안에 있다)을 토큰 단위로 대조한다. ⚠️새 오버레이 .qml 을 만들면 그 목록에 추가할 것. ⚠️`MOUSE` 는 파싱 대상이 아니라 수동 목록이라 검사기가 못 잡는다 |
+| `shortcuts.py` | **단축키·마우스 조작 목록의 단일 진실원**. 앱 안 `?`/`F1` 오버레이(`ui/ShortcutHelp.qml`)가 `controller.shortcutHelp`/`mouseHelp` 로 받아 그린다 — 목록을 QML/문서에 옮겨 적지 말 것. ★**단축키를 추가/변경하면 `python shortcuts.py`** — ①모든 `Shortcut{}` 이 **`_keysBlocked` 가드**를 쓰는지(예외는 토글인 `R` 하나 — 안 쓰면 전체화면 오버레이 위에서 단축키가 샌다. `Enter` 가 RAW Peek 위에서 프리뷰를 열었다) ②표와 `ui/Main.qml` 의 실제 `Shortcut{}` 선언(+ **전체화면 오버레이 QML** 의 `Keys.on*Pressed` — `PreviewWindow.qml`·`RawPeekWindow.qml`, 목록은 `declared_tokens()` 안에 있다)을 토큰 단위로 대조한다. ⚠️새 오버레이 .qml 을 만들면 그 목록에 추가할 것. ⚠️`MOUSE` 는 파싱 대상이 아니라 수동 목록이라 검사기가 못 잡는다 |
 | `presets.py` | 레시피 프리셋(`.frpreset`) — 룩만 담는 JSON + 출처 기록, 파일명 새니타이저, 검증기. ★**`LOOK_DEFAULTS` = 룩 키 44개의 공장 기본값 단일 진실원**(QML `applyEdits` 폴백 == `controller.lookDefaults` == 룩 지문 보정). ⚠️**한 키에 기본값은 하나**여야 이 구조가 성립한다. ★**룩 키를 추가하면 `python presets.py`** — 키 집합·QML 기본값·`applyEdits` 폴백·`resetAllEdits` 네 면을 대조해 드리프트를 잡는다. 설계 경위는 `docs/recipe_presets.md` |
 | `pipeline.py` | **풀해상도 export** (numpy, 셰이더와 동일 파이프라인 재현) |
 | `ui/Main.qml` | 전체 UI (좌: 이미지 / 우: 스크롤 패널) |
@@ -256,6 +257,10 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   화면이 안 바뀐다" — RAW Peek 에서 실제로 났고 publish 가 113번 도는 피드백 루프까지 됐다).
   → `QTimer.singleShot(0, sig.emit)` 로 한 턴 미룰 것. ⚠️검증은 **컨트롤러 프로퍼티가 아니라
   `Image` 아이템의 `source`/`sourceSize`** 를 읽어야 잡힌다. 상세는 `docs/raw_peek.md`.
+- ★⚠️**파이썬에서 온 리스트는 QML 에서 `Array.isArray()` 가 false 다**(`QVariantList`). 그걸로
+  vec4 를 판정했다가 `Cannot assign QVariantList to QVector4D` 로 **대입 루프 전체가 중단**되고
+  뒤쪽 값과 캡션까지 통째로 안 들어갔다(Develop 애니메이션에서 실제로 났다). `length === 4` 로
+  판정하고, **표시 상태는 값 대입보다 먼저** 세울 것(예외가 나도 UI 는 살아 있게).
 - 셰이더 텍스처는 image provider 경로(Image→sampler)가 검증됨. Canvas→ShaderEffectSource 직접
   바인딩은 과거 검정화면 유발(커브 LUT를 provider 방식으로 전환해 해결).
 - **날짜 스탬프**: 좌측 셀렉터의 **독립 탭**(`Ctrl+4`). '내 기본값'(`stamp.json`)을 기억하고
