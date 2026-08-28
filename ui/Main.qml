@@ -175,7 +175,16 @@ ApplicationWindow {
     //     확대뿐이다 — 그래서 논리 크기를 DPR 로 나눠 **provider 가 항상 160 이하**를 받게 한다.
     //     썸네일 요청 크기를 바꿀 일이 생기면 이 함수를 거칠 것.
     readonly property real thumbDpr: Math.max(1, Screen.devicePixelRatio)
-    function thumbPx(px) { return Math.max(16, Math.round(px / win.thumbDpr)) }
+    // 논리 px 를 돌려준다 — provider 에 **160 device px 이하**로 도착시키는 것이 목적이다.
+    // ⚠️`Math.round` 로 나누면 되돌아오는 반올림이 상한을 넘는다 — DPR **1.5**(윈도우 150%)에서
+    //   `round(160/1.5)=107` 이고 Qt 가 `qRound(107*1.5)=161` 로 넘겨 **빠른 경로를 그대로 놓친다**
+    //   (실측 edge 160 = 0.6ms / 161 = 43.5ms). `floor` 면 106→159 라 안전하다.
+    // ⚠️요청값을 **무조건 DPR 로 나누지 않는다** — 제약은 '160 device px' 이지 '항상 1/DPR' 이
+    //   아니다. 나누기만 하면 DPR 2 에서 96 요청이 96 device px 로 도착해 168 device px 칸에서
+    //   1.75배 확대된다. 상한 안에서는 요청값을 그대로 살린다.
+    function thumbPx(px) {
+        return Math.max(16, Math.min(px, Math.floor(160 / win.thumbDpr)))
+    }
 
     property bool gridPinned: false
     Shortcut { sequence: "G"; enabled: !win._keysBlocked; onActivated: win.gridPinned = !win.gridPinned }
@@ -4013,7 +4022,11 @@ ApplicationWindow {
             x: 4; y: 4
             asynchronous: true
             cache: true
-            sourceSize.width: win.thumbPx(160)   // EXIF 썸네일 원본 160x120 + DPR 상한
+            // ⚠️여기는 `win.thumbPx` 상한을 **쓰지 않는다** — 팝업 크기가 이미지의 implicit
+            //   크기(= 받은 픽셀 / DPR)에 물려 있어서(위 `width: peekImg.width + 8`) 요청을
+            //   줄이면 **팝업이 통째로 작아진다**(DPR 2 에서 항목 폭 106 → 53 논리px).
+            //   호버 한 장이라 느린 경로(43ms, 캐시됨)를 타도 되고 그래야 HiDPI 에서 선명하다.
+            sourceSize.width: 160
             source: thumbPeek.pathKey === "" ? ""
                     : "image://thumb/" + encodeURIComponent(thumbPeek.pathKey)
         }
@@ -4415,12 +4428,46 @@ ApplicationWindow {
                     //   상세한 함정은 `contactSheet.loadWindow` 주석과 `docs/ui_notes.md`.
                     property int loadedCount: 0
                     readonly property int loadWindow: 3
-                    readonly property int firstVisibleIndex: Math.max(0, indexAt(1, contentY + 1))
-                    onFirstVisibleIndexChanged: loadedCount = 0
+                    // ⚠️**폴더 행은 게이트 자리를 먹으면 안 된다** — 썸네일을 요청하지 않아
+                    //   완료 신호도 없는데, `main.py` 가 디렉터리를 목록 **맨 앞**에 넣는다.
+                    //   그대로 두면 하위 폴더 D개짜리 폴더에서 첫 사진이 slot=D 라 워치독이
+                    //   700ms씩 D번 밀어 줄 때까지 회색이었다(D=10 이면 약 7초).
+                    readonly property int dirCount: {
+                        var f = win.explorerFiles || [], n = 0
+                        while (n < f.length && f[n].isDir)
+                            n++
+                        return n
+                    }
+                    // ⚠️`indexAt` 은 행 사이 `spacing` 틈에서 **-1** 을 돌려준다 — `Math.max(0, …)`
+                    //   로 접으면 한참 아래를 보고 있는데 첫 칸이 0 이 돼 게이트가 통째로 어긋난다
+                    //   (게다가 같은 신호로 `loadedCount` 가 0 이 돼 아무것도 armed 가 아니게 된다).
+                    //   모르는 값(-1)이면 **직전 값을 유지**하고, 행 한가운데를 찍는다.
+                    property int firstVisibleIndex: 0
+                    function refreshFirstVisible() {
+                        var i = indexAt(1, contentY + 8)
+                        if (i < 0)
+                            i = indexAt(1, contentY + 20)
+                        if (i >= 0 && i !== firstVisibleIndex) {
+                            firstVisibleIndex = i
+                            loadedCount = 0       // 그 자리에서 다시 위에서부터 채운다
+                        }
+                    }
+                    // (호출은 아래 `onContentYChanged` 핸들러 하나에서 — 같은 시그널에 핸들러를
+                    //  두 번 적으면 `Property value set multiple times` 로 **창이 안 뜬다**.)
+                    // ⚠️폴더가 바뀌면 처음부터 다시 센다 — 이게 없으면 **두 번째 폴더부터**
+                    //   게이트가 이미 열린 채라 LIFO 역순 채우기가 그대로 돌아온다(맨 위에
+                    //   있으면 `firstVisibleIndex` 가 안 바뀌어 스크롤 쪽 리셋이 안 걸린다).
+                    onModelChanged: { firstVisibleIndex = 0; loadedCount = 0 }
                     Timer {                       // 요청 중 행이 파괴되면 완료 신호가 안 온다
                         interval: 700
                         repeat: true
+                        // ⚠️상한이 있어야 한다 — 다 뜬 뒤에도 700ms마다 +1 이면 20초만 놔둬도
+                        //   `loadedCount` 가 화면 칸 수를 넘어, 다음 폴더에서 모든 행이 한꺼번에
+                        //   armed 가 된다(= 게이트가 없는 것과 같다).
                         running: fileListView.visible
+                                 && fileListView.loadedCount < fileListView.count
+                                    - Math.max(fileListView.firstVisibleIndex,
+                                               fileListView.dirCount)
                         property int seen: -1
                         onTriggered: {
                             if (fileListView.loadedCount === seen)
@@ -4462,6 +4509,7 @@ ApplicationWindow {
                     // 행이 마우스를 벗어났으면 닫기. (클릭이 currentIndex 를 바꾸면 ListView 가
                     // 가장자리 행 정렬로 contentY 를 미세 이동 — 무조건 닫기면 그때도 사라졌음.)
                     onContentYChanged: {
+                        refreshFirstVisible()      // 썸네일 게이트 기준 갱신(위 주석)
                         var it = win._peekRow
                         if (it && it.peekHovered) {
                             if (thumbPeek.visible)
@@ -4490,9 +4538,16 @@ ApplicationWindow {
                         required property var modelData
                         required property int index
                         // 화면의 첫 행부터 몇 번째인가 — 게이트 기준(절대 index 는 교착이다).
-                        readonly property int slot: index - fileListView.firstVisibleIndex
-                        readonly property bool armed: slot < fileListView.loadedCount
-                                                             + fileListView.loadWindow
+                        // 폴더 행은 완료 신호를 못 내므로 기준에서 뺀다(`dirCount` 주석).
+                        readonly property int slot: index - Math.max(fileListView.firstVisibleIndex,
+                                                                     fileListView.dirCount)
+                        // ⚠️한 번 뜬 그림은 **계속 armed** 로 둔다 — 스크롤이 `loadedCount` 를
+                        //   0 으로 되돌리는데, 그때 armed 가 풀리면 `source` 가 비워져 이미 보고
+                        //   있던 썸네일이 회색 자리표시자로 돌아간다(드래그 내내 반복).
+                        property bool everLoaded: false
+                        readonly property bool armed: everLoaded
+                                                      || slot < fileListView.loadedCount
+                                                                + fileListView.loadWindow
                         width: ListView.view ? ListView.view.width : 0
                         height: modelData.isDir ? 28 : 64
                         readonly property bool isLoaded:
@@ -4551,10 +4606,14 @@ ApplicationWindow {
                                         sourceSize.width: win.thumbPx(96)   // → requestImage requested_size(DPR 상한)
                                         source: (modelData.isDir || !armed) ? ""
                                                 : "image://thumb/" + encodeURIComponent(modelData.path)
-                                        // 성공/실패 어느 쪽이든 다음 행을 열어 준다.
-                                        onStatusChanged: if (status === Image.Ready
-                                                             || status === Image.Error)
-                                                             fileListView.loadedCount += 1
+                                        // 성공/실패 어느 쪽이든 다음 행을 열어 준다(행당 한 번).
+                                        onStatusChanged: {
+                                            if ((status === Image.Ready || status === Image.Error)
+                                                    && !row.everLoaded) {
+                                                row.everLoaded = true
+                                                fileListView.loadedCount += 1
+                                            }
+                                        }
                                     }
                                     // 임베드 프리뷰가 없는 RAW(일부 폰 DNG 등)는 provider 가 null 반환
                                     // → status=Error. 빈 회색 대신 '미리보기 없음'을 표시(편집/export 는 정상).
@@ -6386,18 +6445,30 @@ ApplicationWindow {
                         // ⚠️**절대 index 로 게이트를 걸면 안 된다** — GridView 는 보이는 칸만
                         //   만들므로, 스크롤해서 아래쪽만 떠 있으면 앞 칸이 인스턴스화되지 않아
                         //   조건이 영원히 안 풀린다(교착). 화면의 첫 칸을 기준(slot)으로 잰다.
-                        readonly property int firstVisibleIndex: Math.max(0, sheetGrid.indexAt(
-                                sheetGrid.contentX + 2, sheetGrid.contentY + 2))
+                        // ⚠️`indexAt` 이 **-1**(칸 사이/여백)을 주면 `Math.max(0, …)` 로 접지 말 것 —
+                        //   한참 아래를 보고 있는데 첫 칸이 0 이 돼 게이트가 어긋나고, 같은 신호로
+                        //   `loadedCount` 까지 0 이 돼 아무 칸도 armed 가 아니게 된다. 모르면 유지한다.
+                        property int firstVisibleIndex: 0
+                        function refreshFirstVisible() {
+                            var i = sheetGrid.indexAt(sheetGrid.contentX + sheetGrid.cellWidth / 2,
+                                                      sheetGrid.contentY + sheetGrid.cellHeight / 2)
+                            if (i >= 0 && i !== firstVisibleIndex) {
+                                firstVisibleIndex = i
+                                loadedCount = 0    // 스크롤하면 그 자리에서 다시 위에서부터
+                            }
+                        }
                         property int loadedCount: 0            // 완료(성공/실패) 누적
                         readonly property int loadWindow: 2    // 동시에 요청할 칸 수
-                        // 스크롤하면 그 자리에서 다시 위에서부터 채운다.
-                        onFirstVisibleIndexChanged: loadedCount = 0
                         // 워치독 — 요청이 끝나기 전에 칸이 파괴되면 완료 신호가 오지 않는다.
                         // 그대로면 멈추므로, 진척이 없으면 한 칸씩 밀어 준다.
                         Timer {
                             interval: 700
                             repeat: true
+                            // ⚠️상한 필수 — 다 뜬 뒤에도 700ms마다 +1 이면 `loadedCount` 가
+                            //   무한히 자라 다음 폴더에서 전 칸이 한꺼번에 armed 가 된다.
                             running: contactSheet.visible
+                                     && contactSheet.loadedCount
+                                        < sheetGrid.count - contactSheet.firstVisibleIndex
                             property int seen: -1
                             onTriggered: {
                                 if (contactSheet.loadedCount === seen)
@@ -6470,6 +6541,14 @@ ApplicationWindow {
                             cellWidth: 178
                             cellHeight: 198
                             model: contactSheet.photos
+                            onContentYChanged: contactSheet.refreshFirstVisible()
+                            // ⚠️목록이 바뀌면 게이트를 처음부터 다시 센다 — 이게 없으면 **두 번째
+                            //   폴더부터** 게이트가 이미 열린 채라 아래에서 위로 채우는 원래 증상이
+                            //   돌아온다(맨 위에 있으면 `firstVisibleIndex` 가 안 바뀐다).
+                            onModelChanged: {
+                                contactSheet.firstVisibleIndex = 0
+                                contactSheet.loadedCount = 0
+                            }
                             // ⚠️폴더가 바뀔 때만 맨 위로. `photos` 는 검색어·좋아요·짝 토글에도
                             //   재평가되므로 `onModelChanged` 에 걸면 900장 폴더에서 P 를 누르거나
                             //   검색어를 치는 순간 보던 자리를 잃는다(탐색기는 선택을 보존한다).
@@ -6496,9 +6575,12 @@ ApplicationWindow {
                                 readonly property int slot: cell.index
                                                             - contactSheet.firstVisibleIndex
                                 // 이 칸이 썸네일을 요청할 차례가 됐나(위에서부터 순서대로).
-                                readonly property bool armed:
-                                        cell.slot < contactSheet.loadedCount
-                                                    + contactSheet.loadWindow
+                                // ⚠️한 번 뜬 칸은 계속 armed — 스크롤이 `loadedCount` 를 0 으로
+                                //   되돌릴 때 armed 가 풀리면 보고 있던 썸네일이 사라진다.
+                                property bool everLoaded: false
+                                readonly property bool armed: cell.everLoaded
+                                        || cell.slot < contactSheet.loadedCount
+                                                       + contactSheet.loadWindow
                                 required property var modelData
                                 width: sheetGrid.cellWidth
                                 height: sheetGrid.cellHeight
@@ -6557,10 +6639,15 @@ ApplicationWindow {
                                                       + encodeURIComponent(cell.modelData.path)
                                                     : ""
                                             // 성공/실패 어느 쪽이든 다음 칸을 열어 준다
-                                            // (실패한 칸에서 멈추면 안 된다).
-                                            onStatusChanged: if (status === Image.Ready
-                                                                 || status === Image.Error)
-                                                                 contactSheet.loadedCount += 1
+                                            // (실패한 칸에서 멈추면 안 된다). 칸당 한 번만.
+                                            onStatusChanged: {
+                                                if ((status === Image.Ready
+                                                     || status === Image.Error)
+                                                        && !cell.everLoaded) {
+                                                    cell.everLoaded = true
+                                                    contactSheet.loadedCount += 1
+                                                }
+                                            }
                                         }
                                         Text {                // 임베드 프리뷰가 없는 RAW(일부 DNG 등)
                                             visible: cellImg.status === Image.Error
