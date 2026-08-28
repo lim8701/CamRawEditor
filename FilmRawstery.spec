@@ -60,6 +60,9 @@ hiddenimports = [
     "scipy.ndimage",     # lazy `from scipy.ndimage import ...`
     "sky_seg", "face_seg", "depth", "coeffs", "display_cm", "haze", "mist", "ai_denoise", "caption", "hashtags",  # main/pipeline 에서 지연 import 되는 로컬 모듈(명시로 보장)
     "image_loader",      # main._load_heavy_modules 의 지연 import(일반 이미지 JPG/PNG/TIFF 어댑터)
+    "raw_peek", "develop_anim", "brush",  # RAW Peek(R)·현상 애니메이션(5번 탭)·브러시 마스킹 — 전부 함수 안 import
+                                          # (v1.11.0 에서 처음 번들. PyInstaller 가 바이트코드로 잡아내긴 하지만
+                                          #  이 파일의 기존 관습대로 명시한다 — 빌드 후 .toc 로 실제 포함을 확인)
     "app_dirs",          # 모델 저장 위치(OS 사용자 데이터 디렉터리) — 위 모듈들이 사용
     "cv2",               # face_seg/depth 가 함수 안에서 지연 import(얼굴 검출 FaceDetectorYN + 리샘플/가이디드필터)
 ] + ort_hidden
