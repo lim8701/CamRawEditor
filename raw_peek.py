@@ -776,12 +776,15 @@ def _slots(panels, titles, slot, gap, title_h):
 # 반대 방향은 −0.27). flip=6 만 샘플이 없어 dcraw 대칭으로 둔 값이다(모르는 코드는 회전 없음).
 _ROT_K = {0: 0, 3: 2, 5: 1, 6: 3}
 
-# 격자선 — ★**표시 픽셀 단위의 가독성 값이고 CFA 패턴 유닛이 아니다.** 전체 프레임 축소본에서
+# 격자선 — ★**표시 픽셀 단위의 가독성 값이고 CFA 패턴 유닛이 아니다.**
+# ⚠️곱셈으로 어둡게 하던 것을 **고정값 쪽으로 블렌드**하도록 바꿨다. 머리 그림에서 표시 게인을
+#   없앤 뒤로는(아래 `develop_mosaic` 주석) 평균 코드가 6~13 이라 어둡게 곱하면 선이 사라진다. 전체 프레임 축소본에서
 # 출력 1px 은 광전자 우물 f개(실측 f=7~12)에 해당하므로 패턴 유닛(X-Trans 6, 베이어 2)은
 # 1px 도 안 된다 — 격자로 그릴 수 있는 크기가 아니다. 그래서 "센서는 격자다" 를 말해 주는
 # 순수한 표시 보조선으로 두고, 간격을 정수 px 로 고정해 굵기가 일정하게 나오도록 한다.
 GRID_PX = 8
-GRID_DIM = 0.45
+GRID_LEVEL = 0.30    # 격자선이 수렴하는 밝기
+GRID_MIX = 0.5       # 그쪽으로 섞는 비율
 
 
 def develop_pair(st: RawPeek, out_w: int, out_h: int):
@@ -816,8 +819,14 @@ def develop_mosaic(st: RawPeek, out_w: int, out_h: int, gray: bool = False):
       축소본에서 출력 1px 이 광전자 우물 f개라 패턴 유닛은 1px 도 안 된다. 디모자이크 단계에서
       두 그림이 걷히면 격자도 함께 사라진다 — 그게 디모자이크가 하는 일이다.
 
-    ★게인은 **박스 평균본에서 한 번** 구해 둘 다에 쓴다 — 표본에서 각자 구하면 교차 페이드
-      도중 밝기가 튄다.
+    ★★**표시 게인을 곱하지 않는다.** 셰이더의 t=0 은 `norm`(센서값을 포화로 정규화한 값)
+      그대로다 — 프록시 native linear 가 `norm x 자동노출게인` 이고 t=0 이 그 게인을
+      되돌리기 때문이다. 그래서 머리 그림도 `norm` 을 그대로 써야 이어진다.
+      ⚠️예전에는 보이도록 `_auto_gain`(p99->0.85)을 곱했는데, 그러면 머리 세 칸이 계단처럼
+        어두워져 **"디모자이크가 어둡게 만들었다"로 읽힌다.** 실측(DSCF2354, 게인 5.24배):
+        이음새가 **48.8코드**였고 게인을 빼면 **5.0코드**로 닫힌다(셰이더 t=0 예상 17.8 vs 12.7).
+      ⚠️대가는 어둡다는 것이다(gray 평균 12.7 / CFA 6.0). 그게 센서가 적어 둔 실제 밝기이고,
+        "보이는 것보다 변해 온 과정을 보여준다"가 이 화면의 목적이다(사용자 결정).
 
     ⚠️감마를 걸지 않는다(다른 RAW Peek 탭의 `_gamma8` 과 다르다). 셰이더가 `filmicMix=0`
       (선형 그대로)으로 시작하므로 여기 sRGB 인코딩을 걸면 밝기가 튀어 연결이 끊긴다.
@@ -839,8 +848,7 @@ def _develop_render(st: RawPeek, out_w: int, out_h: int, gray: bool = False, bot
     ny, nx = max(1, vh // f), max(1, vw // f)
 
     norm = st.norm_vis()
-    base = _box_down(norm, f)[:ny, :nx]          # 두 그림 공통 — 게인의 기준
-    g = _auto_gain(base)
+    base = _box_down(norm, f)[:ny, :nx]          # 두 그림 공통
 
     # ★★블록 안에서 어느 픽셀을 뽑느냐가 곧 어느 색을 뽑느냐다. stride 를 그냥 f 로 쓰면
     #   X-Trans(주기 6)에서 **모든 표본이 같은 위상**에 떨어져 화면이 전부 초록이 됐다
@@ -857,10 +865,10 @@ def _develop_render(st: RawPeek, out_w: int, out_h: int, gray: bool = False, bot
     ys = np.clip(ii * f + hsh % f, 0, vh - 1)
     xs = np.clip(jj * f + (hsh >> 8) % f, 0, vw - 1)
     def _gray():
-        return np.repeat(np.clip(base * g, 0.0, 1.0)[..., None], 3, axis=2)
+        return np.repeat(np.clip(base, 0.0, 1.0)[..., None], 3, axis=2)
 
     def _cfa():
-        lin = np.clip(norm[ys, xs] * g, 0.0, 1.0)
+        lin = np.clip(norm[ys, xs], 0.0, 1.0)
         col = st.colors[ys, xs]
         out = np.zeros(lin.shape + (3,), np.float32)
         for ci in st.present:
@@ -888,8 +896,10 @@ def _finish_dev(rgb, out_w, out_h, k):
         rgb = rgb[np.ix_(yi, xi)]
 
     # 센서 격자선 — 정수 px 간격이라 굵기가 일정하다(위 GRID_PX 주석 참조).
-    rgb[::GRID_PX, :, :] *= GRID_DIM
-    rgb[:, ::GRID_PX, :] *= GRID_DIM
+    # ⚠️어두운 곳/밝은 곳 양쪽에서 보이도록 고정 밝기 쪽으로 섞는다(곱셈은 어두운 그림에서
+    #   선이 사라진다 — 머리 그림 평균이 6~13코드다).
+    rgb[::GRID_PX, :, :] += (GRID_LEVEL - rgb[::GRID_PX, :, :]) * GRID_MIX
+    rgb[:, ::GRID_PX, :] += (GRID_LEVEL - rgb[:, ::GRID_PX, :]) * GRID_MIX
 
     # ★프록시와 **같은 방향**으로 돌린다. 안 돌리면 세로 사진에서 가로 그림이 나와
     #   레터박스가 투명하게 남고 그 틈으로 아래 셰이더가 비친다("뒷 배경이 겹쳐 보인다").
