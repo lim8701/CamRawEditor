@@ -4423,71 +4423,14 @@ ApplicationWindow {
                     cacheBuffer: 400
                     model: win.explorerFiles      // "좋아요만 보기" 필터 반영
 
-                    // ★썸네일을 **위에서부터** 채운다 — 컨택트 시트와 같은 이유·같은 방식이다
-                    //   (Qt 이미지 작업 큐가 LIFO. 실측: 이 목록도 index 증가 1 / 감소 13 이었다).
-                    //   상세한 함정은 `contactSheet.loadWindow` 주석과 `docs/ui_notes.md`.
-                    property int loadedCount: 0
-                    readonly property int loadWindow: 3
-                    // ⚠️**폴더 행은 게이트 자리를 먹으면 안 된다** — 썸네일을 요청하지 않아
-                    //   완료 신호도 없는데, `main.py` 가 디렉터리를 목록 **맨 앞**에 넣는다.
-                    //   그대로 두면 하위 폴더 D개짜리 폴더에서 첫 사진이 slot=D 라 워치독이
-                    //   700ms씩 D번 밀어 줄 때까지 회색이었다(D=10 이면 약 7초).
-                    readonly property int dirCount: {
-                        var f = win.explorerFiles || [], n = 0
-                        while (n < f.length && f[n].isDir)
-                            n++
-                        return n
-                    }
-                    // ⚠️`indexAt` 은 행 사이 `spacing` 틈에서 **-1** 을 돌려준다 — `Math.max(0, …)`
-                    //   로 접으면 한참 아래를 보고 있는데 첫 칸이 0 이 돼 게이트가 통째로 어긋난다
-                    //   (게다가 같은 신호로 `loadedCount` 가 0 이 돼 아무것도 armed 가 아니게 된다).
-                    //   모르는 값(-1)이면 **직전 값을 유지**하고, 행 한가운데를 찍는다.
-                    property int firstVisibleIndex: 0
-                    readonly property int visibleRows: Math.max(4, Math.ceil(height / 66))
-                    // ★**게이트는 폴더를 연 뒤 첫 화면까지만** 건다. 그 뒤로는 통째로 열어 둔다 —
-                    //   역순 로드가 눈에 띄는 건 폴더를 막 열었을 때뿐이고, 계속 게이팅하면
-                    //   스크롤/페이지 이동마다 다시 줄을 세워 **이미 봤던 썸네일이 다시 뜬다**
-                    //   (사용자 보고). 한 장이 0.6ms 라 그 뒤 순서는 체감되지 않는다.
-                    readonly property bool gateDone: loadedCount >= visibleRows
-                    // ⚠️여기서 `loadedCount` 를 건드리지 않는다 — 스크롤 중 리셋은 게이트를
-                    //   매 틱 처음부터 다시 열어 "스크롤하면 안 뜬다" 가 된다(그렇게 만들었다가
-                    //   보고받고 걷어냈다). 위치는 `slot` 기준일 뿐이다.
-                    function refreshFirstVisible() {
-                        var i = indexAt(1, contentY + 8)
-                        if (i < 0)
-                            i = indexAt(1, contentY + 20)
-                        if (i >= 0)
-                            firstVisibleIndex = i
-                    }
-                    // (호출은 아래 `onContentYChanged` 핸들러 하나에서 — 같은 시그널에 핸들러를
-                    //  두 번 적으면 `Property value set multiple times` 로 **창이 안 뜬다**.)
-                    // ⚠️폴더가 바뀌면 처음부터 다시 센다 — 이게 없으면 **두 번째 폴더부터**
-                    //   게이트가 이미 열린 채라 LIFO 역순 채우기가 그대로 돌아온다(맨 위에
-                    //   있으면 `firstVisibleIndex` 가 안 바뀌어 스크롤 쪽 리셋이 안 걸린다).
-                    // ⚠️폴더가 바뀌면 게이트만 다시 채우고 **위치는 다시 잰다**.
-                    //   `firstVisibleIndex = 0` 으로 박아 두면 안 된다 — 위로가기(goUp)는 방금
-                    //   있던 폴더를 선택하며 **그 자리로 스크롤**하므로 contentY 가 0 이 아니고,
-                    //   그러면 보이는 행들의 slot 이 커서 아무것도 armed 가 아니게 된다
-                    //   (사용자 보고: "하위 폴더 갔다 올라오면 로드가 멈춰 있다").
-                    //   `Qt.callLater` 인 것은 목록 배치가 끝난 뒤에 재야 하기 때문이다.
-                    onModelChanged: { loadedCount = 0; gen += 1; Qt.callLater(refreshFirstVisible) }
-                    // 모델 세대 — 파괴 보정이 **다음 폴더의 카운터를 부풀리지 않도록** 쓴다.
-                    property int gen: 0
-                    Timer {                       // 요청 중 행이 파괴되면 완료 신호가 안 온다
-                        interval: 300
-                        repeat: true
-                        // ⚠️**첫 화면이 차면 멈춘다**(`gateDone`). 상한 없이 돌리면 다 뜬 뒤에도
-                        //   계속 +1 이라, 다음 폴더에서 게이트가 처음부터 열린 채가 된다.
-                        //   사진이 한 화면보다 적은 폴더에서는 이 타이머가 `gateDone` 을
-                        //   밀어 올려 스스로 멈춘다.
-                        running: fileListView.visible && !fileListView.gateDone
-                        property int seen: -1
-                        onTriggered: {
-                            if (fileListView.loadedCount === seen)
-                                fileListView.loadedCount += 1
-                            seen = fileListView.loadedCount
-                        }
-                    }
+                    // ⚠️**썸네일 로드 순서를 게이트로 강제하지 않는다 — 한 번 넣었다가 걷어냈다.**
+                    //   Qt 이미지 큐가 LIFO 라 아래에서 위로 채워지는 게 눈에 띄어, '앞 행이
+                    //   끝나야 다음 행이 요청' 하는 게이트를 넣었더니 **뷰 내부 상태에 얹혀
+                    //   부작용이 계속 나왔다**: 스크롤 중 로드 멈춤 · 페이지 이동 시 재로드 ·
+                    //   위로가기 후 로드가 덜 된 채 정지. 순서 하나 때문에 감수할 것이 아니다.
+                    //   다시 시도한다면 **QML 게이트가 아니라 프리페치**로 — 폴더를 열 때
+                    //   백그라운드에서 index 순서로 미리 디코딩해 `ThumbProvider` 캐시를
+                    //   데워 두면(장당 0.6ms) 요청 순서 자체가 무의미해진다. `docs/ui_notes.md`.
                     currentIndex: -1
                     boundsBehavior: Flickable.StopAtBounds
 
@@ -4522,7 +4465,6 @@ ApplicationWindow {
                     // 행이 마우스를 벗어났으면 닫기. (클릭이 currentIndex 를 바꾸면 ListView 가
                     // 가장자리 행 정렬로 contentY 를 미세 이동 — 무조건 닫기면 그때도 사라졌음.)
                     onContentYChanged: {
-                        refreshFirstVisible()      // 썸네일 게이트 기준 갱신(위 주석)
                         var it = win._peekRow
                         if (it && it.peekHovered) {
                             if (thumbPeek.visible)
@@ -4550,30 +4492,6 @@ ApplicationWindow {
                         id: row
                         required property var modelData
                         required property int index
-                        // 화면의 첫 행부터 몇 번째인가 — 게이트 기준(절대 index 는 교착이다).
-                        // 폴더 행은 완료 신호를 못 내므로 기준에서 뺀다(`dirCount` 주석).
-                        readonly property int slot: index - Math.max(fileListView.firstVisibleIndex,
-                                                                     fileListView.dirCount)
-                        // ⚠️한 번 뜬 그림은 **계속 armed** 로 둔다 — 스크롤이 `loadedCount` 를
-                        //   0 으로 되돌리는데, 그때 armed 가 풀리면 `source` 가 비워져 이미 보고
-                        //   있던 썸네일이 회색 자리표시자로 돌아간다(드래그 내내 반복).
-                        property bool everLoaded: false
-                        readonly property bool armed: everLoaded || fileListView.gateDone
-                                                      || slot < fileListView.loadedCount
-                                                                + fileListView.loadWindow
-                        // ⚠️요청 중에 행이 파괴되면 완료 신호가 영영 안 온다 — 빠르게 스크롤하면
-                        //   그런 행이 여럿 생겨 게이트가 그만큼 뒤처지고, 멈춘 뒤 남은 행들이
-                        //   700ms 워치독을 하나씩 기다린다(= "스크롤 뒤 늦게 뜬다").
-                        //   파괴 시점에 대신 한 칸 밀어 준다. 세대(gen)가 같을 때만 —
-                        //   폴더가 바뀌며 통째로 파괴될 때 새 폴더의 카운터를 부풀리면 안 된다.
-                        //   ⚠️`gen` 은 **바인딩이 아니라 스냅샷**이어야 한다 — 바인딩이면 항상
-                        //     현재 세대와 같아져 가드가 무의미해진다.
-                        property int gen: 0
-                        Component.onCompleted: gen = fileListView.gen
-                        Component.onDestruction: {
-                            if (armed && !everLoaded && gen === fileListView.gen)
-                                fileListView.loadedCount += 1
-                        }
                         width: ListView.view ? ListView.view.width : 0
                         height: modelData.isDir ? 28 : 64
                         readonly property bool isLoaded:
@@ -4630,16 +4548,8 @@ ApplicationWindow {
                                         asynchronous: true
                                         cache: true
                                         sourceSize.width: win.thumbPx(96)   // → requestImage requested_size(DPR 상한)
-                                        source: (modelData.isDir || !armed) ? ""
+                                        source: modelData.isDir ? ""
                                                 : "image://thumb/" + encodeURIComponent(modelData.path)
-                                        // 성공/실패 어느 쪽이든 다음 행을 열어 준다(행당 한 번).
-                                        onStatusChanged: {
-                                            if ((status === Image.Ready || status === Image.Error)
-                                                    && !row.everLoaded) {
-                                                row.everLoaded = true
-                                                fileListView.loadedCount += 1
-                                            }
-                                        }
                                     }
                                     // 임베드 프리뷰가 없는 RAW(일부 폰 DNG 등)는 provider 가 null 반환
                                     // → status=Error. 빈 회색 대신 '미리보기 없음'을 표시(편집/export 는 정상).
@@ -6461,52 +6371,11 @@ ApplicationWindow {
                         //   감당할 방법(선캐시 등)을 먼저 정할 것.
                         readonly property int thumbEdge: 160
 
-                        // ★썸네일 로드 **순서**. Qt 는 이미지 작업 큐를 뒤에서부터 처리해서
-                        //   격자를 켜면 아래 칸부터 채워졌다(실측: index 증가 4회 / 감소 29회,
-                        //   첫 요청이 화면 마지막 줄).
-                        //   → **앞 칸이 끝나야 다음 칸이 요청**하게 해서 되돌린다.
-                        // ⚠️칸당 고정 지연(12ms)으로 먼저 해 봤는데 부족했다 — 한 장 디코딩이
-                        //   그보다 훨씬 길어 여러 칸이 동시에 큐에 쌓이고 그 안에서 다시
-                        //   뒤집혔다(증가 15 / 감소 18 = 뒤섞임). 시간이 아니라 완료로 재야 한다.
-                        // ⚠️**절대 index 로 게이트를 걸면 안 된다** — GridView 는 보이는 칸만
-                        //   만들므로, 스크롤해서 아래쪽만 떠 있으면 앞 칸이 인스턴스화되지 않아
-                        //   조건이 영원히 안 풀린다(교착). 화면의 첫 칸을 기준(slot)으로 잰다.
-                        // ⚠️`indexAt` 이 **-1**(칸 사이/여백)을 주면 `Math.max(0, …)` 로 접지 말 것 —
-                        //   한참 아래를 보고 있는데 첫 칸이 0 이 돼 게이트가 어긋나고, 같은 신호로
-                        //   `loadedCount` 까지 0 이 돼 아무 칸도 armed 가 아니게 된다. 모르면 유지한다.
-                        property int firstVisibleIndex: 0
-                        // 화면에 들어가는 칸 수 — '크게 튀었나' 판정 기준.
-                        readonly property int visibleCells:
-                                Math.max(4, Math.ceil(sheetGrid.height / sheetGrid.cellHeight)
-                                            * Math.max(1, Math.floor(sheetGrid.width
-                                                                     / sheetGrid.cellWidth)))
-                        // ★게이트는 **첫 화면까지만**(목록 쪽 `gateDone` 주석과 같은 이유).
-                        readonly property bool gateDone: loadedCount >= visibleCells
-                        // ⚠️여기서 `loadedCount` 를 건드리지 않는다(스크롤 중 리셋 금지).
-                        function refreshFirstVisible() {
-                            var i = sheetGrid.indexAt(sheetGrid.contentX + sheetGrid.cellWidth / 2,
-                                                      sheetGrid.contentY + sheetGrid.cellHeight / 2)
-                            if (i >= 0)
-                                firstVisibleIndex = i
-                        }
-                        property int loadedCount: 0            // 완료(성공/실패) 누적
-                        readonly property int loadWindow: 2    // 동시에 요청할 칸 수
-                        property int gen: 0                    // 모델 세대(파괴 보정용)
-                        // 워치독 — 요청이 끝나기 전에 칸이 파괴되면 완료 신호가 오지 않는다.
-                        // 그대로면 멈추므로, 진척이 없으면 한 칸씩 밀어 준다.
-                        Timer {
-                            interval: 300
-                            repeat: true
-                            // ⚠️첫 화면이 차면 멈춘다(`gateDone`) — 상한 없이 돌리면 다음 폴더에서
-                            //   게이트가 이미 열린 채가 된다(목록 쪽 같은 주석).
-                            running: contactSheet.visible && !contactSheet.gateDone
-                            property int seen: -1
-                            onTriggered: {
-                                if (contactSheet.loadedCount === seen)
-                                    contactSheet.loadedCount += 1
-                                seen = contactSheet.loadedCount
-                            }
-                        }
+                        // ⚠️**썸네일 로드 순서를 게이트로 강제하지 않는다 — 넣었다가 걷어냈다**(좌측 목록의
+                        //   같은 주석 참조). Qt 이미지 큐가 LIFO 라 아래 칸부터 채워지는 것이
+                        //   보이지만, '앞 칸이 끝나야 다음 칸' 게이트는 뷰 내부 상태(첫 보이는 칸·
+                        //   delegate 생성/파괴)에 얹혀야 해서 부작용이 계속 나왔다.
+                        //   다시 한다면 **프리페치**(폴더 열 때 백그라운드로 캐시 데우기)로.
                         // 선택 상태는 **좌측 탐색기의 현재 항목에서 파생**한다(별도 상태 아님).
                         // 격자 클릭은 `selectInExplorer` 로 탐색기 선택을 옮기고, 탐색기에서
                         // 고르면 여기가 따라온다 — 진실원이 하나라 양방향을 맞출 일이 없다.
@@ -6572,16 +6441,6 @@ ApplicationWindow {
                             cellWidth: 178
                             cellHeight: 198
                             model: contactSheet.photos
-                            onContentYChanged: contactSheet.refreshFirstVisible()
-                            // ⚠️목록이 바뀌면 게이트를 처음부터 다시 센다 — 이게 없으면 **두 번째
-                            //   폴더부터** 게이트가 이미 열린 채라 아래에서 위로 채우는 원래 증상이
-                            //   돌아온다(맨 위에 있으면 `firstVisibleIndex` 가 안 바뀐다).
-                            onModelChanged: {
-                                contactSheet.loadedCount = 0
-                                contactSheet.gen += 1        // 아래 파괴 보정용(칸 주석)
-                                // 위치는 배치 뒤에 다시 잰다(목록 쪽 `onModelChanged` 주석).
-                                Qt.callLater(contactSheet.refreshFirstVisible)
-                            }
                             // ⚠️폴더가 바뀔 때만 맨 위로. `photos` 는 검색어·좋아요·짝 토글에도
                             //   재평가되므로 `onModelChanged` 에 걸면 900장 폴더에서 P 를 누르거나
                             //   검색어를 치는 순간 보던 자리를 잃는다(탐색기는 선택을 보존한다).
@@ -6604,25 +6463,6 @@ ApplicationWindow {
                             delegate: Item {
                                 id: cell
                                 required property int index
-                                // 화면의 첫 칸부터 몇 번째인가 — 게이트 기준(절대 index 아님).
-                                readonly property int slot: cell.index
-                                                            - contactSheet.firstVisibleIndex
-                                // 이 칸이 썸네일을 요청할 차례가 됐나(위에서부터 순서대로).
-                                // ⚠️한 번 뜬 칸은 계속 armed — 스크롤이 `loadedCount` 를 0 으로
-                                //   되돌릴 때 armed 가 풀리면 보고 있던 썸네일이 사라진다.
-                                property bool everLoaded: false
-                                readonly property bool armed: cell.everLoaded || contactSheet.gateDone
-                                        || cell.slot < contactSheet.loadedCount
-                                                       + contactSheet.loadWindow
-                                // 요청 중 파괴된 칸은 완료 신호가 없다 → 대신 한 칸 밀어 준다
-                                // (목록 쪽 같은 주석). 세대가 같을 때만.
-                                property int gen: 0       // ⚠️스냅샷(바인딩이면 가드가 무의미)
-                                Component.onCompleted: gen = contactSheet.gen
-                                Component.onDestruction: {
-                                    if (cell.armed && !cell.everLoaded
-                                            && cell.gen === contactSheet.gen)
-                                        contactSheet.loadedCount += 1
-                                }
                                 required property var modelData
                                 width: sheetGrid.cellWidth
                                 height: sheetGrid.cellHeight
@@ -6674,22 +6514,10 @@ ApplicationWindow {
                                             //   썸네일을 디코딩한다(실측: 격자 닫힌 채 폴더 이동에
                                             //   160px 요청 6건). model 을 비우지 않는 이유는
                                             //   스크롤 위치를 잃지 않기 위해서다.
-                                            // ⚠️`cell.armed` 로 한 번 더 막는다 — 순서 사유는
-                                            //   `contactSheet.loadStagger` 주석 참조.
-                                            source: (contactSheet.visible && cell.armed)
+                                            source: contactSheet.visible
                                                     ? "image://thumb/"
                                                       + encodeURIComponent(cell.modelData.path)
                                                     : ""
-                                            // 성공/실패 어느 쪽이든 다음 칸을 열어 준다
-                                            // (실패한 칸에서 멈추면 안 된다). 칸당 한 번만.
-                                            onStatusChanged: {
-                                                if ((status === Image.Ready
-                                                     || status === Image.Error)
-                                                        && !cell.everLoaded) {
-                                                    cell.everLoaded = true
-                                                    contactSheet.loadedCount += 1
-                                                }
-                                            }
                                         }
                                         Text {                // 임베드 프리뷰가 없는 RAW(일부 DNG 등)
                                             visible: cellImg.status === Image.Error
