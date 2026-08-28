@@ -28,9 +28,10 @@ Item {
     property bool devPlaying: false
     property real devSeconds: 12.0           // 전체 재생 시간
     property real devMosaicOpacity: 0.0      // CFA 모자이크 그림 불투명도(교차 페이드)
-    // ★표시 게인 — Gray/CFA/Planes/Demosaic 그림의 밝기를 올릴지. 캡션에 `display gain x5.2`
-    //   로 찍히는 그 값이다(끄면 `display gain off (as recorded)`).
-    //   켜면 보이고, 끄면 **센서가 적어 둔 밝기 그대로**다(Develop 탭 머리 그림과 같은 상태).
+    // ★표시 게인 — 센서값 그림의 밝기를 올릴지. 캡션에 `display gain x5.2` 로 찍히는 그 값이다
+    //   (끄면 `display gain off (as recorded)`). 켜면 보이고, 끄면 **센서가 적어 둔 밝기 그대로**다.
+    //   Gray/CFA/Planes/Demosaic 네 탭과 **Develop 탭의 머리 프레임**이 같이 따른다 — 머리는
+    //   원래 항상 '적힌 그대로'였고, 이제 이 체크박스가 그것까지 정한다.
     property bool gainOn: true
 
     property real devGrayOpacity: 0.0        // Gray(센서 밝기) 그림 불투명도 — CFA 위에 얹힌다
@@ -211,7 +212,12 @@ Item {
             else peekWin.devT = nt
         }
     }
-    onGainOnChanged: refresh()
+    // ⚠️`refresh()` 는 Develop 에서 곧바로 빠져나간다(provider 모자이크 경로가 아니다).
+    //   머리 그림은 `devReq` 로 다시 요청해야 한다.
+    onGainOnChanged: {
+        if (isDevelop) devReq.restart()
+        else refresh()
+    }
     onZoomChanged: refresh()
     // 로드가 끝나는 순간(rawPeekOpened false→true) 첫 그림을 요청한다.
     // ⚠️URL 문자열로 "아직 안 그렸음"을 판정하면 안 된다 — 같은 사진에서 닫고 다시 열면 URL 이
@@ -310,10 +316,9 @@ Item {
                 // 표시 게인 토글 — "무엇을 보고 있는가" 쪽이라 모드 줄 뒤에 둔다.
                 // ⚠️오른쪽 줄(8x 읽기값 + 28px 정사각 −/+/i)에 뒀더니 줌 묶음을
                 //   갈라 어색했다(사용자 보고).
-                // Develop 탭에는 없다 — 그쪽은 실제 밝기가 요점이고 게인이 없다.
+                // Develop 탭에서도 보인다 — 머리 프레임(모자이크)이 같은 플래그를 따른다.
                 Rectangle {
                     id: gainToggle
-                    visible: !peekWin.isDevelop
                     implicitWidth: gainRow.implicitWidth + 16
                     implicitHeight: 26
                     radius: 4
@@ -527,7 +532,8 @@ Item {
                     interval: 60          // 첫 그림이 이만큼 늦게 뜬다 — 짧게 잡는다
                     onTriggered: if (peekWin.isDevelop && controller.rawPeekOpened)
                         controller.developMosaic(Math.max(64, Math.round(devFrame.width)),
-                                                 Math.max(64, Math.round(devFrame.height)))
+                                                 Math.max(64, Math.round(devFrame.height)),
+                                                 peekWin.gainOn)
                 }
 
                 // 불투명 바닥 — 레이어가 반투명한 순간에도 창 배경이 비치지 않게.

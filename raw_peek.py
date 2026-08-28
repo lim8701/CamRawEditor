@@ -800,7 +800,7 @@ GRID_LEVEL = 0.30    # 격자선이 수렴하는 밝기
 GRID_MIX = 0.5       # 그쪽으로 섞는 비율
 
 
-def develop_pair(st: RawPeek, out_w: int, out_h: int):
+def develop_pair(st: RawPeek, out_w: int, out_h: int, gain: bool = False):
     """Develop 머리 그림 **두 장**(gray, cfa)을 한 번에 만든다.
 
     ★`develop_mosaic` 을 두 번 부르면 `norm_vis()`(40MP float32 = 160MB 전이 배열)와
@@ -808,10 +808,11 @@ def develop_pair(st: RawPeek, out_w: int, out_h: int):
       (`is_heavy` 가 워커로 보내는 기준이 그것이다) GUI 스레드가 그만큼 멈춘다. 두 그림은
       표본 위치·게인·격자까지 공유하므로 한 번에 만드는 것이 자연스럽다.
     """
-    return _develop_render(st, out_w, out_h, both=True)
+    return _develop_render(st, out_w, out_h, both=True, gain=gain)
 
 
-def develop_mosaic(st: RawPeek, out_w: int, out_h: int, gray: bool = False):
+def develop_mosaic(st: RawPeek, out_w: int, out_h: int, gray: bool = False,
+                   gain: bool = False):
     """Develop 탭 머리 프레임 — **전체 프레임** 모자이크(라벨 없음, 뷰포트에 맞춤).
 
     `gray=True` 면 CFA 색을 칠하지 않고 **센서가 기록한 밝기 하나**만 그린다
@@ -845,10 +846,13 @@ def develop_mosaic(st: RawPeek, out_w: int, out_h: int, gray: bool = False):
       (선형 그대로)으로 시작하므로 여기 sRGB 인코딩을 걸면 밝기가 튀어 연결이 끊긴다.
       선형끼리 이어야 filmic 단계가 "선형 → 눈이 보는 밝기" 라는 제 몫을 한다.
     """
-    return _develop_render(st, out_w, out_h, gray=gray)
+    return _develop_render(st, out_w, out_h, gray=gray, gain=gain)
 
 
-def _develop_render(st: RawPeek, out_w: int, out_h: int, gray: bool = False, both: bool = False):
+def _develop_render(st: RawPeek, out_w: int, out_h: int, gray: bool = False,
+                    both: bool = False, gain: bool = False):
+    """`gain` 기본값이 `mosaic()`(True)과 반대인 것은 의도다 — 이 머리 그림은 셰이더 t=0 과
+    같은 밝기여야 이어지고, 올릴지는 UI 의 체크박스가 정한다."""
     """`develop_mosaic` / `develop_pair` 의 공용 본체. `both=True` 면 (gray, cfa) 튜플."""
     out_w, out_h = max(16, int(out_w)), max(16, int(out_h))
     # 회전이 걸리는 사진은 out_w/out_h 가 **프록시 방향**으로 들어온다 — 센서 공간 기준으로
@@ -862,6 +866,9 @@ def _develop_render(st: RawPeek, out_w: int, out_h: int, gray: bool = False, bot
 
     norm = st.norm_vis()
     base = _box_down(norm, f)[:ny, :nx]          # 두 그림 공통
+    # 표시 게인 — 기본은 1.0(적힌 그대로). ⚠️켜면 머리가 밝아지는 대신 셰이더 렌더로 넘어가는
+    #   이음새가 벌어진다(실측 DSCF2354: 2.7코드 -> 48.8코드). 그게 이 토글의 의미다.
+    g = _auto_gain(base) if gain else 1.0
 
     # ★★블록 안에서 어느 픽셀을 뽑느냐가 곧 어느 색을 뽑느냐다. stride 를 그냥 f 로 쓰면
     #   X-Trans(주기 6)에서 **모든 표본이 같은 위상**에 떨어져 화면이 전부 초록이 됐다
@@ -878,10 +885,10 @@ def _develop_render(st: RawPeek, out_w: int, out_h: int, gray: bool = False, bot
     ys = np.clip(ii * f + hsh % f, 0, vh - 1)
     xs = np.clip(jj * f + (hsh >> 8) % f, 0, vw - 1)
     def _gray():
-        return np.repeat(np.clip(base, 0.0, 1.0)[..., None], 3, axis=2)
+        return np.repeat(np.clip(base * g, 0.0, 1.0)[..., None], 3, axis=2)
 
     def _cfa():
-        lin = np.clip(norm[ys, xs], 0.0, 1.0)
+        lin = np.clip(norm[ys, xs] * g, 0.0, 1.0)
         col = st.colors[ys, xs]
         out = np.zeros(lin.shape + (3,), np.float32)
         for ci in st.present:

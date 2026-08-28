@@ -4012,8 +4012,10 @@ class Controller(QObject):
     developMosaicUrl = Property(str, _get_develop_mosaic_url, notify=developChanged)
     developGrayUrl = Property(str, _get_develop_gray_url, notify=developChanged)
 
-    @Slot(int, int)
-    def developMosaic(self, w: int, h: int) -> None:  # noqa: N802 (QML 슬롯)
+    # ⚠️`@Slot` 서명이 QML 이 넘길 수 있는 인자를 정한다 — 파이썬 쪽에만 더하면 조용히 버려진다
+    #   (`rawPeekView` 에서 실제로 그렇게 눌러도 아무 일이 없었다).
+    @Slot(int, int, bool)
+    def developMosaic(self, w: int, h: int, gain: bool = False) -> None:  # noqa: N802
         """애니메이션 머리 프레임 **두 장**(Gray / CFA 모자이크)을 만들어 provider 에 올린다.
 
         RAW Peek 이 열려 있어야 한다(`_peek` 재사용) — Develop 은 그 탭이므로 항상 열려 있다.
@@ -4027,14 +4029,15 @@ class Controller(QObject):
         import raw_peek
         # ★같은 크기 재요청은 건너뛴다 — 창 리사이즈·정보 패널 토글이 같은 크기로 되돌아오는
         #   경우가 흔하고, 한 번이 전체 프레임 패스라 싸지 않다.
-        if getattr(self, "_dev_mosaic_size", None) == (w, h):
+        # 게인 플래그도 키에 넣는다 — 안 넣으면 토글해도 캐시된 그림이 그대로 온다.
+        if getattr(self, "_dev_mosaic_size", None) == (w, h, bool(gain)):
             return
         try:
-            gray, cfa = raw_peek.develop_pair(st, w, h)
+            gray, cfa = raw_peek.develop_pair(st, w, h, gain=gain)
         except Exception as e:
             print(f"[develop] 모자이크 실패: {type(e).__name__}: {e}")
             return
-        self._dev_mosaic_size = (w, h)
+        self._dev_mosaic_size = (w, h, bool(gain))
         self._peek_provider.set_image("develop", cfa)
         self._peek_provider.set_image("developgray", gray)
         self._peek_counter += 1
