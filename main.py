@@ -4067,9 +4067,11 @@ class Controller(QObject):
             self._peek_provider.clear()
         self.rawPeekChanged.emit()
 
-    @Slot(int, float, float, int, int, int)
+    # ⚠️`@Slot` 의 서명이 QML 이 넘길 수 있는 인자를 정한다 — 파이썬 쪽에만 인자를 더하면
+    #   QML 의 7번째 인자가 **조용히 버려진다**(체크박스를 눌러도 그림이 안 바뀌었다).
+    @Slot(int, float, float, int, int, int, bool)
     def rawPeekView(self, mode: int, cx: float, cy: float, zoom: int,  # noqa: N802
-                    w: int, h: int) -> None:
+                    w: int, h: int, gain: bool = True) -> None:
         """현재 모드/팬/줌으로 main 그림을 갱신한다.
 
         ★가벼운 것(모자이크 zoom>=2, 경계)은 **동기** — 22~100ms 라 드래그가 즉시 따라온다.
@@ -4083,7 +4085,7 @@ class Controller(QObject):
         import raw_peek
         if not raw_peek.is_heavy(st, mode, zoom, w, h, cx, cy):
             try:
-                img, cap = raw_peek.render(st, mode, cx, cy, zoom, w, h)
+                img, cap = raw_peek.render(st, mode, cx, cy, zoom, w, h, gain=gain)
             except Exception as e:
                 print(f"[rawpeek] render 실패: {type(e).__name__}: {e}")
                 return
@@ -4091,7 +4093,7 @@ class Controller(QObject):
             return
 
         with self._peek_lock:
-            self._peek_job = (mode, cx, cy, zoom, w, h)
+            self._peek_job = (mode, cx, cy, zoom, w, h, gain)
             if self._peek_running:
                 return                        # 진행 중 — 최신 요청만 남기고 이어 받는다
             self._peek_running = True
@@ -4111,14 +4113,15 @@ class Controller(QObject):
                 st = self._peek
                 if st is None:
                     break
-                mode, cx, cy, zoom, w, h = job
+                mode, cx, cy, zoom, w, h, gain = job
 
                 def _prog(done, total, name, _seq=seq):
                     # 후보 디코드는 종당 1.1~3.6s 다 — 침묵하면 멈춘 것처럼 보인다.
                     txt = "" if done >= total else f"decoding {name} ({done + 1}/{total})…"
                     self._rawPeekSig.emit((_seq, "status", txt))
 
-                out = raw_peek.render(st, mode, cx, cy, zoom, w, h, progress=_prog)
+                out = raw_peek.render(st, mode, cx, cy, zoom, w, h,
+                                      progress=_prog, gain=gain)
                 self._rawPeekSig.emit((seq, "view", out))
         except Exception as e:
             self._rawPeekSig.emit((seq, "error", f"{type(e).__name__}: {e}"))

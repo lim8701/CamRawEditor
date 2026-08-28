@@ -352,7 +352,7 @@ def summary(st: "RawPeek") -> dict:
 
 # ------------------------------------------------------------- 모자이크 뷰
 def mosaic(st: RawPeek, mode: int, cx: float, cy: float, zoom: int,
-           out_w: int, out_h: int):
+           out_w: int, out_h: int, gain: bool = True):
     """현재 팬(cx,cy = visible 안의 정규화 중심 0..1)·줌으로 모자이크 타일 1장.
 
     반환: `(QImage, [캡션줄])` — ★캡션은 이미지에 굽지 않는다(파일 상단 주석 참조).
@@ -371,7 +371,8 @@ def mosaic(st: RawPeek, mode: int, cx: float, cy: float, zoom: int,
 
     if zoom <= 1:
         # 전체 보기 — 정수 박스 축소(모자이크가 평균화되는 것 자체가 관찰 포인트다)
-        key = (mode, out_w, out_h)
+        # 게인 플래그도 키에 넣는다 — 안 넣으면 토글해도 캐시된 그림이 그대로 온다.
+        key = (mode, out_w, out_h, bool(gain))
         # ⚠️`last_rect`/`last_scale` 은 **캐시 적중보다 먼저** 세운다 — 뒤에 두면 캐시로 돌아온
         #   전체 보기가 직전 줌의 값을 그대로 물고 있어(실측: 줌 8 → 1 복귀 후에도
         #   rect=(1794,1200,150,100) scale=8.0) 미니맵이 안 사라지고 드래그가 48배 느린 채로
@@ -383,7 +384,7 @@ def mosaic(st: RawPeek, mode: int, cx: float, cy: float, zoom: int,
         if _cache_hit(st, key):
             return st._full_img[1]           # (QImage, 캡션줄) 튜플을 그대로 캐시한다
         out = _render(st, _box_down(st.norm_vis(), f), _colors_down(st, f), mode, 1,
-                      note=f"whole frame, box/{f}")
+                      note=f"whole frame, box/{f}", gain=gain)
         st._full_img = (key, out)
         return out
 
@@ -399,7 +400,8 @@ def mosaic(st: RawPeek, mode: int, cx: float, cy: float, zoom: int,
     c = st.colors[y:y + ch, x:x + cw]
     st.last_rect = (x, y, cw, ch)
     st.last_scale = float(zoom)
-    return _render(st, v, c, mode, zoom, note=f"{cw}x{ch} @ ({x},{y})  {zoom}x", grid=True)
+    return _render(st, v, c, mode, zoom, note=f"{cw}x{ch} @ ({x},{y})  {zoom}x",
+                   grid=True, gain=gain)
 
 
 def _cache_hit(st, key):
@@ -407,7 +409,7 @@ def _cache_hit(st, key):
 
 
 def render(st: RawPeek, mode: int, cx: float, cy: float, zoom: int,
-           out_w: int, out_h: int, progress=None):
+           out_w: int, out_h: int, progress=None, gain: bool = True):
     """모드 디스패치의 **단일 진실원**. 반환: `(QImage, [캡션줄])`.
 
     ★동기 경로(main 의 `rawPeekView`)와 워커 경로가 각자 디스패치를 적고 있었는데, 캐싱으로
@@ -416,8 +418,9 @@ def render(st: RawPeek, mode: int, cx: float, cy: float, zoom: int,
       (사용자 보고: "드래그시 CFA 모드처럼 하나만 나오네"). 그래서 디스패치를 여기 하나로 합쳤다.
     """
     if mode == MODE_DEMOSAIC:
-        return demosaic_steps(st, cx, cy, max(2, zoom), out_w, out_h, progress=progress)
-    return mosaic(st, mode, cx, cy, zoom, out_w, out_h)
+        return demosaic_steps(st, cx, cy, max(2, zoom), out_w, out_h,
+                              progress=progress, gain=gain)
+    return mosaic(st, mode, cx, cy, zoom, out_w, out_h, gain=gain)
 
 
 def is_heavy(st: RawPeek, mode: int, zoom: int, out_w: int, out_h: int,
@@ -446,8 +449,17 @@ def _colors_down(st, f):
                                :max(1, st.colors.shape[1] // f)]
 
 
-def _render(st, v, c, mode, zoom, note="", grid=False):
-    g = _auto_gain(v)
+def _gain_note(on: bool, g: float) -> str:
+    """캡션 꼬리 — 밝기를 올렸는지 그대로인지 **화면에 밝혀 둔다.**
+
+    이 값이 있어서 "왜 어둡나 / 왜 밝나" 를 되묻지 않을 수 있다. 끈 상태에서는 센서가 적어 둔
+    밝기 그대로이고, Develop 탭 머리 그림과 같은 상태다.
+    """
+    return f"display gain x{g:.1f}" if on else "display gain off (as recorded)"
+
+
+def _render(st, v, c, mode, zoom, note="", grid=False, gain=True):
+    g = _auto_gain(v) if gain else 1.0
     lin = np.clip(v * g, 0.0, 1.0)
     h, w = lin.shape
     # 색 배열이 값 배열과 어긋나면(축소 경로) 잘라 맞춘다
@@ -462,9 +474,9 @@ def _render(st, v, c, mode, zoom, note="", grid=False):
         a = _nearest_up(_gamma8(lin), zoom)
         rgb = np.dstack([a, a, a])
         texts = [f"Gray — sensor mosaic, no demosaic",
-                 f"{note}   display gain x{g:.1f}"]
+                 f"{note}   {_gain_note(gain, g)}"]
     elif mode == MODE_PLANES:
-        return _render_planes(st, lin, c, zoom, g, note)
+        return _render_planes(st, lin, c, zoom, g, note, gain)
     else:                                   # MODE_CFA
         col = np.zeros((h, w, 3), np.float32)
         for ci in st.present:
@@ -475,7 +487,7 @@ def _render(st, v, c, mode, zoom, note="", grid=False):
         kind = "X-Trans" if st.is_xtrans else "Bayer" if st.period == 2 else "CFA"
         texts = [f"CFA — every pixel in its own filter colour   {kind} "
                  f"{st.period}x{st.period}",
-                 f"{note}   display gain x{g:.1f}"]
+                 f"{note}   {_gain_note(gain, g)}"]
 
     if grid and st.period >= 3 and st.period * zoom >= 12 and mode == MODE_CFA:
         # 패턴 반복 유닛 경계 — Bayer(2px 주기)는 너무 촘촘해 방해만 되므로 제외.
@@ -491,7 +503,7 @@ def _render(st, v, c, mode, zoom, note="", grid=False):
     return img, texts
 
 
-def _render_planes(st, lin, c, zoom, g, note):
+def _render_planes(st, lin, c, zoom, g, note, gain=True):
     """색별 평면 3(4)장을 가로로 — 표본 밀도 비교("나머지는 진짜로 없는 데이터")."""
     h, w = lin.shape
     gap = 10
@@ -519,7 +531,7 @@ def _render_planes(st, lin, c, zoom, g, note):
         pnt.drawText(x0 + 4, 16, t)
     pnt.end()
     return img, ["Planes — each colour's own samples (the rest is genuinely missing)",
-                 f"{note}   display gain x{g:.1f}"]
+                 f"{note}   {_gain_note(gain, g)}"]
 
 
 # --------------------------------------------------------- 디모자이크 비교
@@ -680,7 +692,7 @@ def demosaic_crop(st, cx: float, cy: float, zoom: int, out_w: int, out_h: int):
 
 
 def demosaic_steps(st, cx: float, cy: float, zoom: int,
-                   out_w: int, out_h: int, progress=None):
+                   out_w: int, out_h: int, progress=None, gain: bool = True):
     """같은 크롭을 **실제 후보 알고리즘들**로 현상해 나란히 비교(+ 입력 모자이크).
 
     ★패널 표시 크기는 줌과 무관하게 고정이다 — 슬롯을 먼저 정하고 그 안에 넣는다(`_slots`).
@@ -699,7 +711,7 @@ def demosaic_steps(st, cx: float, cy: float, zoom: int,
     st.last_scale = float(k)
     v = st._norm_crop(y, x, side, side)
     c = st.colors[y:y + side, x:x + side]
-    g = _auto_gain(v)
+    g = _auto_gain(v) if gain else 1.0
     lin = np.clip(v * g, 0.0, 1.0)
 
     mos = np.zeros((side, side, 3), np.float32)
@@ -739,7 +751,8 @@ def demosaic_steps(st, cx: float, cy: float, zoom: int,
         progress(total, total, "")
 
     cap = (f"Demosaic - mosaic vs {'/'.join(cands)}, same {side}x{side} crop "
-           f"@ ({x},{y}), {'X-Trans' if st.is_xtrans else 'Bayer'}   {k}x")
+           f"@ ({x},{y}), {'X-Trans' if st.is_xtrans else 'Bayer'}   {k}x"
+           f"   {_gain_note(gain, g)}")
     if k != zoom_req:
         cap += (f"   (requested {zoom_req}x; crop floor is "
                 f"{max(8, st.period * 4)}px = 4 pattern units)")

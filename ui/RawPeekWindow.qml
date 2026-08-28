@@ -28,6 +28,11 @@ Item {
     property bool devPlaying: false
     property real devSeconds: 12.0           // 전체 재생 시간
     property real devMosaicOpacity: 0.0      // CFA 모자이크 그림 불투명도(교차 페이드)
+    // ★표시 게인 — Gray/CFA/Planes/Demosaic 그림의 밝기를 올릴지. 캡션에 `display gain x5.2`
+    //   로 찍히는 그 값이다(끄면 `display gain off (as recorded)`).
+    //   켜면 보이고, 끄면 **센서가 적어 둔 밝기 그대로**다(Develop 탭 머리 그림과 같은 상태).
+    property bool gainOn: true
+
     property real devGrayOpacity: 0.0        // Gray(센서 밝기) 그림 불투명도 — CFA 위에 얹힌다
     property real devStampOpacity: 0.0       // 날짜 스탬프 페이드인 (Date stamp 단계)
     // ★그림이 **움직이는 중**인가(재생 또는 스크럽 드래그). `pipe` 가 슬라이더 드래그 중에
@@ -99,7 +104,7 @@ Item {
         if (mode === 4) return
         controller.rawPeekView(mode, cx, cy, zoom,
                                Math.max(64, Math.round(view.width)),
-                               Math.max(64, Math.round(view.height)))
+                               Math.max(64, Math.round(view.height)), gainOn)
     }
 
     onModeChanged: {
@@ -206,6 +211,7 @@ Item {
             else peekWin.devT = nt
         }
     }
+    onGainOnChanged: refresh()
     onZoomChanged: refresh()
     // 로드가 끝나는 순간(rawPeekOpened false→true) 첫 그림을 요청한다.
     // ⚠️URL 문자열로 "아직 안 그렸음"을 판정하면 안 된다 — 같은 사진에서 닫고 다시 열면 URL 이
@@ -298,6 +304,57 @@ Item {
                             onClicked: peekWin.mode = index
                         }
                     }
+                }
+                // 모드 줄과 떨어뜨린다 — 6번째 탭처럼 보이면 안 된다.
+                Item { width: 10; height: 1 }
+                // 표시 게인 토글 — "무엇을 보고 있는가" 쪽이라 모드 줄 뒤에 둔다.
+                // ⚠️오른쪽 줄(8x 읽기값 + 28px 정사각 −/+/i)에 뒀더니 줌 묶음을
+                //   갈라 어색했다(사용자 보고).
+                // Develop 탭에는 없다 — 그쪽은 실제 밝기가 요점이고 게인이 없다.
+                Rectangle {
+                    id: gainToggle
+                    visible: !peekWin.isDevelop
+                    implicitWidth: gainRow.implicitWidth + 16
+                    implicitHeight: 26
+                    radius: 4
+                    color: gainMa.containsMouse ? "#3a3a3e" : "#2c2c30"
+                    border.color: peekWin.gainOn ? "#3d6fb5" : "#3f3f44"
+                    Row {
+                        id: gainRow
+                        anchors.centerIn: parent
+                        spacing: 6
+                        Rectangle {              // 체크 표시
+                            width: 12; height: 12; radius: 2
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: peekWin.gainOn ? "#3d6fb5" : "transparent"
+                            border.color: peekWin.gainOn ? "#5c8fd6" : "#6a6a70"
+                            Text {
+                                anchors.centerIn: parent
+                                visible: peekWin.gainOn
+                                text: "\u2713"; color: "#ffffff"; font.pixelSize: 9
+                            }
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "Display gain"
+                            color: peekWin.gainOn ? "#e8e8e8" : "#9a9a9a"
+                            font.pixelSize: 12
+                        }
+                    }
+                    MouseArea {
+                        id: gainMa
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: peekWin.gainOn = !peekWin.gainOn
+                    }
+                    // ⚠️이 파일은 Controls 를 `as B` 로 별칭 임포트해서 무한정 `ToolTip` 첨부
+                    //   객체가 없다("Non-existent attached object" 로 QML 로드가 통째로 실패한다).
+                    B.ToolTip.visible: gainMa.containsMouse
+                    B.ToolTip.delay: 800
+                    B.ToolTip.text: peekWin.gainOn
+                                  ? "Brightness is lifted so the sensor values are visible"
+                                  : "Showing the level the sensor recorded"
                 }
             }
 

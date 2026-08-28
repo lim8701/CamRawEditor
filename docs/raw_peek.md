@@ -392,3 +392,32 @@ PNG 도 정상 생성되므로 **그림을 열어볼 때까지 모른다.** 앱 
 `ui/RawPeekWindow.qml` · `ui/Main.qml`(`R` Shortcut, `_keysBlocked`) ·
 `shortcuts.py`(`KEYS` 의 View/RAW Peek 그룹 — 검사기가 `RawPeekWindow.qml` 의
 `Keys.on*Pressed` 도 스캔한다) · `FilmRawstery.spec`(`QML` 목록).
+
+## 표시 게인 토글 (`Display gain`)
+
+Gray/CFA/Planes/Demosaic 그림은 `_auto_gain`(선형 p99 를 0.85 로 올리는 값)으로 밝기를
+끌어올려 왔다. 센서값을 눈으로 확인하는 것이 이 탭들의 목적이라 그게 맞았지만, 그 값이
+**실측 5~15배**라 "센서가 실제로 이만큼 적었다" 를 보여주지는 못한다.
+
+상단 바에 체크박스를 뒀다. 끄면 게인 없이 `norm`(센서값을 포화로 정규화한 값) 그대로다 —
+Develop 탭 머리 그림과 **같은 상태**다.
+
+실측(DSCF2354, 8× 크롭 · 평균 코드):
+
+| 탭 | 켜짐 | 꺼짐 | 캡션 |
+|---|---|---|---|
+| Gray | 128.3 | 56.8 | `display gain x5.3` / `display gain off (as recorded)` |
+| CFA | 83.4 | 35.7 | 같음 |
+| Planes | 26.9 | 11.8 | `x5.7` / off |
+| Demosaic | 145.1 | 103.0 | `x14.9` / off |
+
+- 기본은 **켜짐**(기존 동작).
+- Develop 탭에서는 체크박스를 **감춘다** — 그쪽은 실제 밝기가 요점이고 게인이 아예 없다.
+- ⚠️`mosaic()` 의 전체보기 캐시 키(`(mode, out_w, out_h)`)에 **플래그를 넣어야 한다.**
+  안 넣으면 토글해도 캐시된 그림이 그대로 온다.
+- ⚠️**`@Slot` 서명이 QML 이 넘길 수 있는 인자를 정한다.** `rawPeekView` 의 파이썬 쪽에만
+  인자를 더했더니 QML 의 7번째 인자가 조용히 버려져 **체크박스를 눌러도 아무 일이 없었다**
+  (캡션까지 그대로라 금방 드러났다). `@Slot(int, float, float, int, int, int, bool)` 로 고쳤다.
+- ⚠️`ui/RawPeekWindow.qml` 은 Controls 를 **`as B` 로 별칭 임포트**한다 — 무한정 `ToolTip`
+  첨부 객체가 없어서 `ToolTip.visible` 을 쓰면 "Non-existent attached object" 로 **QML 로드가
+  통째로 실패**한다. `B.ToolTip.visible` 로 쓸 것.
