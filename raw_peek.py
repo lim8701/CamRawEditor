@@ -465,18 +465,17 @@ def _render(st, v, c, mode, zoom, note="", grid=False):
                  f"{st.period}x{st.period}",
                  f"{note}   display gain x{g:.1f}"]
 
-    img = _to_qimage(rgb)
     if grid and st.period >= 3 and st.period * zoom >= 12 and mode == MODE_CFA:
-        # 패턴 반복 유닛 경계 — Bayer(2px 주기)는 너무 촘촘해 방해만 되므로 제외
-        pnt = QPainter(img)
-        pnt.setPen(QPen(QColor(255, 255, 255, 55), 1))
+        # 패턴 반복 유닛 경계 — Bayer(2px 주기)는 너무 촘촘해 방해만 되므로 제외.
+        # ⚠️QPainter 로 그리지 않는다 — 선 218개(1600x1000)에 **19~21ms** 였다. 알파를 빼도,
+        #   `drawLines` 로 묶어도, ARGB32 로 바꿔도 같았다(픽셀당 ~90ns = 래스터 경로가 느린 것).
+        #   같은 그림을 numpy 로 블렌드하면 ~2ms 고, 줌>1 은 **동기 렌더**라(is_heavy) 이 차이가
+        #   드래그 체감에 그대로 실린다. 결과는 QPainter 판과 화소 단위로 같다(실측).
         step = st.period * zoom
-        for i in range(0, max(h, w) * zoom + 1, step):
-            if i <= w * zoom:
-                pnt.drawLine(i, 0, i, h * zoom)
-            if i <= h * zoom:
-                pnt.drawLine(0, i, w * zoom, i)
-        pnt.end()
+        a = 55.0 / 255.0                       # 흰 선 알파 55/255 — 예전 QPen 과 같은 값
+        rgb[::step, :] = rgb[::step, :] * (1.0 - a) + (255.0 * a + 0.5)
+        rgb[:, ::step] = rgb[:, ::step] * (1.0 - a) + (255.0 * a + 0.5)
+    img = _to_qimage(rgb)
     return img, texts
 
 
