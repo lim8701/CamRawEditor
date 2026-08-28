@@ -142,8 +142,9 @@ def declared_tokens():
 # ★`Shortcut{}` 은 앱 전역이라 전체화면 오버레이의 `Keys` 핸들러보다 **먼저** 잡는다. 그래서
 #   모든 선언이 `win._keysBlocked` 를 봐야 한다. 개별 조건만 적어 뒀다가 RAW Peek 이 떠 있는데
 #   `Enter` 로 프리뷰가 열리는 사고가 났다(그리고 `Alt+Up` 도 같이 새고 있었다).
-#   예외는 **토글**인 `R` 하나뿐 — 오버레이가 떠 있을 때도 살아 있어야 닫힌다.
-GUARD_EXEMPT = {'"R"'}
+#   예외는 **토글**인 둘뿐 — `R`(RAW Peek)과 `?`/F1(단축키 도움말)은 자기 오버레이가 떠 있을
+#   때도 살아 있어야 닫힌다(`_keysBlocked` 가 그 둘의 visible 을 포함한다).
+GUARD_EXEMPT = {'"R"', '["?", "F1"]'}
 
 
 def guard_report(root=None):

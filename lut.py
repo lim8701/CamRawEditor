@@ -232,16 +232,18 @@ def add_user_lut(src):
         arr, n = load_cube(str(srcp), strict_domain=True)
         safe = _safe_name(srcp.name)
         dst = user_luts_dir(create=True) / safe
-        # ⚠️번호 붙이기는 **`_UNSAFE` 문자가 실제로 접힌 경우에만** 한다. `safe != srcp.name`
-        #   으로 판정하면 `_safe_name` 이 확장자를 항상 소문자로 다시 붙이므로 `LOOK.CUBE`,
-        #   공백이 접힌 이름, 끝 점이 있는 이름이 전부 '이름이 바뀐 것'으로 잡혀, 같은 파일을
-        #   다시 가져올 때마다 `LOOK (2)`, `LOOK (3)` … 이 쌓인다.
-        if any(c in _UNSAFE for c in os.path.basename(str(srcp.name))):
+        # ⚠️번호 붙이기는 **이름이 실제로 접힌 경우에만** 한다. 판정은 대소문자를 무시한
+        #   비교다 — `_safe_name` 이 확장자를 항상 소문자로 다시 붙이므로 `safe != srcp.name`
+        #   으로 보면 `LOOK.CUBE` 를 다시 가져올 때마다 `LOOK (2)`, `LOOK (3)` … 이 쌓인다.
+        #   ⚠️`_UNSAFE` 문자 유무로 보면 안 된다 — `_safe_name` 은 **공백 연속도 접고 끝의
+        #   점/공백도 지운다**. `Kodak  1.cube`(공백 2칸)가 `Kodak 1.cube` 로 접히는데 그 분기를
+        #   못 타서 기존 LUT 을 조용히 덮어썼다(실측: replaced=True, 내용 교체).
+        if safe.lower() != srcp.name.lower():
             # ⚠️새니타이즈는 **서로 다른 이름을 같은 이름으로 접을 수 있다**
-            #   (`Kodak#1.cube` / `Kodak%1.cube` → 둘 다 `Kodak 1.cube`). 이건 같은 파일을 다시
-            #   고른 경우가 아니므로 덮어쓰면 **남의 LUT 이 사라지고**, 그 키를 저장한 사진·레시피가
-            #   조용히 다른 룩으로 렌더된다. 번호를 붙여 피한다.
-            #   이름이 원래 안전했던 경우는 예전처럼 덮어쓴다 — 같은 LUT 을 다시 가져오는 흔한
+            #   (`Kodak#1.cube` / `Kodak%1.cube` / `Kodak  1.cube` → 전부 `Kodak 1.cube`). 이건
+            #   같은 파일을 다시 고른 경우가 아니므로 덮어쓰면 **남의 LUT 이 사라지고**, 그 키를
+            #   저장한 사진·레시피가 조용히 다른 룩으로 렌더된다. 번호를 붙여 피한다.
+            #   이름이 접히지 않은 경우는 예전처럼 덮어쓴다 — 같은 LUT 을 다시 가져오는 흔한
             #   경우이고, 새 키를 만들면 목록에 중복이 쌓인다(사용자 폰트와 같은 규칙).
             k = 2
             while dst.exists() and srcp.resolve() != dst.resolve():

@@ -26,7 +26,10 @@ ApplicationWindow {
     // 창 단위 Shortcut 은 포커스와 무관하게 발화하므로, 전체화면 오버레이가 떠 있는 동안에도
     // 뒤의 편집 상태를 바꿀 수 있다(Ctrl+Z·D 처럼 실제 부작용이 있는 것들 포함).
     // ⚠️새 단축키를 추가할 때는 `_typing` 이 아니라 **`_keysBlocked`** 를 가드로 쓸 것.
+    // ⚠️전체화면 오버레이를 새로 만들면 **여기에 추가**할 것 — `?`/F1 도움말이 빠져 있어
+    //   도움말 위에서 D(각인 토글 + 내 기본값 갱신)·Ctrl+Z 가 뒤의 편집을 바꿨다.
     readonly property bool _keysBlocked: win._typing || rawPeekWin.visible
+                                         || shortcutHelp.visible
 
                     // 아이콘 버튼(우측 패널 공용) — ♥/☑/태그/위로가기와 같은 커스텀 패턴.
     // ⚠️네이티브 Button 을 쓰지 않는다: macOS 스타일이 **베젤을 아이템 안에서 치우쳐** 그린다
@@ -213,7 +216,10 @@ ApplicationWindow {
     // ⚠️`_typing` 가드 필수 — `?` 는 Shift+/ 라 텍스트 입력 중에 눌리면 오버레이가 뜬다.
     Shortcut {
         sequences: ["?", "F1"]
-        enabled: !win._keysBlocked
+        // ⚠️`R` 과 같은 이유로 `_keysBlocked` 를 쓰지 않는다 — 이것도 **토글**이라
+        //   `_keysBlocked` 가 shortcutHelp.visible 을 포함하는 순간 자기 자신을 못 닫는다.
+        //   `python shortcuts.py` 의 가드 검사가 이 둘을 예외로 안다.
+        enabled: !win._typing && !rawPeekWin.visible
         onActivated: shortcutHelp.visible ? shortcutHelp.close() : shortcutHelp.open()
     }
     ShortcutHelp { id: shortcutHelp }

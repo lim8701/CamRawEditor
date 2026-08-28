@@ -789,12 +789,15 @@ Item {
                     width: trackBg.width * peekWin.devT
                     height: 4; radius: 2; color: "#3d6fb5"
                 }
-                // 단계 눈금 — 스킵된 단계는 흐리게(그 사진에서 아무 일도 안 일어남)
+                // 단계 눈금 — 그 사진에서 아무 일도 안 일어나는 단계는 눈금이 없다
                 Repeater {
                     model: controller.developMarks
                     Rectangle {
-                        // marks() 는 활성 단계만 돌려준다(스킵 단계엔 줄 위치가 없다).
-                        visible: true
+                        // ⚠️`marks()` 는 **스킵된 단계까지** 돌려주고(active=false) 그쪽 t0/t1 은
+                        //   -1 이다 — 줄 위에 자리가 없기 때문이다. 걸러내지 않으면 눈금이
+                        //   x = width*(-1) 로 트랙 왼쪽 밖에 쌓인다(중립 스냅샷에서 9개).
+                        //   지금까지 안 보인 것은 화면 밖 배치에 기댄 것뿐이다.
+                        visible: modelData.active
                         x: trackBg.width * modelData.t1 - width / 2
                         anchors.verticalCenter: trackBg.verticalCenter
                         width: 2; height: 12; radius: 1

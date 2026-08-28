@@ -360,14 +360,18 @@ def mosaic(st: RawPeek, mode: int, cx: float, cy: float, zoom: int,
     if zoom <= 1:
         # 전체 보기 — 정수 박스 축소(모자이크가 평균화되는 것 자체가 관찰 포인트다)
         key = (mode, out_w, out_h)
-        if _cache_hit(st, key):
-            return st._full_img[1]           # (QImage, 캡션줄) 튜플을 그대로 캐시한다
-        v = st.norm_vis()
-        f = max(1, int(np.ceil(max(v.shape[0] / out_h, v.shape[1] / out_w))))
-        out = _render(st, _box_down(v, f), _colors_down(st, f), mode, 1,
-                      note=f"whole frame, box/{f}")
+        # ⚠️`last_rect`/`last_scale` 은 **캐시 적중보다 먼저** 세운다 — 뒤에 두면 캐시로 돌아온
+        #   전체 보기가 직전 줌의 값을 그대로 물고 있어(실측: 줌 8 → 1 복귀 후에도
+        #   rect=(1794,1200,150,100) scale=8.0) 미니맵이 안 사라지고 드래그가 48배 느린 채로
+        #   화면은 안 움직인다. 축소 배수 f 는 `norm_vis()` 와 같은 모양(vis_h×vis_w)에서 나오므로
+        #   배열을 만들지 않고 계산한다.
+        f = max(1, int(np.ceil(max(st.vis_h / out_h, st.vis_w / out_w))))
         st.last_rect = (0, 0, st.vis_w, st.vis_h)      # 전체 보기
         st.last_scale = 1.0 / f
+        if _cache_hit(st, key):
+            return st._full_img[1]           # (QImage, 캡션줄) 튜플을 그대로 캐시한다
+        out = _render(st, _box_down(st.norm_vis(), f), _colors_down(st, f), mode, 1,
+                      note=f"whole frame, box/{f}")
         st._full_img = (key, out)
         return out
 

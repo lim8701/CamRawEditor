@@ -1267,6 +1267,7 @@ class Controller(QObject):
         self._peek_mini_url = "image://rawpeek/mini?v=0"
         self._peek_job = None        # 대기 중인 최신 무거운 렌더 요청(코얼레싱)
         self._peek_running = False
+        self._peek_lock = threading.Lock()   # ⚠️`_peek_job`/`_peek_running` 은 **짝으로** 본다
         # 메인 뷰 캡션 — ★이미지에 굽지 않고 QML 이 고정 높이 밴드에 그린다(raw_peek.py 주석 참조)
         self._peek_caption = ""
         self._peek_status = ""       # 후보 디코드 진행 표시(오래 걸리는 첫 렌더)
@@ -4089,10 +4090,11 @@ class Controller(QObject):
             self._raw_peek_publish(img, cap)
             return
 
-        self._peek_job = (mode, cx, cy, zoom, w, h)
-        if self._peek_running:
-            return                            # 진행 중 — 최신 요청만 남기고 이어 받는다
-        self._peek_running = True
+        with self._peek_lock:
+            self._peek_job = (mode, cx, cy, zoom, w, h)
+            if self._peek_running:
+                return                        # 진행 중 — 최신 요청만 남기고 이어 받는다
+            self._peek_running = True
         self._peek_busy = True
         self.rawPeekChanged.emit()
         threading.Thread(target=self._raw_peek_render_worker,
@@ -4102,8 +4104,8 @@ class Controller(QObject):
         import raw_peek
         try:
             while True:
-                job = self._peek_job
-                self._peek_job = None
+                with self._peek_lock:
+                    job, self._peek_job = self._peek_job, None
                 if job is None or seq != self._peek_seq:
                     break
                 st = self._peek
@@ -4121,8 +4123,19 @@ class Controller(QObject):
         except Exception as e:
             self._rawPeekSig.emit((seq, "error", f"{type(e).__name__}: {e}"))
         finally:
-            self._peek_running = False
-            self._rawPeekSig.emit((seq, "idle", None))
+            # ⚠️'실행 중' 을 내리는 것과 '남은 요청' 을 보는 것은 **한 임계구역**이어야 한다.
+            #   따로 하면 그 사이에 들어온 요청이 — 호출측은 아직 `_peek_running` 이 True 라
+            #   워커를 안 띄우고 이 워커는 이미 큐를 비웠으므로 — 아무도 안 받는다(드래그의
+            #   마지막 위치가 안 그려지고 다음 조작 때까지 옛 프레임이 남는 증상).
+            with self._peek_lock:
+                again = self._peek_job is not None
+                self._peek_running = again
+                nseq = self._peek_seq
+            if again:                       # 이어서 굽는다 — busy 는 그대로 두고 idle 은 안 쏜다
+                threading.Thread(target=self._raw_peek_render_worker,
+                                 args=(nseq,), daemon=True).start()
+            else:
+                self._rawPeekSig.emit((seq, "idle", None))
 
     def _raw_peek_publish(self, img, caption=None) -> None:
         if self._peek_provider is None:
