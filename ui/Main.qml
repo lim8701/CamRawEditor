@@ -167,6 +167,16 @@ ApplicationWindow {
     // ⚠️예전에는 '다른 폴더로 이동하면 자동으로 켜기'까지 있었는데 **켜지고 꺼지는 상황이
     //   경우마다 달라 혼란스럽다**는 보고를 받고 걷어냈다(폴더를 옮겨도 편집 중인 사진은 그대로).
     //   조건을 하나 더 붙이고 싶어지면 이 보고를 먼저 떠올릴 것.
+    // ★⚠️`sourceSize` 는 **논리 픽셀**이라 Qt 가 devicePixelRatio 를 곱해 provider 에 넘긴다.
+    //   배율 125% 화면에서 160 이 **200 으로 도착**해 `ThumbProvider._make_thumb` 의 빠른 경로
+    //   (`edge <= 160`, RAF EXIF 썸네일 1.4ms)를 벗어나 임베드 프리뷰 축소 디코딩(73.9ms, **50배**)
+    //   으로 간다. 실측으로 확인했다(컨택트 시트 요청 간격 중간값 73ms).
+    //   ⚠️EXIF 썸네일 원본은 **정확히 160x120** 이라(실측, 기종 무관) 그보다 크게 요청해도
+    //     확대뿐이다 — 그래서 논리 크기를 DPR 로 나눠 **provider 가 항상 160 이하**를 받게 한다.
+    //     썸네일 요청 크기를 바꿀 일이 생기면 이 함수를 거칠 것.
+    readonly property real thumbDpr: Math.max(1, Screen.devicePixelRatio)
+    function thumbPx(px) { return Math.max(16, Math.round(px / win.thumbDpr)) }
+
     property bool gridPinned: false
     Shortcut { sequence: "G"; enabled: !win._keysBlocked; onActivated: win.gridPinned = !win.gridPinned }
     // **다른 사진을 열면** 격자를 닫는다(격자/탐색기/프리뷰 어디서 열든 동일).
@@ -3299,7 +3309,8 @@ ApplicationWindow {
                                         source: "image://thumb/" + encodeURIComponent(modelData)
                                         // 160=EXIF 썸네일 고속 경로 한계(탐색기와 동일 경로, ~1-5ms).
                                         // >160 이면 풀 프리뷰 축소 디코딩으로 넘어가 느려짐(128px 셀엔 160 충분).
-                                        sourceSize.width: 160; fillMode: Image.PreserveAspectCrop
+                                        sourceSize.width: win.thumbPx(160)   // DPR 상한(win.thumbPx 주석)
+                                        fillMode: Image.PreserveAspectCrop
                                         asynchronous: true; cache: true
                                     }
                                     HoverHandler { id: gThumbHover }
@@ -4002,7 +4013,7 @@ ApplicationWindow {
             x: 4; y: 4
             asynchronous: true
             cache: true
-            sourceSize.width: 160          // EXIF 썸네일 원본(세로사진은 120px 그대로)
+            sourceSize.width: win.thumbPx(160)   // EXIF 썸네일 원본 160x120 + DPR 상한
             source: thumbPeek.pathKey === "" ? ""
                     : "image://thumb/" + encodeURIComponent(thumbPeek.pathKey)
         }
@@ -4398,6 +4409,25 @@ ApplicationWindow {
                     spacing: 2
                     cacheBuffer: 400
                     model: win.explorerFiles      // "좋아요만 보기" 필터 반영
+
+                    // ★썸네일을 **위에서부터** 채운다 — 컨택트 시트와 같은 이유·같은 방식이다
+                    //   (Qt 이미지 작업 큐가 LIFO. 실측: 이 목록도 index 증가 1 / 감소 13 이었다).
+                    //   상세한 함정은 `contactSheet.loadWindow` 주석과 `docs/ui_notes.md`.
+                    property int loadedCount: 0
+                    readonly property int loadWindow: 3
+                    readonly property int firstVisibleIndex: Math.max(0, indexAt(1, contentY + 1))
+                    onFirstVisibleIndexChanged: loadedCount = 0
+                    Timer {                       // 요청 중 행이 파괴되면 완료 신호가 안 온다
+                        interval: 700
+                        repeat: true
+                        running: fileListView.visible
+                        property int seen: -1
+                        onTriggered: {
+                            if (fileListView.loadedCount === seen)
+                                fileListView.loadedCount += 1
+                            seen = fileListView.loadedCount
+                        }
+                    }
                     currentIndex: -1
                     boundsBehavior: Flickable.StopAtBounds
 
@@ -4459,6 +4489,10 @@ ApplicationWindow {
                         id: row
                         required property var modelData
                         required property int index
+                        // 화면의 첫 행부터 몇 번째인가 — 게이트 기준(절대 index 는 교착이다).
+                        readonly property int slot: index - fileListView.firstVisibleIndex
+                        readonly property bool armed: slot < fileListView.loadedCount
+                                                             + fileListView.loadWindow
                         width: ListView.view ? ListView.view.width : 0
                         height: modelData.isDir ? 28 : 64
                         readonly property bool isLoaded:
@@ -4514,9 +4548,13 @@ ApplicationWindow {
                                         fillMode: Image.PreserveAspectFit
                                         asynchronous: true
                                         cache: true
-                                        sourceSize.width: 96    // → requestImage requested_size
-                                        source: modelData.isDir ? ""
+                                        sourceSize.width: win.thumbPx(96)   // → requestImage requested_size(DPR 상한)
+                                        source: (modelData.isDir || !armed) ? ""
                                                 : "image://thumb/" + encodeURIComponent(modelData.path)
+                                        // 성공/실패 어느 쪽이든 다음 행을 열어 준다.
+                                        onStatusChanged: if (status === Image.Ready
+                                                             || status === Image.Error)
+                                                             fileListView.loadedCount += 1
                                     }
                                     // 임베드 프리뷰가 없는 RAW(일부 폰 DNG 등)는 provider 가 null 반환
                                     // → status=Error. 빈 회색 대신 '미리보기 없음'을 표시(편집/export 는 정상).
@@ -6337,6 +6375,36 @@ ApplicationWindow {
                         //   축소 디코딩(**73.9ms/장**, 50배)으로 간다. 셀을 키우려면 그 비용을
                         //   감당할 방법(선캐시 등)을 먼저 정할 것.
                         readonly property int thumbEdge: 160
+
+                        // ★썸네일 로드 **순서**. Qt 는 이미지 작업 큐를 뒤에서부터 처리해서
+                        //   격자를 켜면 아래 칸부터 채워졌다(실측: index 증가 4회 / 감소 29회,
+                        //   첫 요청이 화면 마지막 줄).
+                        //   → **앞 칸이 끝나야 다음 칸이 요청**하게 해서 되돌린다.
+                        // ⚠️칸당 고정 지연(12ms)으로 먼저 해 봤는데 부족했다 — 한 장 디코딩이
+                        //   그보다 훨씬 길어 여러 칸이 동시에 큐에 쌓이고 그 안에서 다시
+                        //   뒤집혔다(증가 15 / 감소 18 = 뒤섞임). 시간이 아니라 완료로 재야 한다.
+                        // ⚠️**절대 index 로 게이트를 걸면 안 된다** — GridView 는 보이는 칸만
+                        //   만들므로, 스크롤해서 아래쪽만 떠 있으면 앞 칸이 인스턴스화되지 않아
+                        //   조건이 영원히 안 풀린다(교착). 화면의 첫 칸을 기준(slot)으로 잰다.
+                        readonly property int firstVisibleIndex: Math.max(0, sheetGrid.indexAt(
+                                sheetGrid.contentX + 2, sheetGrid.contentY + 2))
+                        property int loadedCount: 0            // 완료(성공/실패) 누적
+                        readonly property int loadWindow: 2    // 동시에 요청할 칸 수
+                        // 스크롤하면 그 자리에서 다시 위에서부터 채운다.
+                        onFirstVisibleIndexChanged: loadedCount = 0
+                        // 워치독 — 요청이 끝나기 전에 칸이 파괴되면 완료 신호가 오지 않는다.
+                        // 그대로면 멈추므로, 진척이 없으면 한 칸씩 밀어 준다.
+                        Timer {
+                            interval: 700
+                            repeat: true
+                            running: contactSheet.visible
+                            property int seen: -1
+                            onTriggered: {
+                                if (contactSheet.loadedCount === seen)
+                                    contactSheet.loadedCount += 1
+                                seen = contactSheet.loadedCount
+                            }
+                        }
                         // 선택 상태는 **좌측 탐색기의 현재 항목에서 파생**한다(별도 상태 아님).
                         // 격자 클릭은 `selectInExplorer` 로 탐색기 선택을 옮기고, 탐색기에서
                         // 고르면 여기가 따라온다 — 진실원이 하나라 양방향을 맞출 일이 없다.
@@ -6424,6 +6492,13 @@ ApplicationWindow {
                             delegate: Item {
                                 id: cell
                                 required property int index
+                                // 화면의 첫 칸부터 몇 번째인가 — 게이트 기준(절대 index 아님).
+                                readonly property int slot: cell.index
+                                                            - contactSheet.firstVisibleIndex
+                                // 이 칸이 썸네일을 요청할 차례가 됐나(위에서부터 순서대로).
+                                readonly property bool armed:
+                                        cell.slot < contactSheet.loadedCount
+                                                    + contactSheet.loadWindow
                                 required property var modelData
                                 width: sheetGrid.cellWidth
                                 height: sheetGrid.cellHeight
@@ -6467,7 +6542,7 @@ ApplicationWindow {
                                             fillMode: Image.PreserveAspectFit
                                             asynchronous: true      // provider 가 워커 스레드에서 디코딩
                                             cache: true
-                                            sourceSize.width: contactSheet.thumbEdge
+                                            sourceSize.width: win.thumbPx(contactSheet.thumbEdge)
                                             // ⚠️격자가 닫혀 있으면 요청하지 않는다. GridView 는
                                             //   자기 **지오메트리**로 delegate 를 채우고 visible
                                             //   은 보지 않아서(시트가 anchors.fill 이라 항상 크기가
@@ -6475,10 +6550,17 @@ ApplicationWindow {
                                             //   썸네일을 디코딩한다(실측: 격자 닫힌 채 폴더 이동에
                                             //   160px 요청 6건). model 을 비우지 않는 이유는
                                             //   스크롤 위치를 잃지 않기 위해서다.
-                                            source: contactSheet.visible
+                                            // ⚠️`cell.armed` 로 한 번 더 막는다 — 순서 사유는
+                                            //   `contactSheet.loadStagger` 주석 참조.
+                                            source: (contactSheet.visible && cell.armed)
                                                     ? "image://thumb/"
                                                       + encodeURIComponent(cell.modelData.path)
                                                     : ""
+                                            // 성공/실패 어느 쪽이든 다음 칸을 열어 준다
+                                            // (실패한 칸에서 멈추면 안 된다).
+                                            onStatusChanged: if (status === Image.Ready
+                                                                 || status === Image.Error)
+                                                                 contactSheet.loadedCount += 1
                                         }
                                         Text {                // 임베드 프리뷰가 없는 RAW(일부 DNG 등)
                                             visible: cellImg.status === Image.Error
