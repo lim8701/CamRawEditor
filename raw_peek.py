@@ -30,6 +30,19 @@ MODE_NAMES = ["Gray", "CFA", "Planes", "Demosaic"]
 
 
 # ------------------------------------------------------------------ 유틸
+def _bg_canvas(h, w):
+    """`BG` 로 채운 (h,w,3) uint8 캔버스.
+
+    ⚠️`canvas[:, :] = BG` 로 쓰지 말 것 — 3원소를 (H,W,3) 에 브로드캐스트하는 경로가 원소별로
+      떨어져 **1580x998 에서 6.9ms** 다(Planes 전체 렌더 26ms 중 7ms 가 이 한 줄이었다).
+      한 줄(w,3)을 만들어 행 단위 연속 복사로 뿌리면 **0.11ms** — 62배. 채널별 스칼라 대입도
+      1.47ms 라 그만 못하다(스트라이드 3 write 3회).
+    """
+    a = np.empty((h, w, 3), np.uint8)
+    a[:] = np.tile(np.array(BG, np.uint8), (w, 1))
+    return a
+
+
 def _to_qimage(a):
     """(H,W,3) uint8 -> QImage(RGB888). 버퍼 detach 를 위해 .copy() 필수."""
     # 이미 uint8 이면 astype 을 부르지 않는다(1600x1000 에서 astype 은 매 프레임 4.8MB 사본).
@@ -100,8 +113,7 @@ def _label_band(a, texts, size=15, width=None):
     lines = _wrap(texts, fm, w)
     line = int(size * 1.55)
     hh = line * len(lines) + 12
-    canvas = np.empty((a.shape[0] + hh, w, 3), np.uint8)
-    canvas[:, :] = BG
+    canvas = _bg_canvas(a.shape[0] + hh, w)
     canvas[hh:, :a.shape[1]] = a
     img = _to_qimage(canvas)
     p = QPainter(img)
@@ -493,8 +505,7 @@ def _render_planes(st, lin, c, zoom, g, note):
         titles.append(f"{CFA_NAME[ci]}  {100.0 * m.mean():.1f}%")
     ph, pw = panels[0].shape[:2]
     top = 22
-    canvas = np.empty((ph + top, pw * len(panels) + gap * (len(panels) - 1), 3), np.uint8)
-    canvas[:, :] = BG
+    canvas = _bg_canvas(ph + top, pw * len(panels) + gap * (len(panels) - 1))
     xs = []
     for i, pan in enumerate(panels):
         x0 = i * (pw + gap)
@@ -739,8 +750,7 @@ def _slots(panels, titles, slot, gap, title_h):
     """패널들을 **고정 크기 슬롯**에 가운데 정렬로 배치 — 총 크기가 줌과 무관하게 일정해진다."""
     n = len(panels)
     w = slot * n + gap * (n - 1)
-    canvas = np.empty((slot + title_h, w, 3), np.uint8)
-    canvas[:, :] = BG
+    canvas = _bg_canvas(slot + title_h, w)
     xs = []
     for i, pan in enumerate(panels):
         x0 = i * (slot + gap)
@@ -944,8 +954,7 @@ def pattern_chart(st: RawPeek, side: int = 260) -> QImage:
     n = st.period
     cell = max(8, side // n)
     grid = cell * n
-    canvas = np.empty((grid, grid, 3), np.uint8)
-    canvas[:, :] = BG
+    canvas = _bg_canvas(grid, grid)
     for iy in range(n):
         for ix in range(n):
             ci = int(st.pattern[iy, ix])
@@ -983,8 +992,7 @@ def histogram(st: RawPeek, w: int = 460, lane: int = 74) -> QImage:
     nb = st.white + 1
     n = len(st.present)
     h = lane * n + 22
-    canvas = np.empty((h, w, 3), np.uint8)
-    canvas[:, :] = BG
+    canvas = _bg_canvas(h, w)
     edges = np.linspace(0, nb, w + 1).astype(np.int64)
     for li, ci in enumerate(st.present):
         vals = st.vis[st.colors == ci]
