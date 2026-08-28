@@ -71,6 +71,12 @@ PySide6 + QML + GPU 셰이더 기반 RAW(.RAF) 현상/보정 에디터. 후지 �
   확인. 마우스 좌표 기반 QTest는 오프스크린에서 레이아웃이 안 잡혀 신뢰 불가(과거 확인됨).
 - ★**새 파라미터를 넣었으면 프리뷰·CPU export·GPU export 를 나란히 재서 같은 값인지 확인**할 것
   (아래 `### ★ 렌더 경로`). 함수를 직접 부르는 테스트는 배선 누락을 못 잡는다.
+- **크로스 플랫폼 일치**: 양쪽에서 `python xplat_check.py <상대 JSON>` 을 돌려 19케이스를 비교
+  (`xplat_windows.json`/`xplat_darwin.json`). **17/19 일치가 현재 기준선**이고 나머지 둘은 코드
+  문제가 아니다 — `vignette` 은 **해시만** 다르고(통계 전부 동일, 부동소수 반올림), `datestamp`
+  은 폰트 래스터라이저 차이(mean Δ0.017코드). **재조사 금지**(`docs/packaging_macos.md`).
+  `xplat_check.py` 는 `pipeline`/`lut`/`image_loader` 만 import 하므로 불일치가 늘면 현상
+  파이프라인 쪽을 볼 것.
 - ★⚠️**`.qml` 파일을 새로 만들면 `FilmRawstery.spec` 의 `QML` 목록에 등록**할 것. 소스 실행은
   같은 폴더라 그냥 되고 **배포본만 깨진다**("EditedBadge is not a type" → 메인 창이 아예 안 뜸).
   한 줄 검사: `ui/*.qml` 집합 == spec 의 `QML` 집합.
@@ -179,9 +185,13 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
 세 가지가 한 덩어리로 얽혀 있다. **경위·실측·기각 기록 전체는 `docs/tone_pipeline.md`.**
 
 - **자동노출**: 디코드 때 평평한 베이스의 **중앙값이 임베드 JPEG 과 같아지도록** scene-linear
-  게인을 곱한다(`wb.auto_exposure_gain`, 실측 **+0.9~2.2EV**). 적용값은 Exposure 줄에 표시하고
+  게인을 곱한다(`wb.auto_exposure_gain`, 실측 **+0.90~+3.37EV** — 11장, 평균 +2.65 / 폭 2.47EV.
+  옛 "+0.9~2.2EV" 는 X100V·X-T5 만 본 좁은 표본이었다). 적용값은 Exposure 줄에 표시하고
   (`autoExposureEV`), 끌 수 있다(`autoExposure`). ⚠️**끄기는 재디코드가 아니라 노출 오프셋**
   (uniform `autoExpEV` = −log2(게인)) — 재디코드로 만들었다가 2~4초가 걸려 바꿨다(24ms).
+  ⚠️끈 상태는 커브 축에서 **진짜 선형응답**이지만(knee 이하 `filmic()` ≡ sRGB OETF, 출력 코드
+  0~218 은 비트 동일) **타 현상기의 'Linear Response' 와 등가로 설명하지 말 것** — 모델별 밝기
+  앵커(DNG `BaselineExposure`)가 우리에겐 없어 앵커가 다르고, 수치 비교는 **미검증**이다.
 - **필름시뮬 LUT**: 번들 `.cube` 는 룩이 아니라 **후지 톤커브 전체**를 담고 있어 `filmic()` 위에
   그냥 얹으면 톤커브가 두 번 걸린다(중앙값 **+0.8~1.4EV**). `pipeline.film_sim_ev` 가 LUT 통과 후
   중앙값을 베이스로 되돌리는 노출을 풀어 uniform `simExpEV` 로 넣는다. ⚠️**자동노출 솔버는
@@ -199,7 +209,10 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   **display 값이 아니라 센서 클립 근접도**다(`clipLevel` = `raw_loader.clip_level(자동게인)`).
   display 로 재면 센서 포화의 20~51% 뿐인 파란 하늘을 흰색으로 날린다. ⚠️게인이
   PROXY_HEADROOM 을 넘는 사진은 프록시가 이미 뭉개 클립을 구분할 수 없어 **게이트를 끈다**
-  (예전 min(g,H) 상한은 g=5.4 에서 센서 0.67 부터 열려 같은 오탐을 냈다).
+  (예전 min(g,H) 상한은 g=5.4 에서 센서 0.67 부터 열려 같은 오탐을 냈다). ★게이트가 꺼지는
+  파일은 **24/56 로 드물지 않지만** 감사 결과 그 파일들은 애초에 클립에 닿지 않는다(발동 화소
+  중앙값 0.0000% / 최대 0.125%) — **CPU export 만 게이트를 살리는 안은 기각(재시도 금지)**,
+  화소 0.13% 를 얻자고 프리뷰=Export 를 깬다.
 - ★**게인과 거기서 파생되는 수치는 반드시 `load_proxy` 경로(=렌즈 보정 포함)에서 잴 것.**
   `_decode_native` 로 직접 재면 비네팅 보정이 빠져 0.2~0.4EV 과대평가된다(한 번 그렇게 적혀
   나중에 그대로 인용됐다).
@@ -264,7 +277,12 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
 - 셰이더 텍스처는 image provider 경로(Image→sampler)가 검증됨. Canvas→ShaderEffectSource 직접
   바인딩은 과거 검정화면 유발(커브 LUT를 provider 방식으로 전환해 해결).
 - **날짜 스탬프**: 좌측 셀렉터의 **독립 탭**(`Ctrl+4`). '내 기본값'(`stamp.json`)을 기억하고
-  사용자 폰트를 추가할 수 있다. ⚠️**프리뷰와 export 의 합성식이 다르다**(export 가 정확한 쪽).
+  사용자 폰트를 추가할 수 있다. ⚠️되돌리는 값이 경로마다 다르다 — **내 기본값을 읽는 곳은
+  '사이드카 없는 새 사진 로드' 하나뿐**이고 **Reset 버튼·슬라이더 더블클릭·`applyEdits` 폴백은
+  공장 기본값**이다(Reset 이 내 기본값이던 시절 "방금 만진 값이 돌아와" 무동작으로 보였다).
+  Reset 은 그 결과를 내 기본값으로 **기억하되**(안 하면 다음 사진이 리셋 전 값으로 돌아온다)
+  **폰트는 건드리지도 기억하지도 않는다**.
+  ⚠️**프리뷰와 export 의 합성식이 다르다**(export 가 정확한 쪽).
   ⚠️파라미터를 늘리면 **호출부 3곳 + export dict** 를 함께 볼 것. 규칙·함정 전체는
   `docs/date_stamp.md`.
 - **컨택트 시트**(빈 캔버스의 폴더 격자): **클릭=선택 / 더블클릭=열기**(탐색기와 같은 규칙),
@@ -385,6 +403,12 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   ⚠️`DateTimeOriginal`(0x9003)은 **촬영 시각**이라 쓰지 않는다. ⚠️export 경로를 새로 만들면
   `EXPORT_SOFTWARE` 를 함께 넘길 것(호출부 3곳 — 순환 임포트로 pipeline 이 APP_VERSION 을
   직접 못 읽는다).
+- **긴 export 동안 시스템 슬립 방지**(`_set_keep_awake`, 메인 스레드에서만 — 워커는
+  `Controller._keepAwakeSig` 로 큐잉): Windows 는 `SetThreadExecutionState` 이고
+  ⚠️**ES_DISPLAY_REQUIRED 가 함께 있어야 한다**(Modern Standby 에서 화면 꺼짐 = 대기 진입).
+  macOS 는 IOKit 어서션(`_mac_keep_awake`) — **시스템만 잡고 디스플레이는 안 잡는다**(화면이
+  꺼져도 export 가 계속 돈다). ⚠️`caffeinate` 자식 프로세스 금지 — 어서션은 프로세스 귀속이라
+  강제 종료돼도 커널이 회수하지만 자식은 살아남아 절전을 영영 막는다.
 - 16bit TIFF 미지원(QImage 8bit). 필요 시 tifffile/imageio 추가.
 
 ## macOS 패키징 (.app + DMG)
