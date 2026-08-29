@@ -4266,8 +4266,19 @@ ApplicationWindow {
                         color: "#e6e6e6"; font.pixelSize: 12
                         clip: true; selectByMouse: true
                         onTextChanged: searchDebounce.restart()
-                        onActiveFocusChanged: win._typing = activeFocus   // 타이핑 중 단축키(L/B/C) 충돌 방지
-                        Keys.onEscapePressed: text = ""                    // 비우면 onTextChanged→debounce→applySearch
+                        // (win._typing 은 activeFocusItem 파생 readonly — 여기서 대입하지 말 것.
+                        //  예전 대입은 매 포커스 전환마다 TypeError 경고만 내는 죽은 코드였다.)
+                        // Enter=즉시 적용 + 포커스 아웃 / Esc=포커스 아웃(검색어·필터 유지, 지우기는 ✕).
+                        // 필드가 포커스를 쥔 동안은 _typing 이 전역 단축키를 전부 막으므로,
+                        // 검색을 마치면 포커스를 파일 리스트로 넘겨 방향키 탐색·단축키가 바로 살게 한다.
+                        function commitSearch() {
+                            searchDebounce.stop()
+                            win.applySearch(text)
+                            fileListView.forceActiveFocus()
+                        }
+                        Keys.onReturnPressed: commitSearch()
+                        Keys.onEnterPressed: commitSearch()                // 숫자패드 Enter
+                        Keys.onEscapePressed: fileListView.forceActiveFocus()
                         Timer { id: searchDebounce; interval: 180; onTriggered: win.applySearch(searchInput.text) }
                         Text {   // placeholder
                             anchors.verticalCenter: parent.verticalCenter
@@ -4437,7 +4448,38 @@ ApplicationWindow {
                     // 키보드 탐색(리스트 클릭으로 포커스 획득 시): ↑/↓ 한 칸, Home/End 처음/끝,
                     // PgUp/PgDn 한 화면. 전역 Shortcut 이 아니라 포커스 기반이라 콤보박스·입력칸과
                     // 충돌하지 않음. 이동 후 항목이 보이도록 스크롤. (Enter=프리뷰는 전역 Shortcut)
+                    // ★격자(컨택트 시트)가 보이는 동안은 **격자 배치 기준 2D 탐색**으로 바뀐다 —
+                    //   ←/→ 한 칸, ↑/↓ 한 행(=열 수), PgUp/PgDn 한 화면(행 수×열 수),
+                    //   Home/End 첫/끝 사진. 격자에는 파일만 보이므로 photos 배열에서 움직이고
+                    //   경로로 목록 선택을 되찾는다(selectInExplorer — 격자 하이라이트·스크롤은
+                    //   selectedPath 파생으로 따라온다). 폴더 행은 이 동안 키보드로 못 고른다 —
+                    //   격자를 보며 누르는 방향키가 목록의 폴더로 새는 것이 더 이상하다.
                     Keys.onPressed: (e) => {
+                        if (contactSheet.visible) {
+                            var ph = contactSheet.photos
+                            var pn = ph.length
+                            if (pn > 0) {
+                                var cols = Math.max(1, Math.floor(sheetGrid.width / sheetGrid.cellWidth))
+                                var rows = Math.max(1, Math.floor(sheetGrid.height / sheetGrid.cellHeight))
+                                var pcur = -1              // 현재 선택 사진의 격자 인덱스(-1=없음/폴더)
+                                for (var pi = 0; pi < pn; pi++)
+                                    if (ph[pi].path === contactSheet.selectedPath) { pcur = pi; break }
+                                var pnext = -2
+                                if (e.key === Qt.Key_Right)         pnext = Math.min(pn - 1, pcur < 0 ? 0 : pcur + 1)
+                                else if (e.key === Qt.Key_Left)     pnext = Math.max(0, pcur < 0 ? 0 : pcur - 1)
+                                else if (e.key === Qt.Key_Down)     pnext = pcur < 0 ? 0 : Math.min(pn - 1, pcur + cols)
+                                else if (e.key === Qt.Key_Up)       pnext = pcur < 0 ? 0 : Math.max(0, pcur - cols)
+                                else if (e.key === Qt.Key_Home)     pnext = 0
+                                else if (e.key === Qt.Key_End)      pnext = pn - 1
+                                else if (e.key === Qt.Key_PageDown) pnext = pcur < 0 ? 0 : Math.min(pn - 1, pcur + cols * rows)
+                                else if (e.key === Qt.Key_PageUp)   pnext = pcur < 0 ? 0 : Math.max(0, pcur - cols * rows)
+                                if (pnext !== -2) {
+                                    win.selectInExplorer(ph[pnext].path)
+                                    e.accepted = true
+                                }
+                            }
+                            return                        // 격자 모드에서는 목록 규칙을 겹쳐 쓰지 않는다
+                        }
                         var n = count
                         if (n <= 0) return
                         var page = Math.max(1, Math.floor(height / 66))   // 파일 행(64+2) 기준 한 화면
@@ -6579,9 +6621,12 @@ ApplicationWindow {
                                         //   탐색기 목록과 같은 규칙(클릭=선택 / 더블클릭=열기).
                                         // 선택은 탐색기 currentIndex 가 진실원이라 여기서
                                         // 그것만 옮기면 `selectedPath` 가 따라온다.
-                                        // focus=false — 격자에서 방향키를 쓰려는 게 아니라
-                                        // 목록 하이라이트만 맞추는 것.
-                                        onClicked: win.selectInExplorer(cell.modelData.path, false)
+                                        // 포커스도 파일 리스트로 옮긴다(focus 기본값 true) —
+                                        // 예전 focus=false 는 검색창 포커스를 남겨 두어, 검색
+                                        // 후 썸네일을 클릭해도 _typing 이 전역 단축키를 계속
+                                        // 막았다(사용자 보고). 격자 하이라이트는 currentIndex
+                                        // 파생이라 이후 방향키 탐색도 격자에 그대로 보인다.
+                                        onClicked: win.selectInExplorer(cell.modelData.path)
                                         // ⚠️여기서도 닫는다 — `onImageChanged` 는 **경로가 바뀔 때만**
                                         //   닫으므로(재디코딩에 꺼지지 않게 한 장치), 지금 열려 있는
                                         //   사진을 다시 더블클릭하면 격자가 그대로 남는다.
@@ -6592,7 +6637,7 @@ ApplicationWindow {
                                             //   맞춰져 있지만, 그건 이벤트 순서에 기대는 것이다
                                             //   — 여는 경로에서 선택이 따라오는 것은 보장이어야
                                             //   한다(멱등하니 중복 호출은 무해).
-                                            win.selectInExplorer(cell.modelData.path, false)
+                                            win.selectInExplorer(cell.modelData.path)
                                             controller.loadPath(cell.modelData.path)
                                         }
                                     }
