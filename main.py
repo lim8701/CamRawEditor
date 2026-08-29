@@ -3025,6 +3025,16 @@ class Controller(QObject):
         if self._wall_presets().pop(str(name), None) is not None:
             self._flush_wall_prefs()
 
+    @Slot(str, result="QVariantList")
+    def wallShotInfo(self, path: str):  # noqa: N802 (QML 슬롯)
+        """배경화면 잡지 **미리보기**용: [촬영정보 1줄, 'September 2023' 월].
+        합성(_do_wallpaper)이 쓰는 _shot_summary 와 같은 원천이라 미리보기 텍스트가
+        실제 출력과 같다. 빈 경로/실패면 ["", ""]."""
+        if not path:
+            return ["", ""]
+        line, month = self._shot_summary(path)
+        return [line, month]
+
     @Slot(str, result=str)
     def captionTitle(self, path: str) -> str:  # noqa: N802 (QML 슬롯)
         """임의 파일의 저장된 캡션 → 제목용 한 줄(첫 글자 대문자, 끝 마침표 제거).

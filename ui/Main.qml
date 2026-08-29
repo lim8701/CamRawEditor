@@ -1674,6 +1674,11 @@ ApplicationWindow {
     property string wallPlace: ""
     property string wallDate: ""                  // 비우면 메인 사진 EXIF 촬영월로 자동
     property var wallTitles: ["", "", ""]
+    // 슬롯별 [EXIF 촬영정보 1줄, 촬영월] — 합성(_shot_summary)과 같은 원천이라 미리보기의
+    // 인덱스 행/폴리오 날짜/메인 캡션 텍스트가 실제 출력과 같다. 슬롯 변경 시 재평가.
+    readonly property var wallShots: [controller.wallShotInfo(win.wallSlots[0]),
+                                      controller.wallShotInfo(win.wallSlots[1]),
+                                      controller.wallShotInfo(win.wallSlots[2])]
     function wallSetTitle(i, v) {
         var a = win.wallTitles.slice(); a[i] = v; win.wallTitles = a
         controller.setWallpaperText("title" + i, v)
@@ -2862,7 +2867,19 @@ ApplicationWindow {
     // 닫으면 마지막으로 보던 사진을 탐색기에서 선택(하이라이트+스크롤)만 한다 — 로드는 안 함.
     PreviewWindow {
         id: previewWin
-        onClosedAt: (path) => win.selectInExplorer(path)
+        onClosedAt: (path) => {
+            if (win.selectInExplorer(path)) return
+            // 보던 사진이 목록에서 빠진 경우(♥만 보기 필터에서 프리뷰 중 ♥ 해제가 대표) —
+            // 예전엔 선택이 풀린 채 맨 위로 남아 보던 자리를 다시 찾아 내려가야 했다.
+            // 프리뷰 목록(열 때 스냅샷)에서 가장 가까운 이웃(다음 사진 우선)으로 복귀한다.
+            var list = previewWin.rawList
+            for (var d = 1; d < list.length; d++) {
+                var fwd = previewWin.idx + d
+                if (fwd < list.length && win.selectInExplorer(list[fwd])) return
+                var back = previewWin.idx - d
+                if (back >= 0 && win.selectInExplorer(list[back])) return
+            }
+        }
     }
 
     // Alt+↑: 상위 폴더로 이동(Windows 탐색기 관례). 위로가기 버튼과 동일하게 직전 폴더 선택 유지.
@@ -2894,10 +2911,10 @@ ApplicationWindow {
         }
     }
 
-    // 탐색기에서 해당 경로 항목을 선택(하이라이트)하고 보이도록 스크롤. 없으면(필터 등) 무시.
+    // 탐색기에서 해당 경로 항목을 선택(하이라이트)하고 보이도록 스크롤. 찾으면 true.
     // 포커스도 리스트로 → 이어서 방향키 탐색 가능(위로가기/프리뷰 닫기 직후 흐름).
     function selectInExplorer(path, focus) {
-        if (!path) return
+        if (!path) return false
         var files = win.explorerFiles
         for (var i = 0; i < files.length; i++) {
             if (files[i].path === path) {
@@ -2905,13 +2922,14 @@ ApplicationWindow {
                 fileListView.positionViewAtIndex(i, ListView.Center)
                 if (focus === undefined || focus)   // 검색 복원 등에선 focus=false(검색창 포커스 유지)
                     fileListView.forceActiveFocus()
-                return
+                return true
             }
         }
         // 목록에 없음(필터/접기로 사라짐) → currentIndex 를 그대로 두면 **다른 사진**을 가리킨
         // 채 남아서 Return/방향키가 엉뚱한 파일에 작동한다. 선택을 명시적으로 해제한다.
         // (짝 접기는 기본 상태이고 행의 절반을 없애므로 좋아요 필터보다 훨씬 자주 걸린다.)
         fileListView.currentIndex = -1
+        return false
     }
 
     // 검색어 변경(입력/삭제) 처리: 모델(explorerFiles) 재평가로 currentIndex 가 다른 항목을
@@ -10452,15 +10470,16 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         readonly property bool mag: win.wallLayout === 1
                                         readonly property bool isMain: index === 1
                                         // 트립틱: 3등분 셀 / 잡지: 메인은 풀블리드(캔버스 기준),
-                                        // 0·2 는 텍스트 칼럼 안 작은 판(안전영역 기준 — 합성과 동일)
-                                        readonly property real smallH: wallPreview.safeRect.h * 0.34
+                                        // 0·2 는 텍스트 칼럼 안 작은 판 — 높이·자리는 magMirror 의
+                                        // 텍스트 흐름 파생값(합성 avail_h 와 동일 수식). 합성처럼
+                                        // 남은 높이가 S(120) 이하면 아예 그리지 않는다.
+                                        readonly property real smallH: Math.max(1, magMirror.smallH)
+                                        visible: !mag || isMain || magMirror.smallsVisible
                                         x: !mag ? index * (wallPreview.cellW + wallPreview.gapPx)
                                                 : (isMain ? wallPreview.mainX
                                                           : wallPreview.colL + wallPreview.mOut
                                                             + (index === 0 ? 0 : wallPreview.smallW + wallPreview.smallGap))
-                                        y: !mag || isMain ? 0
-                                           : wallPreview.safeRect.y + wallPreview.safeRect.h
-                                             - wallPreview.mOut - wallPreview.safeRect.h * (66 / 2160) - smallH
+                                        y: !mag || isMain ? 0 : magMirror.smallsY
                                         width: !mag ? wallPreview.cellW
                                                     : (isMain ? wallPreview.mainW : wallPreview.smallW)
                                         height: !mag || isMain ? wallPreview.height : smallH
@@ -10512,29 +10531,202 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         }
                                     }
                                 }
-                                // 잡지 텍스트 칼럼 자리 표시(제목·리드문 위치 감만 잡는 플레이스홀더)
-                                Column {
+                                // ---- 잡지 텍스트 미러 — compose_magazine 의 좌표·크기 수식을
+                                // ms = safeRect.h/2160 로 스케일해 **같은 자리**에 그린다(예전
+                                // 자리표시는 고정 px 서체라 실제 출력과 위치·비례가 달랐다).
+                                // ⚠️요소·간격 상수(170/258/130/96/48/74/52/92/66/60/120…)는
+                                //   pipeline.compose_magazine 과 짝 — 한쪽을 바꾸면 같이 바꿀 것.
+                                // 남는 근사 두 가지: QML 워드랩이 QPainter 폭 계산과 미세하게
+                                // 다를 수 있고(줄 수가 갈리는 경계 문장), 작은 판 2장의 가로
+                                // 패킹은 등폭 2칸 근사(합성은 사진 비율대로 이어 붙인다).
+                                Item {
+                                    id: magMirror
                                     visible: win.wallLayout === 1
-                                    x: wallPreview.colL + wallPreview.mOut
-                                    y: wallPreview.safeRect.y + wallPreview.mOut
-                                    width: wallPreview.colW
-                                    spacing: 6
-                                    Text {
-                                        text: win.wallKicker
-                                        color: "#9c3b2e"; font.pixelSize: 7; font.bold: true
+                                    anchors.fill: parent
+                                    readonly property real ms: wallPreview.safeRect.h / 2160
+                                    readonly property real tcx: wallPreview.colL + wallPreview.mOut
+                                    readonly property real tcw: wallPreview.colW
+                                    readonly property real sy0: wallPreview.safeRect.y
+                                    readonly property real sy1: wallPreview.safeRect.y + wallPreview.safeRect.h
+                                    readonly property real sx1: wallPreview.safeRect.x + wallPreview.safeRect.w
+                                    // MAG_FACES 미러(pipeline): 강조색/자간계수/대문자/줄높이 + 서체 첫 후보
+                                    readonly property var faceAccent: ["#16161a", "#9c3b2e", "#16161a", "#9c3b2e"]
+                                    readonly property var faceTrack: [0.0, 0.015, 0.0, 0.0]
+                                    readonly property var faceUpper: [false, true, false, false]
+                                    readonly property var faceLh: [1.12, 1.08, 1.18, 1.14]
+                                    readonly property var faceHead: ["Constantia", "Franklin Gothic Medium Cond",
+                                                                     "Noto Serif KR", "Noto Sans KR"]
+                                    readonly property var faceBody: ["Constantia", "Arial Narrow",
+                                                                     "Noto Serif KR", "Noto Sans KR"]
+                                    readonly property string famH: faceHead[win.wallTypeface]
+                                    readonly property string famB: faceBody[win.wallTypeface]
+                                    readonly property color accent: faceAccent[win.wallTypeface]
+                                    readonly property bool up: faceUpper[win.wallTypeface]
+                                    readonly property real lhf: faceLh[win.wallTypeface]
+                                    function fpx(v) { return Math.max(1, Math.round(v * ms)) }
+                                    function uc(t) { return up ? t.toUpperCase() : t }
+
+                                    // 세로 흐름(합성과 같은 누적 y). 빈 문장도 합성처럼 한 줄만큼 내려간다.
+                                    readonly property real headStep: 130 * ms * lhf
+                                    readonly property real yHead: sy0 + 258 * ms
+                                    readonly property real yAfterHead: yHead + Math.max(1, mHead.lineCount) * headStep
+                                    readonly property real yDeck: yAfterHead + 96 * ms
+                                    readonly property real yAfterDeck: yDeck + Math.max(1, mDeck.lineCount) * 48 * ms
+                                    readonly property bool hasIndex: {
+                                        for (var i = 0; i < 3; i++)
+                                            if (win.wallTitles[i] !== "" || win.wallShots[i][0] !== "") return true
+                                        return false
                                     }
-                                    Text {
-                                        width: parent.width; wrapMode: Text.WordWrap
-                                        text: win.wallHeadline !== "" ? win.wallHeadline : "Headline"
-                                        color: "#16161a"; font.pixelSize: 16; font.bold: true
-                                        font.family: ["Constantia", "Franklin Gothic Medium Cond",
-                                                      "Noto Serif KR", "Noto Sans KR"][win.wallTypeface]
+                                    readonly property real yRows: yAfterDeck + 74 * ms + 52 * ms
+                                    readonly property real flowEnd: hasIndex ? yRows + 3 * 92 * ms : yAfterDeck
+                                    // 작은 판 2장: 남은 높이(합성 avail_h)와 동일 — S(120) 이하면 안 그린다.
+                                    readonly property real capBand: 66 * ms
+                                    readonly property real smallH: (sy1 - 170 * ms - capBand) - (flowEnd + 60 * ms)
+                                    readonly property bool smallsVisible: smallH > 120 * ms
+                                    readonly property real smallsY: sy1 - 170 * ms - capBand - smallH
+                                    // 폴리오 날짜: 비우면 합성이 메인 사진 촬영월로 채운다 — 같은 값을 미리 보여줌.
+                                    readonly property string folioDate: win.wallDate.trim() !== ""
+                                                                        ? win.wallDate : win.wallShots[1][1]
+
+                                    Text {   // 키커(항상 대문자·자간 — 합성 규칙)
+                                        x: magMirror.tcx; y: magMirror.sy0 + 170 * magMirror.ms
+                                        text: win.wallKicker.toUpperCase()
+                                        color: magMirror.accent; font.bold: true
+                                        font.family: magMirror.famB
+                                        font.pixelSize: magMirror.fpx(30)
+                                        font.letterSpacing: 6 * magMirror.ms
                                     }
-                                    Text {
-                                        width: parent.width; wrapMode: Text.WordWrap
-                                        maximumLineCount: 3; elide: Text.ElideRight
+                                    Text {   // 헤드라인(줄바꿈 폭 = 합성 cw, 줄높이 = S(130)*lh 고정)
+                                        id: mHead
+                                        x: magMirror.tcx; y: magMirror.yHead
+                                        width: magMirror.tcw; wrapMode: Text.WordWrap
+                                        text: magMirror.uc(win.wallHeadline)
+                                        color: "#16161a"; font.bold: true
+                                        font.family: magMirror.famH
+                                        font.pixelSize: magMirror.fpx(130)
+                                        font.letterSpacing: magMirror.faceTrack[win.wallTypeface] * 130 * magMirror.ms
+                                        lineHeight: magMirror.headStep; lineHeightMode: Text.FixedHeight
+                                    }
+                                    Rectangle {   // 헤드라인 밑줄 바
+                                        x: magMirror.tcx; y: magMirror.yAfterHead + 34 * magMirror.ms
+                                        width: 130 * magMirror.ms; height: Math.max(1, 3 * magMirror.ms)
+                                        color: "#16161a"
+                                    }
+                                    Text {   // 리드문
+                                        id: mDeck
+                                        x: magMirror.tcx; y: magMirror.yDeck
+                                        width: magMirror.tcw; wrapMode: Text.WordWrap
                                         text: win.wallDeck
-                                        color: "#76767c"; font.pixelSize: 8
+                                        color: "#76767c"
+                                        font.family: magMirror.famB
+                                        font.pixelSize: magMirror.fpx(36)
+                                        lineHeight: 48 * magMirror.ms; lineHeightMode: Text.FixedHeight
+                                    }
+                                    Text {   // 인덱스 라벨(합성 기본 문구와 동일)
+                                        visible: magMirror.hasIndex
+                                        x: magMirror.tcx; y: magMirror.yAfterDeck + 74 * magMirror.ms
+                                        text: "IN THIS SET"
+                                        color: "#76767c"; font.bold: true
+                                        font.family: magMirror.famB
+                                        font.pixelSize: magMirror.fpx(26)
+                                        font.letterSpacing: 5 * magMirror.ms
+                                    }
+                                    Repeater {   // 인덱스 행(번호·제목·촬영정보) — 화면 좌→우 순서
+                                        model: magMirror.hasIndex ? win.wallSlotOrder : []
+                                        Item {
+                                            required property int index
+                                            required property var modelData
+                                            readonly property real rowY: magMirror.yRows + index * 92 * magMirror.ms
+                                            Rectangle {
+                                                x: magMirror.tcx; y: parent.rowY
+                                                width: magMirror.tcw; height: 1; color: "#cdcbc5"
+                                            }
+                                            Text {
+                                                x: magMirror.tcx; y: parent.rowY + 22 * magMirror.ms
+                                                text: "0" + (parent.index + 1)
+                                                color: magMirror.accent; font.bold: true
+                                                font.family: magMirror.famH
+                                                font.pixelSize: magMirror.fpx(40)
+                                            }
+                                            Text {
+                                                x: magMirror.tcx + 90 * magMirror.ms
+                                                y: parent.rowY + 24 * magMirror.ms
+                                                width: magMirror.tcw - 90 * magMirror.ms; elide: Text.ElideRight
+                                                text: win.wallTitles[parent.modelData]
+                                                color: "#16161a"
+                                                font.family: magMirror.famB
+                                                font.pixelSize: magMirror.fpx(34)
+                                            }
+                                            Text {
+                                                id: rowShot
+                                                x: magMirror.tcx + magMirror.tcw - rowShot.paintedWidth
+                                                y: parent.rowY + 34 * magMirror.ms
+                                                text: win.wallShots[parent.modelData][0]
+                                                color: "#76767c"
+                                                font.family: magMirror.famB
+                                                font.pixelSize: magMirror.fpx(25)
+                                            }
+                                        }
+                                    }
+                                    Rectangle {   // 인덱스 마지막 헤어라인
+                                        visible: magMirror.hasIndex
+                                        x: magMirror.tcx; y: magMirror.flowEnd
+                                        width: magMirror.tcw; height: 1; color: "#cdcbc5"
+                                    }
+                                    Repeater {   // 작은 판 프레임 라벨(사진 왼쪽 정렬, 합성과 동일 오프셋)
+                                        model: magMirror.smallsVisible ? 2 : 0
+                                        Text {
+                                            required property int index
+                                            x: magMirror.tcx + (index === 0 ? 0
+                                               : (magMirror.tcw - 40 * magMirror.ms) / 2 + 40 * magMirror.ms)
+                                            y: magMirror.smallsY + magMirror.smallH + 18 * magMirror.ms
+                                            text: "FRAME 0" + win.wallFrameNo(index === 0 ? 0 : 2)
+                                            color: magMirror.accent; font.bold: true
+                                            font.family: magMirror.famB
+                                            font.pixelSize: magMirror.fpx(23)
+                                            font.letterSpacing: 3 * magMirror.ms
+                                        }
+                                    }
+                                    Rectangle {   // 폴리오 헤어라인
+                                        visible: win.wallPlace !== "" || magMirror.folioDate !== ""
+                                        x: magMirror.tcx; y: magMirror.sy1 - 126 * magMirror.ms
+                                        width: magMirror.tcw; height: 1; color: "#cdcbc5"
+                                    }
+                                    Text {   // 폴리오: 장소(왼쪽)
+                                        x: magMirror.tcx; y: magMirror.sy1 - 104 * magMirror.ms
+                                        text: magMirror.uc(win.wallPlace)
+                                        color: "#76767c"
+                                        font.family: magMirror.famB
+                                        font.pixelSize: magMirror.fpx(26)
+                                        font.letterSpacing: 4 * magMirror.ms
+                                    }
+                                    Text {   // 폴리오: 날짜(오른쪽 정렬)
+                                        id: mDate
+                                        x: magMirror.tcx + magMirror.tcw - mDate.paintedWidth
+                                        y: magMirror.sy1 - 104 * magMirror.ms
+                                        text: magMirror.uc(magMirror.folioDate)
+                                        color: "#76767c"
+                                        font.family: magMirror.famB
+                                        font.pixelSize: magMirror.fpx(26)
+                                        font.letterSpacing: 4 * magMirror.ms
+                                    }
+                                    Text {   // 메인 사진 위 캡션(흰 글씨, 하단 바깥 모서리) — 합성 조립 규칙 미러
+                                        id: mCap
+                                        readonly property string capText: {
+                                            var bits = ["0" + win.wallFrameNo(1)]
+                                            if (win.wallTitles[1] !== "") bits.push(win.wallTitles[1])
+                                            if (win.wallShots[1][0] !== "") bits.push(win.wallShots[1][0])
+                                            return bits.length > 1 ? bits.join("   ·   ") : ""
+                                        }
+                                        readonly property real edge: win.wallMainSide === 0
+                                            ? Math.min(wallPreview.mainW, magMirror.sx1)
+                                            : Math.min(wallPreview.width, magMirror.sx1)
+                                        x: edge - 120 * magMirror.ms - mCap.paintedWidth
+                                        y: magMirror.sy1 - 108 * magMirror.ms
+                                        text: capText
+                                        color: "white"
+                                        font.family: magMirror.famB
+                                        font.pixelSize: magMirror.fpx(27)
                                     }
                                 }
                                 // 안전영역 가이드 — 다른 비율에서 잘려나가는 띠를 눈으로 확인
