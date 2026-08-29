@@ -17,7 +17,7 @@ import rawpy
 from PySide6.QtCore import Qt, QRect
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPen
 
-from wb import linear_to_srgb
+from wb import baked_wb, linear_to_srgb, srgb_to_linear
 
 # CFA 색 인덱스 -> 표시색 (LibRaw: 0=R 1=G 2=B 3=G2)
 CFA_RGB = [(1.0, 0.15, 0.15), (0.15, 1.0, 0.20), (0.30, 0.45, 1.0), (0.55, 1.0, 0.35)]
@@ -541,15 +541,17 @@ def _render_planes(st, lin, c, zoom, g, note, gain=True):
 # ★예전엔 "naive box fill" 을 패널로 뒀는데 **어떤 결정에도 기여하지 않았다**(파이프라인 후보가
 #   아니고 실측 집계도 LINEAR 와 거의 같았다) → 실제 후보 비교로 교체했다.
 
-# 후보 집합 — **앱이 실제로 쓰는 것만** 세운다(`raw_loader._export_demosaic` 과 같아야 한다).
-#   X-Trans: 프록시·export 모두 LINEAR 이므로 LINEAR 하나 → 패널은 "모자이크 vs 현상" 전후 비교.
-#   Bayer  : 프록시 LINEAR / export AHD 이므로 둘 다 → 실제로 나가는 두 결과를 나란히 본다.
+# 후보 집합 — **export 가 실제로 쓰는 것만** 세운다(`raw_loader._export_demosaic` 과 같아야 한다).
+#   X-Trans·Bayer 모두 export=AHD(X-Trans 에선 LibRaw 가 Markesteijn 3-pass 로 실행 — rawpy
+#   라벨과 실제 알고리즘이 다르다, docs/raw_demosaic.md 매핑 절) → 패널은 "모자이크 vs export".
+#   프록시가 쓰는 LINEAR 는 후보에서 뺐다(2026-08-29 사용자 결정) — 프록시는 2560 축소라 이
+#   100% 비교와 체감이 무관하고, 빼면 첫 렌더가 LINEAR 디코드만큼 빨라지고 패널이 커진다.
 #   ⚠️예전엔 4종(LINEAR/VNG/PPG/AHD 또는 LINEAR/AHD/DCB/DHT)을 세워 '정책 검증 계측기' 로 썼는데
 #     X-Trans 첫 렌더가 **13s** 였고(종당 1.1~3.6s) 눈으로 판별이 안 됐다 → 사용자 결정으로
 #     축소. 측정 표와 판단 경위는 `docs/raw_peek.md`·`docs/raw_demosaic.md` 에 있다 —
 #     되살릴 때 그 표를 먼저 볼 것.
-_CANDS_XTRANS = ("LINEAR",)
-_CANDS_BAYER = ("LINEAR", "AHD")
+_CANDS_XTRANS = ("AHD",)
+_CANDS_BAYER = ("AHD",)
 
 
 def demosaic_candidates(st):
@@ -557,18 +559,30 @@ def demosaic_candidates(st):
     return _CANDS_BAYER if st.period == 2 else _CANDS_XTRANS
 
 # 창 단위 캐시. 디코드는 전체 프레임밖에 안 되지만 **보관은 창만** 한다 —
-#   전체를 4종 담으면 26MP 에서 624MB 다. 2048px 창이면 종당 25MB(4종 100MB)이고,
-#   크롭이 최대 ~250px 이라 ±900px 팬까지 미스가 안 난다.
+#   전체를 담으면 26MP 에서 종당 156MB 다. 2048px 창이면 종당 25MB 이고, 크롭이 최대
+#   ~397px(패널 2칸·zoom 2 기준)이라 디코드 중심에서 **±825px 팬까지** 미스가 안 난다
+#   (여유 = (2048−크롭변)/2 — 고배율일수록 크롭이 작아 여유가 ±975px 까지 늘어난다).
 DM_WINDOW = 2048
 
 
 def _app_choice(st, name):
     """앱이 실제로 쓰는 것 — 라벨에 표시한다. `raw_loader._export_demosaic` 과 같아야 한다."""
-    if st.period == 2:                       # Bayer: 프록시 LINEAR / export AHD
-        if name == "LINEAR":
-            return "app: proxy"
-        return "app: export" if name == "AHD" else ""
-    return "app: proxy+export" if name == "LINEAR" else ""
+    # Bayer·X-Trans 공통: 프록시 LINEAR / export AHD(X-Trans 에선 Markesteijn 3-pass).
+    if name == "LINEAR":
+        return "app: proxy"
+    return "app: export" if name == "AHD" else ""
+
+
+def _cand_label(st, name):
+    """표시용 이름. X-Trans 에선 rawpy 라벨과 **실제 실행되는 알고리즘이 다르다** — LibRaw 가
+    quality>2(AHD/DCB/DHT/AAHD)를 Markesteijn 3-pass, quality 2(PPG)를 1-pass 로 실행한다
+    (docs/raw_demosaic.md 매핑 절). 캐시 키·rawpy 호출은 원래 이름을 쓰고 표시만 바꾼다."""
+    if getattr(st, "is_xtrans", False):
+        if name in ("AHD", "DCB", "DHT", "AAHD"):
+            return f"Markesteijn 3-pass ({name})"
+        if name == "PPG":
+            return f"Markesteijn 1-pass ({name})"
+    return name
 
 
 def _dm_covers(ent, rect):
@@ -593,11 +607,20 @@ def _dm_get(st, name, need):
         return ent
     try:
         with rawpy.imread(st.path) as r:
+            # ★export 계약과 같은 디코드(`raw_loader._decode_native` 와 동일 파라미터) — WB 는
+            #   디모자이크 **전에** 곱해지므로(LibRaw scale_colors) 유니티 WB 로 디코드하면 export
+            #   가 실행하는 디모자이크와 입력부터 다르다(Markesteijn 은 채널 균형에 민감). 예전
+            #   유니티 WB+선형 표시는 평탄부 노이즈 결을 과장해 올바른 정책(Mark3)을 의심하게
+            #   만들었다(2026-08-29 실측, docs/raw_demosaic.md). 유일한 의도적 차이는
+            #   user_flip=0 — 크롭 창 매핑이 센서 좌표에 의존한다(회전만 다르고 픽셀은 동일).
+            cam_xyz = np.array(r.rgb_xyz_matrix)[:3, :3]
+            ref = np.array(r.daylight_whitebalance, dtype=float)[:3]
+            ref = ref / ref[1] if (ref[1] > 0 and np.all(np.isfinite(ref))) else np.ones(3)
             rgb = r.postprocess(demosaic_algorithm=getattr(rawpy.DemosaicAlgorithm, name),
                                 output_color=rawpy.ColorSpace.raw,
-                                user_wb=[1.0, 1.0, 1.0, 1.0],
+                                user_wb=baked_wb(cam_xyz, ref),
                                 output_bps=16, no_auto_bright=True,
-                                gamma=(1, 1), user_flip=0,
+                                gamma=(2.4, 12.92), user_flip=0,
                                 highlight_mode=rawpy.HighlightMode.Clip)
     except Exception:
         st._dm_cache[name] = False           # 실패도 기억한다(매번 재시도하지 않게)
@@ -698,8 +721,8 @@ def demosaic_steps(st, cx: float, cy: float, zoom: int,
     ★패널 표시 크기는 줌과 무관하게 고정이다 — 슬롯을 먼저 정하고 그 안에 넣는다(`_slots`).
       예전에 `크롭 x 줌` 에서 파생시켰더니 줌마다 폭이 흔들리고, 크롭 하한에 걸리는 고배율에서
       이미지가 1080->600px 로 쪼그라들었다(사용자 보고).
-    ⚠️**캐시가 비었거나 팬으로 창을 벗어난 첫 호출만** 무겁다(종당 1.1~3.6s, X-Trans 4종 ~11.8s)
-      — 그때는 워커에서 부를 것(`is_heavy` 가 `demosaic_cached` 로 판정). 이후는 수십 ms.
+    ⚠️**캐시가 비었거나 팬으로 창을 벗어난 첫 호출만** 무겁다(AHD 1종: X-Trans ~3.7s /
+      Bayer ~1.3s) — 그때는 워커에서 부를 것(`is_heavy` 가 `demosaic_cached` 로 판정). 이후는 수십 ms.
     progress: 선택적 콜백 `(done, total, name)` — 오래 걸리는 첫 디코드의 진행 표시용.
     """
     zoom_req = int(np.clip(zoom, DEMOSAIC_MIN_ZOOM, MAX_ZOOM))
@@ -724,14 +747,16 @@ def demosaic_steps(st, cx: float, cy: float, zoom: int,
 
     cands = demosaic_candidates(st)
     total = len(cands)
+    cand_gain = None                 # 후보 간 **동일** 표시 게인(첫 후보에서 1회 산출 — 공정 비교)
     for i, name in enumerate(cands):
+        label = _cand_label(st, name)    # X-Trans 에선 실제 알고리즘 이름(Markesteijn)으로 표시
         if progress is not None:
-            progress(i, total, name)
+            progress(i, total, label)
         ent = _dm_get(st, name, (x, y, side, side))
         blank = np.full((max(8, slot // 2), max(8, slot // 2), 3), BG, np.uint8)
         if ent is None:
             panels.append(blank)
-            titles.append(f"{name} - unavailable")
+            titles.append(f"{label} - unavailable")
             continue
         arr, wx, wy, fy, fx = ent
         sy, sx = int(y * fy) - wy, int(x * fx) - wx
@@ -739,18 +764,28 @@ def demosaic_steps(st, cx: float, cy: float, zoom: int,
         sub = arr[sy:sy + hh, sx:sx + ww]
         if sub.shape[0] < 4 or sub.shape[1] < 4:
             panels.append(blank)
-            titles.append(f"{name} - out of window")
+            titles.append(f"{label} - out of window")
             continue
+        # 디코드가 이미 감마 인코딩(export 계약, `_dm_get`) — 표시 게인은 상단 토글을 따른다.
+        # 켜면 선형화 후 `_auto_gain`(예전 p99→0.9 상시 게인은 어두운 크롭에서 노이즈 결을
+        # 과장했다), 끄면 export 디코드 그대로(as recorded).
         sub = sub.astype(np.float32) / 65535.0
-        sg = 0.9 / max(float(np.percentile(sub, 99.0)), 1e-4)
         kk = max(1, slot // max(sub.shape[1], 1))
-        panels.append(_nearest_up(_gamma8(np.clip(sub * sg, 0, 1)), kk))
+        if gain:
+            lin_sub = srgb_to_linear(sub)
+            if cand_gain is None:
+                cand_gain = _auto_gain(lin_sub)
+            img8 = _gamma8(np.clip(lin_sub * cand_gain, 0.0, 1.0))
+        else:
+            img8 = (np.clip(sub, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+        panels.append(_nearest_up(img8, kk))
         note = _app_choice(st, name)
-        titles.append(name + (f"  [{note}]" if note else ""))
+        titles.append(label + (f"  [{note}]" if note else ""))
     if progress is not None:
         progress(total, total, "")
 
-    cap = (f"Demosaic - mosaic vs {'/'.join(cands)}, same {side}x{side} crop "
+    cap = (f"Demosaic - mosaic vs {'/'.join(_cand_label(st, n) for n in cands)}, "
+           f"same {side}x{side} crop "
            f"@ ({x},{y}), {'X-Trans' if st.is_xtrans else 'Bayer'}   {k}x"
            f"   {_gain_note(gain, g)}")
     if k != zoom_req:

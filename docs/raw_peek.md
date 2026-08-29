@@ -21,7 +21,7 @@ export dict — **전부 무관**하다. 읽기 전용 진단 뷰라서 새 셰�
   ⚠️`adjust.frag` 는 D3D11 샘플러 16/16 을 이미 다 써서 샘플러를 늘리면 **파이프라인 생성에서
   죽는다**(qsb 컴파일은 통과한다).
 - **디코드 경로 무변경.** `raw_loader.py` · `pipeline.py` · `wb.py` · `shaders/` 는 한 줄도 안 건드렸다
-  (`raw_peek` 이 `wb.linear_to_srgb` 를 **읽기만** 한다).
+  (`raw_peek` 이 `wb.linear_to_srgb`/`srgb_to_linear`/`baked_wb` 를 **읽기만** 한다).
 
 ## 형태
 
@@ -37,7 +37,7 @@ export dict — **전부 무관**하다. 읽기 전용 진단 뷰라서 새 셰�
 | **Gray** | 모자이크를 그레이스케일로. 전체 보기에서는 모자이크가 평균화돼 그냥 흑백사진처럼 보이는 것 자체가 관찰 포인트 |
 | **CFA** | 픽셀마다 자기 컬러필터 색으로 착색 + 반복 유닛 격자. **X-Trans 6×6 vs Bayer 2×2 차이가 드러나는 핵심 컷** |
 | **Planes** | 색별 평면(해당 색만, 나머지는 검정) — 표본 밀도 비교. X-Trans G 55.6% / R·B 22.2%, Bayer 50/25/25 |
-| **Demosaic** | 같은 크롭의 **모자이크 vs 앱이 실제로 쓰는 현상 결과** — X-Trans `LINEAR`, Bayer `LINEAR`+`AHD`(프록시/export). `[app: …]` 라벨로 표시. 첫 렌더만 LibRaw 디코드, 이후 수십 ms |
+| **Demosaic** | 같은 크롭의 **모자이크 vs export 현상 결과** — X-Trans·Bayer 모두 `AHD` 하나. 제목은 실제 실행 알고리즘으로 표시(`_cand_label`: X-Trans 는 "Markesteijn 3-pass (AHD)") + `[app: export]`. 첫 렌더만 LibRaw 디코드(X-Trans 3.7s/Bayer 1.3s), 이후 수십 ms |
 
 우측 패널: 패턴 유닛 차트 + **채널별 레인 히스토그램** + 메타 표.
 
@@ -119,10 +119,20 @@ numpy 2.5.2)에서 **265 Mel/s**(1.2M 원소 4.6ms)다. x86-64 numpy 는 pow 에
 
 ### ★Demosaic 패널은 무엇을 위한 것인가 — 정책 검증 계측기
 
-이 레포엔 `docs/raw_demosaic.md` 라는 **결정 기록**이 있다: 프록시는 항상 LINEAR, Bayer export
-만 AHD, X-Trans 는 양쪽 LINEAR. 그 결정은 논거로 내려졌고 "알려진 트레이드오프(수용됨)" 와
+이 레포엔 `docs/raw_demosaic.md` 라는 **결정 기록**이 있다: 프록시는 항상 LINEAR, export 는
+AHD(2026-08-29 부터 X-Trans 도 — LibRaw 에선 Markesteijn 3-pass. 그 전엔 Bayer 만 AHD 였다).
+그 결정은 논거로 내려졌고 "알려진 트레이드오프(수용됨)" 와
 **"추후 재검토 트리거"**(더 나은 알고리즘 DCB/DHT 검토 시)까지 적혀 있는데, 그걸 **내 사진에서
 재볼 수단이 앱에 없었다.** 이 패널이 그 계측기다.
+
+★**후보 디코드는 export 계약과 동일하다**(2026-08-29, `_dm_get`): TREF WB(baked_wb)+감마
+(2.4, 12.92), 유일한 차이는 `user_flip=0`(크롭 창의 센서 좌표 정합 — 회전만 다르고 픽셀 동일).
+예전엔 유니티 WB+선형으로 디코드했는데 두 가지가 틀렸다: ①WB 는 디모자이크 **전에** 곱해져
+(LibRaw scale_colors) 패널이 export 와 **다른 디모자이크**를 보여줬고, ②초록 캐스트+선형+p99
+상시 게인이 평탄부 노이즈 결(Markesteijn 의 지렁이 결)을 과장해 올바른 정책을 의심하게 만들었다
+(`docs/raw_demosaic.md` 전환 기록). 후보 패널의 표시 게인도 이제 Display gain 토글을 따른다
+(켜면 `_auto_gain` — 첫 후보에서 1회 산출해 **후보 간 동일 게인**, 끄면 export 디코드 그대로).
+CFA mosaic(입력) 패널은 지금도 as-recorded 다(센서 데이터를 보여주는 게 RAW Peek 의 정체성).
 
 패널: `입력 모자이크` + `LINEAR` + `AHD` + `DCB` + `DHT`. 앱이 실제로 쓰는 것에는
 `[app: proxy]` / `[app: export]` / `[app: proxy+export]` 표시가 붙어, "지금 정책이 이 사진에서
@@ -142,10 +152,14 @@ numpy 2.5.2)에서 **265 Mel/s**(1.2M 원소 4.6ms)다. x86-64 numpy 는 pow 에
 2. 차이의 **크기**를 재니: X-Trans 에서 AHD vs DCB 는 다른 픽셀 **0.04%**, 평균 절대차 **0.03
    코드**(16bit). DCB vs DHT 도 0.06% / 0.05 코드. **실질 동일**이고 4파일 x 4크롭 품질 지표가
    소수 5자리까지 같았다. `array_equal` 의 False 는 반올림 수준이었다.
+   (2026-08-29 확인: X-Trans 의 quality>2 는 **전부 같은 Markesteijn 3-pass**고, 그 미세차의
+   정체는 **실행 간 비결정 지터**였다 — 같은 라벨로 두 번 디코드해도 0.003~0.02% 픽셀이 다르다.
+   `docs/raw_demosaic.md` 매핑 절 참조.)
 
 → 그래서 후보 집합을 **CFA 종류별**로 둔다(`demosaic_candidates`). X-Trans 에서 실제로 갈리는
-것은 **LINEAR / VNG / PPG / (AHD 계열)** 이다(PPG vs AHD 는 다른 픽셀 21.7%, 평균 17.3 코드로
-진짜 다르다). 넷을 AHD·DCB·DHT 로 채우면 **똑같은 패널 3장에 ~10s** 를 쓰게 된다.
+것은 **LINEAR / VNG / PPG(=Markesteijn 1-pass) / AHD 계열(=Markesteijn 3-pass)** 이다
+(Mark1 vs Mark3 는 다른 픽셀 21.7%, 평균 17.3 코드로 진짜 다르다). 넷을 AHD·DCB·DHT 로
+채우면 **똑같은 패널 3장에 ~10s** 를 쓰게 된다.
 Bayer 는 LINEAR/AHD/DCB/DHT 가 서로 뚜렷히 다르다(LINEAR 대비 평균차 95/79/88).
 
 ### 후보를 LINEAR 하나로 줄인 결정 (사용자)
@@ -155,15 +169,19 @@ Bayer 는 LINEAR/AHD/DCB/DHT 가 서로 뚜렷히 다르다(LINEAR 대비 평균
 줄였다 → 첫 렌더 **1.11s**(X-Trans) / 0.73s(Bayer), 캐시 101MB → **25MB**, 패널이 2장이라
 훨씬 크게 보인다(1400x716 vs 1398x292).
 
-남긴 기준은 **앱이 실제로 쓰는 것**이다(`raw_loader._export_demosaic` 과 짝):
+남긴 기준은 **export 가 실제로 쓰는 것**이다(`raw_loader._export_demosaic` 과 짝).
+2026-08-29 X-Trans export 가 AHD(=Markesteijn 3-pass)로 전환되며 잠시 X-Trans 후보를
+`LINEAR+AHD` 둘로 늘렸다가, **같은 날 사용자 결정으로 LINEAR(프록시용)를 양쪽 모두 뺐다** —
+프록시는 2560 축소라 이 100% 비교와 체감이 무관하고, 빼면 첫 렌더가 빨라지고 패널이 커진다
+(크롭 131→198px):
 
 | | 후보 | 패널 | 첫 렌더 |
 |---|---|---|---|
-| X-Trans | `LINEAR` (프록시·export 양쪽) | 2 | 1.11s |
-| Bayer | `LINEAR`(프록시) + `AHD`(export) | 3 | 1.6s |
+| X-Trans | `AHD`(export — Markesteijn 3-pass) | 2 | 3.7s |
+| Bayer | `AHD`(export) | 2 | 1.3s |
 
-- Bayer 는 **실제로 나가는 두 결과를 나란히** 본다 — export 가 프록시와 어떻게 다른지가
-  `docs/raw_demosaic.md` 가 "알려진 트레이드오프(수용됨)" 로 적어 둔 바로 그 항목이다.
+- 패널은 **모자이크(입력) vs export 결과** 전후 비교다 — 100% 화질이 의미 있는 곳은 export
+  뿐이라는 `docs/raw_demosaic.md` 의 논거와 같은 기준.
 - 후보를 늘릴 때는 `_CANDS_XTRANS` / `_CANDS_BAYER` 두 줄이다. 아래 벤치마크 표를 먼저 볼 것.
 
 ### ★후보 디코드는 창(window) 단위로 캐시한다

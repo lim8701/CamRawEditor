@@ -758,15 +758,39 @@ Item {
             Rectangle {
                 anchors { top: parent.top; right: parent.right; margins: 10 }
                 visible: controller.rawPeekBusy && controller.rawPeekOpened
-                width: bLabel.implicitWidth + 18; height: 24; radius: 12
+                width: Math.max(bLabel.implicitWidth + 20, 170); height: 36; radius: 10
                 color: "#000000AA"
+                onVisibleChanged: if (visible) bBar.sync()
                 Text {
                     id: bLabel
-                    anchors.centerIn: parent
-                    // 후보 디모자이크는 종당 1.1~3.6s 다 — 어느 알고리즘을 받고 있는지 알린다.
+                    anchors { top: parent.top; topMargin: 6; horizontalCenter: parent.horizontalCenter }
+                    // 후보 디모자이크는 종당 ~1.1s(LINEAR)/~4s(Markesteijn 3-pass) —
+                    // 어느 알고리즘을 받고 있는지 알린다.
                     text: controller.rawPeekStatus !== "" ? controller.rawPeekStatus
                                                           : "rendering…"
                     color: "#dddddd"; font.pixelSize: 11
+                }
+                // 진행 바 — 실제 값은 스텝 경계(done/total)뿐이다(LibRaw 디코드는 중간 콜백이
+                // 없다). 스텝 사이에는 다음 경계 직전까지 서서히 기어가(OutCubic) 멈춘 느낌을
+                // 없애고, 실제 경계가 오면 그 값으로 스냅한다.
+                Rectangle {
+                    anchors { left: parent.left; right: parent.right; bottom: parent.bottom; margins: 7 }
+                    height: 4; radius: 2; color: "#44ffffff"
+                    Rectangle {
+                        id: bBar
+                        property real frac: 0
+                        property real step: controller.rawPeekProgress
+                        function sync() { creep.stop(); frac = step; creep.restart() }
+                        onStepChanged: sync()
+                        height: parent.height; radius: 2; color: "#e8e8e8"
+                        width: parent.width * Math.max(0, Math.min(1, frac))
+                        NumberAnimation {
+                            id: creep
+                            target: bBar; property: "frac"
+                            to: Math.min(bBar.step + 0.45, 0.97)
+                            duration: 5000; easing.type: Easing.OutCubic
+                        }
+                    }
                 }
             }
         }

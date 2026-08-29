@@ -1279,6 +1279,7 @@ class Controller(QObject):
         # 메인 뷰 캡션 — ★이미지에 굽지 않고 QML 이 고정 높이 밴드에 그린다(raw_peek.py 주석 참조)
         self._peek_caption = ""
         self._peek_status = ""       # 후보 디코드 진행 표시(오래 걸리는 첫 렌더)
+        self._peek_prog = 0.0        # 후보 디코드 진행분율(done/total) — QML 진행 바
         self._peek_center = (0.5, 0.5)   # 오픈 시 기본 팬 위치(디테일 있는 곳)
         # --- Develop 애니메이션(RAW Peek 의 Develop 탭) ---
         # 스냅샷 = 애니메이션 시작 시 QML 이 읽어 보낸 **최종 uniform 값**. 여기서 슬라이더를
@@ -3880,6 +3881,11 @@ class Controller(QObject):
 
     rawPeekStatus = Property(str, _get_raw_peek_status, notify=rawPeekChanged)
 
+    def _get_raw_peek_progress(self) -> float:
+        return self._peek_prog
+
+    rawPeekProgress = Property(float, _get_raw_peek_progress, notify=rawPeekChanged)
+
     def _get_raw_peek_default_cx(self) -> float:
         return float(self._peek_center[0])
 
@@ -4078,6 +4084,7 @@ class Controller(QObject):
         self._peek_info = ""
         self._peek_caption = ""
         self._peek_status = ""
+        self._peek_prog = 0.0
         self._peek_center = (0.5, 0.5)
         self._dev_snap = {}
         self._dev_marks = []
@@ -4099,7 +4106,7 @@ class Controller(QObject):
         """현재 모드/팬/줌으로 main 그림을 갱신한다.
 
         ★가벼운 것(모자이크 zoom>=2, 경계)은 **동기** — 22~100ms 라 드래그가 즉시 따라온다.
-          무거운 것(전체보기 zoom==1 250~385ms, 디모자이크 비교 = LibRaw 재디코드 ~1.1s)만
+          무거운 것(전체보기 zoom==1 250~385ms, 디모자이크 비교 = LibRaw 재디코드 1.3~3.7s)만
           워커로 보내고 **코얼레싱**한다(`_stamp_worker` 와 같은 패턴). 드래그마다 스레드를
           띄우면 요청이 쌓여 오히려 늦는다.
         """
@@ -4140,9 +4147,10 @@ class Controller(QObject):
                 mode, cx, cy, zoom, w, h, gain = job
 
                 def _prog(done, total, name, _seq=seq):
-                    # 후보 디코드는 종당 1.1~3.6s 다 — 침묵하면 멈춘 것처럼 보인다.
+                    # 후보 디코드는 종당 ~1.1s(LINEAR)/~4s(Markesteijn 3-pass) — 침묵하면 멈춘
+                    # 것처럼 보인다. 텍스트 + 진행분율(done/total)을 함께 보낸다(QML 진행 바).
                     txt = "" if done >= total else f"decoding {name} ({done + 1}/{total})…"
-                    self._rawPeekSig.emit((_seq, "status", txt))
+                    self._rawPeekSig.emit((_seq, "status", (txt, done / max(total, 1))))
 
                 out = raw_peek.render(st, mode, cx, cy, zoom, w, h,
                                       progress=_prog, gain=gain)
@@ -4204,14 +4212,17 @@ class Controller(QObject):
             img, cap = payload
             self._raw_peek_publish(img, cap)
         elif kind == "status":
-            self._peek_status = payload
+            self._peek_status, self._peek_prog = payload
             self.rawPeekChanged.emit()
         elif kind == "idle":
             self._peek_busy = False
             self._peek_status = ""
+            self._peek_prog = 0.0
             self.rawPeekChanged.emit()
         elif kind == "error":
             self._peek_busy = False
+            self._peek_status = ""
+            self._peek_prog = 0.0
             self._peek_info = f"RAW Peek failed\n{payload}"
             self.rawPeekChanged.emit()
 
