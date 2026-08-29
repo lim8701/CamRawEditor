@@ -23,7 +23,7 @@ Key design decisions:
 | Path | Role |
 |------|------|
 | `main.py` | App entry point, controller, image providers (raw / lut / curve / stamp / thumb) |
-| `raw_loader.py` | RAW → display proxy (X-Trans-safe / Bayer-AHD decode, headroom encoding, lens correction) |
+| `raw_loader.py` | RAW → display proxy (proxy LINEAR / export AHD — X-Trans 에선 Markesteijn 3-pass, headroom encoding, lens correction) |
 | `pipeline.py` | Full-resolution export — numpy reproduction of the shader pipeline |
 | `sky_seg.py` | Scene masking engine — ONNX SegFormer multi-class segmentation → composite soft mask |
 | `face_seg.py` | Face masking engine — YuNet detection (OpenCV DNN) + ONNX SegFormer face parsing → per-part soft mask |

@@ -504,7 +504,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
             # 프록시와 동일: 카메라 네이티브(매트릭스 미적용) + TREF daylight 베이크 + 감마 저장.
             rgb16 = raw.postprocess(user_wb=baked_wb(cam, ref),
                                     output_color=rawpy.ColorSpace.raw,
-                                    # Bayer=AHD(고화질)/X-Trans=LINEAR(프록시 정합). raw_loader.load_full 과 동일.
+                                    # Bayer=AHD / X-Trans=Markesteijn 3-pass(rawpy 라벨 AHD). raw_loader.load_full 과 동일.
                                     demosaic_algorithm=raw_loader._export_demosaic(raw),
                                     output_bps=16, no_auto_bright=True,
                                     gamma=(2.4, 12.92),
