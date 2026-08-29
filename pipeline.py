@@ -1193,7 +1193,10 @@ def save_image(arr, path, software="") -> bool:
     # 현상 시각 — 저장 직전의 로컬시. EXIF `DateTime` 은 `YYYY:MM:DD HH:MM:SS` 고정 형식이고
     # PNG 은 스펙 권장 키워드가 `Creation Time` 이라 표기가 다르다(형식도 자유).
     now = datetime.datetime.now() if software else None
-    if not img.save(buf, fmt, quality):
+    from decode_lock import QT_IMG_LOCK
+    with QT_IMG_LOCK:               # 파이썬제 QBuffer 인코딩 = 교착 참가자(decode_lock 주석)
+        ok = img.save(buf, fmt, quality)
+    if not ok:
         return False                                       # 인코딩 실패 — 디스크는 손대지 않음
     data = buf.data()
     buf.close()

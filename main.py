@@ -25,6 +25,8 @@ from PySide6.QtGui import (QColor, QDesktopServices, QGuiApplication, QIcon, QIm
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickImageProvider, QQuickItem
 
+from decode_lock import QT_IMG_LOCK   # Qt 디코드/인코드 직렬화(교착 방지 — 모듈 주석 참조)
+
 # ⚠️ numpy/scipy/rawpy 등을 끌어오는 무거운 모듈(date_stamp, make_luts, exif_info, wb,
 #    lut, raw_loader)은 여기서 임포트하지 않는다. 최상단에 두면 QGuiApplication/splash 가
 #    뜨기 전에 전부 로드돼 '아무 동작 없는' 대기 구간이 길어진다. main() 에서 splash 를
@@ -946,7 +948,11 @@ class ThumbProvider(QQuickImageProvider):
                     thumb = tags.get("JPEGThumbnail")
                     if thumb:
                         im = QImage()
-                        if im.loadFromData(thumb):
+                        # ⚠️loadFromData 는 GIL 을 쥔 채 플러그인 뮤텍스를 기다린다 —
+                        #   실측 교착의 한쪽 다리(decode_lock 모듈 주석).
+                        with QT_IMG_LOCK:
+                            ok = im.loadFromData(thumb)
+                        if ok:
                             ori = tags.get("Image Orientation")
                             ori_v = ori.values[0] if ori and ori.values else 1
                             im = ThumbProvider._apply_orientation(im, ori_v)
@@ -977,13 +983,14 @@ class ThumbProvider(QQuickImageProvider):
             buf = QBuffer()
             buf.setData(jpeg)                        # 내부 QByteArray 로 복사(수명 안전)
             buf.open(QBuffer.OpenModeFlag.ReadOnly)
-            reader = QImageReader(buf, b"jpeg")
-            reader.setAutoTransform(True)            # EXIF 방향 반영
-            full = reader.size()
-            if full.isValid() and full.width() > 0:
-                h = max(1, round(edge * full.height() / full.width()))
-                reader.setScaledSize(QSize(edge, h))
-            img = reader.read()
+            with QT_IMG_LOCK:                        # 파이썬제 QBuffer 디코드(decode_lock)
+                reader = QImageReader(buf, b"jpeg")
+                reader.setAutoTransform(True)        # EXIF 방향 반영
+                full = reader.size()
+                if full.isValid() and full.width() > 0:
+                    h = max(1, round(edge * full.height() / full.width()))
+                    reader.setScaledSize(QSize(edge, h))
+                img = reader.read()
             buf.close()
             return img if not img.isNull() else QImage()
         except Exception:
@@ -1075,13 +1082,14 @@ class PreviewProvider(QQuickImageProvider):
             buf = QBuffer()
             buf.setData(jpeg)
             buf.open(QBuffer.OpenModeFlag.ReadOnly)
-            reader = QImageReader(buf, b"jpeg")
-            reader.setAutoTransform(True)             # EXIF 방향 반영
-            full = reader.size()
-            if full.isValid() and full.width() > 0 and full.width() > edge:
-                h = max(1, round(edge * full.height() / full.width()))
-                reader.setScaledSize(QSize(edge, h))
-            img = reader.read()
+            with QT_IMG_LOCK:                         # 파이썬제 QBuffer 디코드(decode_lock)
+                reader = QImageReader(buf, b"jpeg")
+                reader.setAutoTransform(True)         # EXIF 방향 반영
+                full = reader.size()
+                if full.isValid() and full.width() > 0 and full.width() > edge:
+                    h = max(1, round(edge * full.height() / full.width()))
+                    reader.setScaledSize(QSize(edge, h))
+                img = reader.read()
             buf.close()
             return img if not img.isNull() else QImage()
         except Exception:
@@ -1787,9 +1795,10 @@ class Controller(QObject):
         buf = QBuffer()
         buf.setData(jpeg)
         buf.open(QBuffer.OpenModeFlag.ReadOnly)
-        reader = QImageReader(buf, b"jpeg")
-        reader.setAutoTransform(True)
-        img = reader.read()
+        with QT_IMG_LOCK:               # 파이썬제 QBuffer 디코드 — 실측 교착의 M쪽 다리(decode_lock)
+            reader = QImageReader(buf, b"jpeg")
+            reader.setAutoTransform(True)
+            img = reader.read()
         buf.close()
         if img.isNull():
             raise RuntimeError("preview decode failed")
@@ -2122,9 +2131,10 @@ class Controller(QObject):
             buf = QBuffer()
             buf.setData(jpeg)
             buf.open(QBuffer.OpenModeFlag.ReadOnly)
-            reader = QImageReader(buf, b"jpeg")
-            reader.setAutoTransform(True)    # EXIF 회전 → 정방향 입력(세로사진 정확도)
-            img = reader.read()
+            with QT_IMG_LOCK:                # 파이썬제 QBuffer 디코드(decode_lock)
+                reader = QImageReader(buf, b"jpeg")
+                reader.setAutoTransform(True)  # EXIF 회전 → 정방향 입력(세로사진 정확도)
+                img = reader.read()
             buf.close()
             if img.isNull():
                 raise RuntimeError("embedded preview decode failed")
@@ -2880,7 +2890,8 @@ class Controller(QObject):
                 # 메인 사진 캡션은 compose_magazine 이 조립한다(프레임 번호 규칙 단일화)
                 img = pipeline.compose_magazine(panels, int(o["canvasW"]),
                                                 int(o["canvasH"]), mo)
-                ok = bool(img.save(path))
+                with QT_IMG_LOCK:            # 인코딩+파일 I/O 동안 플러그인 뮤텍스 점유(decode_lock)
+                    ok = bool(img.save(path))
             else:
                 canvas = pipeline.compose_wallpaper(
                     panels, int(o["canvasW"]), int(o["canvasH"]), int(o.get("gap", 18)),
@@ -6374,6 +6385,104 @@ class _ClickOutsideFocusFilter(QObject):
         return False
 
 
+class _FreezeWatchdog:
+    """GUI 스레드 정지('응답 없음') 진단용 워치독 — 계측 전용, 동작 개입 없음.
+
+    메인 스레드 QTimer 하트비트가 STALL_SEC 이상 끊기면 데몬 스레드가 **전 스레드
+    파이썬 스택**을 로그 파일(사용자 데이터 폴더 freeze_dumps.log)에 남긴다(faulthandler).
+    정지가 계속되면 REDUMP_SEC 간격으로 추가 덤프(스택이 움직이면 라이브락/느린 작업,
+    안 움직이면 교착) — 정지 1회당 MAX_DUMPS 회 상한. 회복되면 지속 시간을 기록한다.
+
+    한계(그 자체가 판정 정보다):
+    - 메인 스레드 스택이 app.exec() 안이면 Qt 네이티브(렌더/드라이버)에서 멈춘 것.
+    - 어떤 스레드가 GIL 을 쥔 채 네이티브에서 멈추면 덤프 자체가 안 남는다 —
+      그 경우는 외부에서 `py-spy dump --pid <PID> --native` 로 잡아야 한다.
+    오탐 가드: 시스템 절전 복귀(워치독 자신도 같이 잤던 경우)는 기준만 재설정하고 넘어간다.
+    장시간 정상 블록(대형 폴더 스캔 등)이 오탐돼도 로그 한 건이 남을 뿐 무해하다."""
+
+    STALL_SEC = 10.0     # 이 시간 이상 하트비트 없음 = 정지로 판정
+    REDUMP_SEC = 30.0    # 정지 지속 시 추가 덤프 간격
+    MAX_DUMPS = 5        # 정지 1회당 덤프 상한(로그 폭주 방지)
+    _TICK = 1.0          # 하트비트/감시 주기
+
+    def __init__(self, parent) -> None:
+        import time
+        import app_dirs
+        self.log_path = app_dirs.user_data_path("freeze_dumps.log")
+        try:                                   # 시작 시 1MB 넘으면 .1 로 밀어 새로 시작
+            if os.path.getsize(self.log_path) > 1_000_000:
+                os.replace(self.log_path, self.log_path + ".1")
+        except OSError:
+            pass
+        self._beat = time.monotonic()
+        t = QTimer(parent)
+        t.setInterval(int(self._TICK * 1000))
+        t.setTimerType(Qt.TimerType.CoarseTimer)   # 정밀도 불필요 — 절전/타이머 병합 허용
+        t.timeout.connect(self._on_beat)
+        t.start()
+        self._timer = t                        # 참조 유지(GC 방지)
+        threading.Thread(target=self._watch, daemon=True, name="freeze-watchdog").start()
+
+    def _on_beat(self) -> None:
+        import time
+        self._beat = time.monotonic()          # float 대입은 GIL 하에서 원자적
+
+    def _watch(self) -> None:
+        import time
+        last_wake = time.monotonic()
+        stall_start = 0.0                      # 0 = 정지 아님
+        next_dump = 0.0
+        dumps = 0
+        while True:
+            time.sleep(self._TICK)
+            now = time.monotonic()
+            overslept = (now - last_wake) > self._TICK * 5
+            last_wake = now
+            if overslept:                      # 시스템 절전 등 — 우리도 같이 멈췄었다 → 오탐 방지
+                self._beat = now
+                continue
+            gap = now - self._beat
+            if gap < self.STALL_SEC:
+                if stall_start:                # 회복 — 지속 시간 기록
+                    self._append(f"----- recovered after ~{now - stall_start:.0f}s "
+                                 f"({dumps} dump(s))\n")
+                    stall_start = 0.0
+                    dumps = 0
+                continue
+            if not stall_start:
+                stall_start = self._beat
+                next_dump = now
+            if dumps < self.MAX_DUMPS and now >= next_dump:
+                dumps += 1
+                next_dump = now + self.REDUMP_SEC
+                self._dump(gap, dumps)
+
+    def _dump(self, gap: float, nth: int) -> None:
+        import datetime
+        import faulthandler
+        try:
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                f.write(f"\n===== GUI stall ~{gap:.0f}s (dump {nth}/{self.MAX_DUMPS}) "
+                        f"{ts}  v{APP_VERSION} =====\n")
+                main_id = threading.main_thread().ident
+                for th in threading.enumerate():   # faulthandler 는 ident 만 찍는다 → 이름 대조표
+                    f.write(f"  0x{th.ident:x} = {th.name}"
+                            f"{' [MAIN/GUI]' if th.ident == main_id else ''}\n")
+                f.flush()                          # faulthandler 는 fd 직접 쓰기 — 순서 보장
+                faulthandler.dump_traceback(file=f, all_threads=True)
+            print(f"[watchdog] GUI {gap:.0f}s 무응답 - 스택 덤프: {self.log_path}")
+        except Exception as exc:                   # 진단 실패가 앱을 흔들지 않게
+            print(f"[watchdog] 덤프 실패(무시): {exc}")
+
+    def _append(self, line: str) -> None:
+        try:
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                f.write(line)
+        except OSError:
+            pass
+
+
 def _print_banner() -> None:
     """터미널에서 실행할 때만 보이는 필름-스트립 시작 배너(개발자 이스터에그).
     GUI 더블클릭 실행 사용자는 콘솔이 없어 못 본다. 버전/PySide 정보는 디버깅에도 약간 유용.
@@ -6598,6 +6707,10 @@ def main() -> int:
 
     # 업데이트 확인(1회): 시작 몇 초 뒤 백그라운드로 — 콜드 스타트/첫 디코드와 경합 안 하게 지연.
     QTimer.singleShot(4000, controller.startUpdateCheck)
+
+    # freeze('응답 없음') 진단 워치독 — GUI 하트비트가 끊기면 전 스레드 스택을 로그로 남긴다.
+    # 무거운 초기화가 다 끝난 여기서 시작(콜드 스타트 오탐 방지). 계측 전용, 동작 개입 없음.
+    watchdog = _FreezeWatchdog(app)                                        # noqa: F841 (참조 유지)
 
     # 시작 동작: 인자로 파일/폴더를 주면 그대로 따르고, 인자가 없으면 **사진을 자동 로드하지 않고**
     # 폴더만 탐색기에 연다(사용자가 직접 더블클릭해 로드). 기본 폴더 = 개발 샘플 폴더(있으면) > Pictures.

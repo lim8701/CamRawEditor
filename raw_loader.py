@@ -46,7 +46,10 @@ def _embedded_jpeg_lum(raw):
         if th.format != rawpy.ThumbFormat.JPEG:
             return None
         qi = QImage()
-        if not qi.loadFromData(th.data):
+        from decode_lock import QT_IMG_LOCK
+        with QT_IMG_LOCK:      # loadFromData 는 GIL 을 쥔 채 플러그인 뮤텍스 대기(decode_lock)
+            ok = qi.loadFromData(th.data)
+        if not ok:
             return None
         qi = qi.convertToFormat(QImage.Format.Format_RGB888)
         w, h = qi.width(), qi.height()

@@ -113,9 +113,11 @@ def _read_display(path: str):
        태그가 없으면(대부분의 JPEG) sRGB 로 간주 — 관례대로.
     ③ 16bit 소스(PNG16/TIFF16)는 16bit 그대로 — 상한이 3.834 로 올라가 하이라이트에 유리.
     """
-    rd = QImageReader(str(path))
-    rd.setAutoTransform(True)
-    img = rd.read()
+    from decode_lock import QT_IMG_LOCK
+    with QT_IMG_LOCK:                    # Qt 디코드 직렬화(교착 방지 — decode_lock 모듈 주석)
+        rd = QImageReader(str(path))
+        rd.setAutoTransform(True)
+        img = rd.read()
     if img.isNull():
         raise ValueError(rd.errorString() or "cannot decode image")
     cs = img.colorSpace()

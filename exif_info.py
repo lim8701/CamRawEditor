@@ -11,6 +11,8 @@ TIFF 기반 RAW(CR2/NEF/ARW/DNG/ORF/RW2/PEF…)는 exifread 가 파일을 직접
 import io
 import struct
 
+from decode_lock import QT_IMG_LOCK   # Qt 디코드/인코드 직렬화(교착 방지 — 모듈 주석 참조)
+
 try:
     import exifread
 except Exception:  # 의존성 없으면 기능만 비활성(앱은 계속 동작)
@@ -72,16 +74,17 @@ def _display_preview_jpeg(path, max_bytes, edge=0):
         import numpy as np
         from PySide6.QtCore import QSize
         from PySide6.QtGui import QImage, QImageReader
-        rd = QImageReader(str(path))
-        rd.setAutoTransform(True)                 # EXIF 방향(로더/썸네일 공통 규약)
-        if edge > 0:
-            sz = rd.size()                        # 헤더만 읽음(디코드 전)
-            long_e = max(sz.width(), sz.height())
-            if long_e > edge > 0:
-                f = edge / float(long_e)
-                rd.setScaledSize(QSize(max(1, round(sz.width() * f)),
-                                       max(1, round(sz.height() * f))))
-        img = rd.read()
+        with QT_IMG_LOCK:                         # 플러그인 기계 + 파일 I/O 구간(decode_lock)
+            rd = QImageReader(str(path))
+            rd.setAutoTransform(True)             # EXIF 방향(로더/썸네일 공통 규약)
+            if edge > 0:
+                sz = rd.size()                    # 헤더만 읽음(디코드 전)
+                long_e = max(sz.width(), sz.height())
+                if long_e > edge > 0:
+                    f = edge / float(long_e)
+                    rd.setScaledSize(QSize(max(1, round(sz.width() * f)),
+                                           max(1, round(sz.height() * f))))
+            img = rd.read()
         if img.isNull():
             return None
         img = img.convertToFormat(QImage.Format.Format_RGB888)
@@ -134,9 +137,10 @@ def _encode_bitmap_jpeg(arr):
         ba = QByteArray()
         buf = QBuffer(ba)
         buf.open(QBuffer.OpenModeFlag.WriteOnly)
-        writer = QImageWriter(buf, b"jpeg")
-        writer.setQuality(90)
-        ok = writer.write(img)
+        with QT_IMG_LOCK:                # 파이썬제 QBuffer 인코딩 = 교착 참가자(decode_lock)
+            writer = QImageWriter(buf, b"jpeg")
+            writer.setQuality(90)
+            ok = writer.write(img)
         buf.close()
         return bytes(ba) if ok else None
     except Exception:
