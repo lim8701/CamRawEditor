@@ -4114,7 +4114,7 @@ class Controller(QObject):
         if st is None:
             return
         import raw_peek
-        if not raw_peek.is_heavy(st, mode, zoom, w, h, cx, cy):
+        if not raw_peek.is_heavy(st, mode, zoom, w, h, cx, cy, gain):
             try:
                 img, cap = raw_peek.render(st, mode, cx, cy, zoom, w, h, gain=gain)
             except Exception as e:

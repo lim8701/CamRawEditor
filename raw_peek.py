@@ -360,19 +360,13 @@ def mosaic(st: RawPeek, mode: int, cx: float, cy: float, zoom: int,
     ★크롭을 **파이썬에서 잘라** nearest 확대하므로 거대 텍스처를 만들지 않는다
       (26MP 를 32× 로 올린 텍스처는 존재할 수 없다). 결과는 요청 뷰포트를 넘지 않는다.
     """
-    out_w, out_h = max(16, int(out_w)), max(16, int(out_h))
+    req_w, req_h = out_w, out_h          # ★캐시 키는 **보정 전** 요청값으로 만든다(_full_key)
+    out_w, out_h = _panel_fit(st, mode, out_w, out_h)
     zoom = int(np.clip(zoom, MIN_ZOOM, MAX_ZOOM))
-    # Planes 는 색당 패널 1장을 가로로 늘어놓으므로, 크롭 폭을 색 수로 나눠야 뷰포트에 들어간다
-    # (안 나누면 3~4배 넓은 그림이 나와 화면 밖으로 나간다).
-    if mode == MODE_PLANES:
-        n = max(1, len(st.present))
-        out_w = max(64, (out_w - 10 * (n - 1)) // n)
-        out_h = max(64, out_h - 22)          # 패널 제목줄(_render_planes 의 top)
 
     if zoom <= 1:
         # 전체 보기 — 정수 박스 축소(모자이크가 평균화되는 것 자체가 관찰 포인트다)
-        # 게인 플래그도 키에 넣는다 — 안 넣으면 토글해도 캐시된 그림이 그대로 온다.
-        key = (mode, out_w, out_h, bool(gain))
+        key = _full_key(st, mode, req_w, req_h, gain)
         # ⚠️`last_rect`/`last_scale` 은 **캐시 적중보다 먼저** 세운다 — 뒤에 두면 캐시로 돌아온
         #   전체 보기가 직전 줌의 값을 그대로 물고 있어(실측: 줌 8 → 1 복귀 후에도
         #   rect=(1794,1200,150,100) scale=8.0) 미니맵이 안 사라지고 드래그가 48배 느린 채로
@@ -404,6 +398,32 @@ def mosaic(st: RawPeek, mode: int, cx: float, cy: float, zoom: int,
                    grid=True, gain=gain)
 
 
+def _panel_fit(st, mode: int, out_w: int, out_h: int):
+    """요청 뷰포트 → 실제로 그릴 크기. Planes 는 색당 패널 1장을 가로로 늘어놓으므로 크롭 폭을
+    색 수로 나눠야 뷰포트에 들어간다(안 나누면 3~4배 넓은 그림이 나와 화면 밖으로 나간다).
+    높이는 패널 제목줄(`_render_planes` 의 top)만큼 뺀다."""
+    out_w, out_h = max(16, int(out_w)), max(16, int(out_h))
+    if mode == MODE_PLANES:
+        n = max(1, len(st.present))
+        out_w = max(64, (out_w - 10 * (n - 1)) // n)
+        out_h = max(64, out_h - 22)
+    return out_w, out_h
+
+
+def _full_key(st, mode: int, out_w: int, out_h: int, gain: bool):
+    """zoom<=1 전체보기 캐시 키. **저장(`mosaic`)과 조회(`is_heavy`)가 이 함수 하나를 쓴다.**
+
+    ★게인 플래그가 키에 들어간다 — 빠지면 토글해도 캐시된 그림이 그대로 온다.
+    ⚠️예전엔 두 곳이 키를 각자 조립했다가 어긋나 **캐시가 한 번도 안 맞았다**: `mosaic` 은
+      4-튜플(gain 포함)로 저장하는데 `is_heavy` 는 3-튜플로 조회했고, Planes 의 `out_h` 보정도
+      조회 쪽에만 빠져 있었다. 그림은 맞으니 눈에 안 띄지만 **전체보기가 캐시가 있어도 매번
+      워커로 갔다**(busy 배지 + 한 턴 지연, 실측 0.25~0.38s). 인자는 반드시 **보정 전** 요청
+      크기로 넘길 것 — `_panel_fit` 을 여기서 부르므로 두 번 적용하면 또 어긋난다.
+    """
+    w, h = _panel_fit(st, mode, out_w, out_h)
+    return (mode, w, h, bool(gain))
+
+
 def _cache_hit(st, key):
     return st._full_img is not None and st._full_img[0] == key
 
@@ -424,11 +444,13 @@ def render(st: RawPeek, mode: int, cx: float, cy: float, zoom: int,
 
 
 def is_heavy(st: RawPeek, mode: int, zoom: int, out_w: int, out_h: int,
-             cx: float = 0.5, cy: float = 0.5) -> bool:
+             cx: float = 0.5, cy: float = 0.5, gain: bool = True) -> bool:
     """이 요청이 워커로 보내야 할 만큼 무거운가 — 판정을 여기 한 곳에 둔다.
 
-    ★호출부가 캐시 키를 따로 조립하면 `mosaic()` 의 키(Planes 는 out_w 를 색 수로 나눈다)와
-      어긋나 캐시 히트를 놓친다. 그래서 키 계산도 이 함수 안에서만 한다.
+    ★캐시 키는 **`_full_key` 하나**로 만든다. 여기서 따로 조립하면 `mosaic()` 이 저장한 키와
+      어긋나 히트를 통째로 놓친다(실제로 그랬다 — `_full_key` 주석 참조).
+    ⚠️그래서 `gain` 도 받아야 한다. 호출부가 안 넘기면 기본값 True 가 잡히므로, 게인을 끈
+      상태에서 다시 키가 어긋난다.
     실측(X100V 26MP): 디모자이크 비교 1.13s / 전체보기 0.25~0.38s / 그 외 22~100ms.
     """
     if mode == MODE_DEMOSAIC:
@@ -436,11 +458,7 @@ def is_heavy(st: RawPeek, mode: int, zoom: int, out_w: int, out_h: int,
         return not demosaic_cached(st, demosaic_crop(st, cx, cy, zoom, out_w, out_h))
     if zoom > 1:
         return False
-    out_w, out_h = max(16, int(out_w)), max(16, int(out_h))
-    if mode == MODE_PLANES:                          # mosaic() 과 같은 폭 보정
-        n = max(1, len(st.present))
-        out_w = max(64, (out_w - 10 * (n - 1)) // n)
-    return not _cache_hit(st, (mode, out_w, out_h))
+    return not _cache_hit(st, _full_key(st, mode, out_w, out_h, gain))
 
 
 def _colors_down(st, f):
