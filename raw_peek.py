@@ -94,10 +94,14 @@ def _up_arr(a, k):
 
     캔버스에 붙여야 하는 경로(디모자이크 패널)용 — Qt 로 확대하고 한 번 복사한다.
     ⚠️`_qview` 결과를 그대로 들고 있지 말 것: 원본 QImage 가 사라지면 해제된 버퍼를 가리킨다.
+    ★⚠️**복사는 `np.array(..., copy=True)` 로 강제한다.** `np.ascontiguousarray` 는 뷰가 이미
+      연속이면 **복사하지 않고 그대로 돌려준다** — 확대본은 `bytesPerLine == w*3` 이라 항상
+      그 경우다(폭 100/101/102/211/212 전부 확인). 그러면 QImage 가 이 함수에서 나가며 해제돼
+      배열이 **해제된 버퍼**를 가리키고, 디모자이크 패널이 간헐적으로 깨진다(사용자 보고).
     """
     if k <= 1:
         return a
-    return np.ascontiguousarray(_qview(_up_qimage(a, k)))
+    return np.array(_qview(_up_qimage(a, k)), dtype=np.uint8, copy=True)
 
 
 def _qview(img):
