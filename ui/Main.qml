@@ -1657,14 +1657,22 @@ ApplicationWindow {
     property int wallResIndex: 0
     // 레이아웃: 0=트립틱(3분할), 1=잡지 스프레드(메인 사진 풀블리드 + 타이포 칼럼)
     property int wallLayout: 0
-    readonly property var wallLayoutKeys: ["triptych", "magazine"]
+    readonly property var wallLayoutKeys: ["triptych", "magazine", "index", "fullbleed"]
+    // 레이아웃의 '성격' — 개별 인덱스를 여기저기 흩어 적으면 레이아웃을 늘릴 때마다 샌다.
+    //   editorial : 종이/글자가 들어가는 지면 계열(매거진·인덱스·풀블리드)
+    //   hasMain   : 가운데 슬롯이 메인 사진인 계열(매거진·풀블리드)
+    //   needs     : export 에 필요한 사진 장수
+    readonly property bool wallEditorial: win.wallLayout >= 1
+    readonly property bool wallHasMain: win.wallLayout === 1 || win.wallLayout === 3
+    // ⚠️네 레이아웃 모두 사진 3장이 필요하다 — 풀블리드도 우하단에 나머지 두 장을 쓴다.
+    //   (한 장만 쓰는 안은 시안 단계에서 기각됐다)
     property int wallTypeface: 0                  // 0=Serif, 1=Sans, 2=Serif(KR), 3=Sans(KR)
     readonly property var wallTypefaceKeys: ["serif", "sans", "serif_ko", "sans_ko"]
     property int wallMainSide: 1                  // 0=Left, 1=Right
     // 화면에서 보이는 좌→우 슬롯 순서(compose_magazine 과 동일 규칙). 트립틱은 슬롯 순서가
     // 곧 좌→우이고, 잡지는 메인 사진(가운데 슬롯)이 좌/우 끝에 놓이므로 순서가 달라진다.
     // 패널의 슬롯 카드도 이 순서로 나열해 번호(Frame 0N)와 위치가 어긋나지 않게 한다.
-    readonly property var wallSlotOrder: win.wallLayout === 0 ? [0, 1, 2]
+    readonly property var wallSlotOrder: win.wallLayout !== 1 ? [0, 1, 2]
                                          : (win.wallMainSide === 0 ? [1, 0, 2] : [0, 2, 1])
     function wallFrameNo(slot) { return win.wallSlotOrder.indexOf(slot) + 1 }
     // 잡지 레이아웃 텍스트(사용자 입력) — controller 가 QSettings 에 영구 저장
@@ -1708,7 +1716,7 @@ ApplicationWindow {
         }
         win.wallOffsets = [num("off0", 0, -1, 1), num("off1", 0, -1, 1),
                            num("off2", 0, -1, 1)]
-        win.wallLayout = num("layout", 0, 0, 1)
+        win.wallLayout = num("layout", 0, 0, 3)
         win.wallTypeface = num("typeface", 0, 0, 3)
         win.wallMainSide = num("mainSide", 1, 0, 1)
         win.wallResIndex = num("resIndex", 0, 0, 6)
@@ -1777,7 +1785,7 @@ ApplicationWindow {
             return isNaN(v) ? dflt : Math.max(lo, Math.min(hi, v))
         }
         function str(k) { return m[k] === undefined ? "" : String(m[k]) }
-        win.wallLayout = num("layout", win.wallLayout, 0, 1)
+        win.wallLayout = num("layout", win.wallLayout, 0, 3)
         win.wallTypeface = num("typeface", win.wallTypeface, 0, 3)
         win.wallMainSide = num("mainSide", win.wallMainSide, 0, 1)
         win.wallResIndex = num("resIndex", win.wallResIndex, 0, 6)
@@ -10343,14 +10351,19 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                 Layout.fillWidth: true; wrapMode: Text.WordWrap
                                 text: win.wallLayout === 0
                                       ? "Select a photo in the explorer (single click), then click a slot below. Each photo is developed with its own edits, then composed side by side."
-                                      : "Magazine spread: the center slot becomes the full-bleed main photo; the other two appear as small frames in the text column."
+                                      : win.wallLayout === 1
+                                      ? "Magazine spread: the center slot becomes the full-bleed main photo; the other two appear as small frames in the text column."
+                                      : win.wallLayout === 2
+                                      ? "Index sheet: all three frames get equal square crops on paper, numbered and captioned. Each slot's offset slider positions its crop."
+                                      : "Full bleed: the center slot fills the screen and the type sits on it; the other two appear small in the bottom-right corner."
                                 color: "#888"; font.pixelSize: 11
                             }
 
                             ComboBox {
                                 id: wallLayoutCombo
                                 Layout.fillWidth: true
-                                model: ["Triptych (3-up)", "Magazine spread"]
+                                model: ["Triptych (3-up)", "Magazine spread",
+                                        "Index sheet", "Full bleed"]
                                 currentIndex: win.wallLayout
                                 onActivated: { win.wallLayout = currentIndex; win.wallSave("layout", currentIndex) }
                                 // ⚠️사용자 조작 시 currentIndex 바인딩이 끊기므로 프리셋 적용을
@@ -10487,7 +10500,8 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                 // 선택한 캔버스 비율을 그대로 반영(16:9 / 16:10 / 화면 비율)
                                 Layout.preferredHeight: width * win.wallResH[win.wallResIndex]
                                                         / Math.max(1, win.wallResW[win.wallResIndex])
-                                color: win.wallLayout === 0 ? "black" : "#f6f5f1"
+                                color: (win.wallLayout === 0 || win.wallLayout === 3)
+                                       ? "black" : "#f6f5f1"
                                 radius: 4; clip: true
                                 readonly property real gapPx: win.wallGap * width / win.wallResW[win.wallResIndex]
                                 readonly property real cellW: (width - 2 * gapPx) / 3
@@ -10515,12 +10529,38 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                 readonly property real smallGap: safeRect.h * (40 / 2160)
                                 readonly property real smallW: (colW - smallGap) / 2
 
+                                // ---- 인덱스: 정사각 3칸 ----
+                                // ⚠️매거진 미러와 달리 **근사**다. 합성은 헤드라인 줄 수에 따라
+                                //   밴드 높이가 변하는데 여기서 그 흐름까지 재현할 값어치는 없다
+                                //   (이 프리뷰의 일은 '어느 칸에 어떻게 잘려 들어가나' 를 보이는 것).
+                                //   가로 규격(여백 140/280, 간격 40)은 compose_index 와 같다.
+                                readonly property real idxMx: safeRect.x + safeRect.h * (140 / 2160)
+                                readonly property real idxMw: safeRect.w - safeRect.h * (280 / 2160)
+                                readonly property real idxGap: safeRect.h * (40 / 2160)
+                                readonly property real idxSide: Math.max(4, Math.min(
+                                    (idxMw - 2 * idxGap) / 3, safeRect.h * 0.46))
+                                readonly property real idxX0: idxMx + (idxMw - (idxSide * 3 + idxGap * 2)) / 2
+                                readonly property real idxY: safeRect.y + safeRect.h * 0.31
+
+                                // ---- 풀블리드: 메인 풀블리드 + 우하단 작은 2장 ----
+                                // 작은 판의 폭은 사진 비율에 따라 달라지지만(합성은 높이 기준으로
+                                // 폭을 낸다) 여기서는 3:2 로 가정한다 — 자리와 크기감만 보이면 된다.
+                                readonly property real fbTh: safeRect.h * (300 / 2160)
+                                readonly property real fbTw: fbTh * 1.5
+                                readonly property real fbY: safeRect.y + safeRect.h
+                                                            - safeRect.h * (202 / 2160) - fbTh
+                                readonly property real fbX0: safeRect.x + safeRect.w
+                                                             - safeRect.h * (110 / 2160)
+                                                             - (fbTw * 2 + safeRect.h * (20 / 2160))
+
                                 Repeater {
                                     model: 3
                                     Item {
                                         id: wallCell
                                         required property int index
                                         readonly property bool mag: win.wallLayout === 1
+                                        readonly property bool idx: win.wallLayout === 2
+                                        readonly property bool fb: win.wallLayout === 3
                                         readonly property bool isMain: index === 1
                                         // 트립틱: 3등분 셀 / 잡지: 메인은 풀블리드(캔버스 기준),
                                         // 0·2 는 텍스트 칼럼 안 작은 판 — 높이·자리는 magMirror 의
@@ -10528,30 +10568,44 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         // 남은 높이가 S(120) 이하면 아예 그리지 않는다.
                                         readonly property real smallH: Math.max(1, magMirror.smallH)
                                         visible: !mag || isMain || magMirror.smallsVisible
-                                        x: !mag ? index * (wallPreview.cellW + wallPreview.gapPx)
-                                                : (isMain ? wallPreview.mainX
-                                                          : wallPreview.colL + wallPreview.mOut
-                                                            + (index === 0 ? 0 : wallPreview.smallW + wallPreview.smallGap))
-                                        y: !mag || isMain ? 0 : magMirror.smallsY
-                                        width: !mag ? wallPreview.cellW
-                                                    : (isMain ? wallPreview.mainW : wallPreview.smallW)
-                                        height: !mag || isMain ? wallPreview.height : smallH
+                                        x: idx ? wallPreview.idxX0
+                                                 + index * (wallPreview.idxSide + wallPreview.idxGap)
+                                           : fb ? (isMain ? 0
+                                                          : wallPreview.fbX0 + (index === 0 ? 0
+                                                            : wallPreview.fbTw + wallPreview.safeRect.h * (20 / 2160)))
+                                           : !mag ? index * (wallPreview.cellW + wallPreview.gapPx)
+                                                  : (isMain ? wallPreview.mainX
+                                                            : wallPreview.colL + wallPreview.mOut
+                                                              + (index === 0 ? 0 : wallPreview.smallW + wallPreview.smallGap))
+                                        y: idx ? wallPreview.idxY
+                                           : fb ? (isMain ? 0 : wallPreview.fbY)
+                                           : (!mag || isMain ? 0 : magMirror.smallsY)
+                                        width: idx ? wallPreview.idxSide
+                                               : fb ? (isMain ? wallPreview.width : wallPreview.fbTw)
+                                               : !mag ? wallPreview.cellW
+                                                      : (isMain ? wallPreview.mainW : wallPreview.smallW)
+                                        height: idx ? wallPreview.idxSide
+                                                : fb ? (isMain ? wallPreview.height : wallPreview.fbTh)
+                                                : (!mag || isMain ? wallPreview.height : smallH)
                                         clip: true
 
                                         // 빈 슬롯: 어디에 어떤 크기로 들어갈지 보이도록 자리 표시
                                         Rectangle {
                                             anchors.fill: parent
                                             visible: win.wallSlots[wallCell.index] === ""
-                                            color: win.wallLayout === 0 ? "#141414" : "#e7e5df"
+                                            readonly property bool dk: win.wallLayout === 0
+                                                                       || win.wallLayout === 3
+                                            color: dk ? "#141414" : "#e7e5df"
                                             border.width: 1
-                                            border.color: win.wallLayout === 0 ? "#4a4a4a" : "#c9c7c1"
+                                            border.color: dk ? "#4a4a4a" : "#c9c7c1"
                                             Text {
                                                 anchors.centerIn: parent
                                                 width: parent.width - 8
                                                 horizontalAlignment: Text.AlignHCenter
                                                 elide: Text.ElideRight
                                                 text: "Frame 0" + win.wallFrameNo(wallCell.index)
-                                                color: win.wallLayout === 0 ? "#7a7a7a" : "#9a978f"
+                                                color: (win.wallLayout === 0 || win.wallLayout === 3)
+                                                       ? "#7a7a7a" : "#9a978f"
                                                 font.pixelSize: 10
                                             }
                                         }
@@ -10568,7 +10622,8 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                             asynchronous: true
                                             fillMode: Image.Stretch
                                             // 잡지의 작은 판은 크롭 0%(fit), 그 외는 cover
-                                            readonly property bool fitMode: parent.mag && !parent.isMain
+                                            readonly property bool fitMode: (parent.mag || parent.fb)
+                                                                            && !parent.isMain
                                             readonly property real s: (implicitWidth > 0 && implicitHeight > 0)
                                                 ? (fitMode ? Math.min(parent.height / implicitHeight, parent.width / implicitWidth)
                                                            : Math.max(parent.height / implicitHeight, parent.width / implicitWidth))
@@ -10806,7 +10861,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                     readonly property int slot: modelData
                                     readonly property string cardLabel:
                                         "Frame 0" + (index + 1)
-                                        + (win.wallLayout === 1 && slot === 1 ? " · Main" : "")
+                                        + (win.wallHasMain && slot === 1 ? " · Main" : "")
                                     Layout.fillWidth: true
                                     implicitHeight: cardCol.implicitHeight + 20
                                     color: "#242424"; radius: 4
@@ -10900,7 +10955,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         TextField {
                                             id: wallTitleField
                                             Layout.fillWidth: true
-                                            visible: win.wallLayout === 1 && wallCard.slotPath !== ""
+                                            visible: win.wallEditorial && wallCard.slotPath !== ""
                                             placeholderText: "Frame title (printed in the index)"
                                             text: win.wallTitles[wallCard.slot]
                                             font.pixelSize: 12
@@ -10918,10 +10973,10 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                             Layout.fillWidth: true
                                             // 오프셋은 cover 크롭에만 의미 있음 — 잡지의 작은 판은 크롭 0%
                                             visible: wallCard.slotPath !== ""
-                                                     && (win.wallLayout === 0 || wallCard.slot === 1)
+                                                     && (!win.wallHasMain || wallCard.slot === 1)
                                             Label {
                                                 // 잡지 메인 사진는 세로 사진이면 위아래가 잘린다 → 축을 알려줌
-                                                text: (win.wallLayout === 1 && wallCard.slot === 1)
+                                                text: (win.wallHasMain && wallCard.slot === 1)
                                                       ? "Crop" : "Offset"
                                                 color: "#aaa"; font.pixelSize: 11
                                             }
@@ -10960,10 +11015,10 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
 
                             Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
 
-                            // ---- 잡지 레이아웃 전용: 텍스트(사용자 입력) + 서체/메인 사진 위치 ----
+                            // ---- 지면 계열 전용: 텍스트(사용자 입력) + 서체/메인 사진 위치 ----
                             ColumnLayout {
                                 Layout.fillWidth: true
-                                visible: win.wallLayout === 1
+                                visible: win.wallEditorial
                                 spacing: 8
                                 Label {
                                     text: "Text"
@@ -11072,6 +11127,9 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                     ComboBox {
                                         id: wallMainCombo
                                         Layout.fillWidth: true
+                                        // 매거진 전용 — 인덱스는 메인 사진이 없고, 풀블리드는
+                                        // 메인이 화면 전체라 좌/우 개념이 없다.
+                                        visible: win.wallLayout === 1
                                         model: ["Main left", "Main right"]
                                         currentIndex: win.wallMainSide
                                         onActivated: { win.wallMainSide = currentIndex; win.wallSave("mainSide", currentIndex) }
@@ -11168,7 +11226,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                             }
                             Label {
                                 Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                visible: win.wallLayout === 1
+                                visible: win.wallEditorial
                                 text: "Photos still bleed to the edges; only the typography stays inside the area both aspect ratios show, so one file works on either monitor."
                                 color: "#888"; font.pixelSize: 11
                             }

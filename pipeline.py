@@ -1361,6 +1361,60 @@ def _text_w(font, s, tracking_px=0.0, upper=False):
     return fm.horizontalAdvance(s) + tracking_px * max(0, len(s) - 1)
 
 
+def _mag_safe_box(canvas_w, canvas_h, aspects):
+    """지정한 화면 비율들에서 모두 살아남는 중앙 사각형 + 조판 배율.
+
+    배경화면을 '채우기'로 깔면 이미지보다 납작한 화면은 좌우를, 홀쭉한 화면은 위아래를
+    잘라낸다. 각 비율에서 보이는 부분은 '이미지 안에 들어가는 최대 중앙 사각형'이라
+    폭·높이를 각각 최솟값으로 모으면 모든 비율에서 안전한 사각형이 된다.
+    반환 `(x0, y0, x1, y1, s)` — s 는 안전영역 높이 2160 기준 배율(글자 크기용).
+
+    ★잡지·인덱스·풀블리드가 **이 함수 하나**를 쓴다. 세 곳에 같은 식을 적으면 갈라진다.
+    """
+    safe_w, safe_h = float(canvas_w), float(canvas_h)
+    for a in (aspects or []):
+        try:
+            a = float(a)
+        except (TypeError, ValueError):
+            continue
+        if a <= 0:
+            continue
+        vw = min(canvas_w, canvas_h * a)
+        safe_w = min(safe_w, vw)
+        safe_h = min(safe_h, vw / a)
+    safe_w, safe_h = max(1.0, safe_w), max(1.0, safe_h)
+    x0 = int(round((canvas_w - safe_w) / 2.0))
+    y0 = int(round((canvas_h - safe_h) / 2.0))
+    return x0, y0, x0 + int(round(safe_w)), y0 + int(round(safe_h)), safe_h / 2160.0
+
+
+def _mag_cover(arr, w, h, off=0.0):
+    """cover 크롭 → QImage(w,h). 오프셋(-1..+1)은 **실제로 잘리는 축**에 적용한다 —
+    세로 사진이 가로 칸에 들어가면 폭은 딱 맞고 위아래가 잘리므로 가로 오프셋은 움직일
+    여지가 0이다(슬라이더가 안 먹는 것처럼 보였던 원인)."""
+    im = _np_to_qimage(arr).scaled(w, h, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                                   Qt.TransformationMode.SmoothTransformation)
+    slack_x, slack_y = max(0, im.width() - w), max(0, im.height() - h)
+    t = (float(off) + 1.0) * 0.5
+    if slack_x >= slack_y:
+        return im.copy(int(round(slack_x * t)), slack_y // 2, w, h)
+    return im.copy(slack_x // 2, int(round(slack_y * t)), w, h)
+
+
+def _mag_off(opts, i):
+    try:
+        return float(list(opts.get("offsets", [0.0, 0.0, 0.0]))[i])
+    except (IndexError, TypeError, ValueError):
+        return 0.0
+
+
+def _mag_face(opts):
+    """(head 패밀리, body 패밀리, accent, tracking비, upper, 줄높이)."""
+    face = MAG_FACES.get(str(opts.get("typeface", "serif")), MAG_FACES["serif"])
+    head_fams, body_fams, accent, track_frac, upper, lh = face
+    return _pick_family(head_fams), _pick_family(body_fams), accent, track_frac, upper, lh
+
+
 def compose_magazine(panels, canvas_w, canvas_h, opts):
     """에디토리얼 스프레드 합성 -> QImage.
 
@@ -1373,35 +1427,12 @@ def compose_magazine(panels, canvas_w, canvas_h, opts):
     16:9·16:10 양쪽에서 잘림 없이 읽힌다. 좌표는 안전영역 높이 2160 기준으로 스케일."""
     from PySide6.QtGui import QColor, QPainter
 
-    # 안전영역 = 지정한 화면 비율들에서 '채우기'로 보이는 영역의 교집합(중앙 정렬).
-    # 배경화면을 채우기로 깔면 이미지보다 납작한 화면은 좌우를, 홀쭉한 화면은 위아래를
-    # 잘라낸다. 각 비율에서 보이는 부분은 '이미지 안에 들어가는 최대 중앙 사각형'이라
-    # 폭·높이를 각각 최솟값으로 모으면 모든 비율에서 안전한 사각형이 된다.
-    safe_w, safe_h = float(canvas_w), float(canvas_h)
-    for a in (opts.get("safeAspects") or []):
-        try:
-            a = float(a)
-        except (TypeError, ValueError):
-            continue
-        if a <= 0:
-            continue
-        vw = min(canvas_w, canvas_h * a)
-        safe_w = min(safe_w, vw)
-        safe_h = min(safe_h, vw / a)
-    safe_w, safe_h = max(1.0, safe_w), max(1.0, safe_h)
-    sx0 = int(round((canvas_w - safe_w) / 2.0))
-    sy0 = int(round((canvas_h - safe_h) / 2.0))
-    sx1, sy1 = sx0 + int(round(safe_w)), sy0 + int(round(safe_h))
-
-    s = safe_h / 2160.0                                  # 글자 크기는 안전영역 기준
+    sx0, sy0, sx1, sy1, s = _mag_safe_box(canvas_w, canvas_h, opts.get("safeAspects"))
 
     def S(v):
         return int(round(v * s))
 
-    face = MAG_FACES.get(str(opts.get("typeface", "serif")), MAG_FACES["serif"])
-    head_fams, body_fams, accent, track_frac, upper, lh = face
-    fam_h = _pick_family(head_fams)
-    fam_b = _pick_family(body_fams)
+    fam_h, fam_b, accent, track_frac, upper, lh = _mag_face(opts)
     # 구 키(heroSide/heroFrac/heroCaption)는 이전에 저장된 프리셋 호환용 폴백
     main_left = str(opts.get("mainSide", opts.get("heroSide", "right"))) == "left"
     main_frac = float(opts.get("mainFrac", opts.get("heroFrac", 0.61)))
@@ -1551,3 +1582,181 @@ def compose_magazine(panels, canvas_w, canvas_h, opts):
     finally:
         p.end()
     return canvas
+
+
+def compose_index(panels, canvas_w, canvas_h, opts):
+    """인덱스(콘택트 시트) 합성 -> QImage.
+
+    세 장을 **정사각 크롭**으로 같은 크기로 늘어놓고 번호·제목을 붙인다. 위계 없이 평등한
+    구성이라 '이번 롤' 같은 묶음에 맞는다.
+    opts: typeface, kicker/headline/deck/place/date, titles[3], offsets[3], safeAspects.
+
+    ★정사각인 이유: 3:2 원본을 높이 맞춰 나란히 놓으면 폭이 4.5h 라 같은 지면에서 높이가
+      절반밖에 안 찬다(시안 1차의 실제 문제). 정사각이면 3h 라 훨씬 크게 들어가고 콘택트
+      시트답기도 하다. 각 칸의 크롭 위치는 슬롯별 오프셋 슬라이더가 정한다.
+    """
+    from PySide6.QtGui import QColor, QPainter
+
+    sx0, sy0, sx1, sy1, s = _mag_safe_box(canvas_w, canvas_h, opts.get("safeAspects"))
+    S = lambda v: int(round(v * s))                                     # noqa: E731
+    fam_h, fam_b, accent, track_frac, upper, lh = _mag_face(opts)
+
+    canvas = QImage(canvas_w, canvas_h, QImage.Format.Format_RGB888)
+    canvas.fill(QColor(*MAG_PAPER))
+    p = QPainter(canvas)
+    try:
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
+        mx = sx0 + S(140)
+        mw = (sx1 - sx0) - S(280)
+
+        # ── 머리: 키커 · 헤드라인 (리드문은 오른쪽에 나란히 — 폭을 나눠 쓴다)
+        _draw_text(p, mx, sy0 + S(110), str(opts.get("kicker", "")),
+                   _qfont(fam_b, S(29), bold=True), accent, S(6), True)
+        f_head = _qfont(fam_h, S(78), bold=True)
+        hy = sy0 + S(172)
+        for ln in _wrap(f_head, str(opts.get("headline", "")), mw):
+            _draw_text(p, mx, hy, ln, f_head, MAG_INK, track_frac * S(78), upper)
+            hy += int(S(78) * lh)
+        f_deck = _qfont(fam_b, S(30))
+        dw = int(mw * 0.42)
+        dy = sy0 + S(186)
+        for ln in _wrap(f_deck, str(opts.get("deck", "")), dw)[:4]:
+            _draw_text(p, mx + mw - dw, dy, ln, f_deck, MAG_GRAY)
+            dy += S(44)
+        hy = max(hy, dy)
+        p.fillRect(mx, hy + S(30), mw, 1, QColor(*MAG_HAIR))
+
+        # ── 프레임 3장(정사각) + 번호·제목
+        titles = list(opts.get("titles", ["", "", ""]))[:3]
+        cap_h = S(96)
+        top = hy + S(84)
+        band = (sy1 - S(126)) - top - cap_h
+        gap = S(40)
+        side = max(1, min((mw - 2 * gap) // 3, band))
+        xs = mx + (mw - (side * 3 + gap * 2)) // 2
+        top += max(0, (band - side) // 2)
+        f_num = _qfont(fam_h, S(32), bold=True)
+        f_tit = _qfont(fam_b, S(29))
+        for i, arr in enumerate(panels[:3]):
+            p.drawImage(xs, top, _mag_cover(arr, side, side, _mag_off(opts, i)))
+            p.fillRect(xs, top + side + S(20), side, 1, QColor(*MAG_HAIR))
+            _draw_text(p, xs, top + side + S(34), f"0{i + 1}", f_num, accent)
+            _draw_text(p, xs + S(62), top + side + S(38),
+                       str(titles[i]) if i < len(titles) else "", f_tit, MAG_INK)
+            xs += side + gap
+
+        # ── 폴리오
+        _mag_folio(p, fam_b, S, mx, mw, sy1, opts, MAG_GRAY, MAG_HAIR, upper)
+    finally:
+        p.end()
+    return canvas
+
+
+def compose_fullbleed(panels, canvas_w, canvas_h, opts):
+    """풀블리드 오버레이 합성 -> QImage.
+
+    메인 사진(가운데 슬롯)이 화면 전체를 덮고 글자를 그 **위에** 얹는다. 나머지 두 장은
+    오른쪽 아래에 작게, 그 아래 폴리오까지 한 덩어리로 둔다.
+    opts: typeface, kicker/headline/deck/place/date, offsets[1], safeAspects.
+
+    ★스크림(글자용 어둠)은 **아래 세로 + 왼쪽 아래 대각** 두 겹이다. 왼쪽 보강을 사각형
+      가로 그라디언트로 걸면 그 사각형 윗변에서 alpha 가 끊겨 **화면을 가로지르는 하드
+      에지**가 생긴다(시안에서 실제로 났다). 대각 그라디언트는 시작점이 캔버스 모서리라
+      끊길 곳이 없다.
+    """
+    from PySide6.QtGui import QBrush, QColor, QLinearGradient, QPainter
+
+    sx0, sy0, sx1, sy1, s = _mag_safe_box(canvas_w, canvas_h, opts.get("safeAspects"))
+    S = lambda v: int(round(v * s))                                     # noqa: E731
+    fam_h, fam_b, accent, track_frac, upper, lh = _mag_face(opts)
+
+    canvas = QImage(canvas_w, canvas_h, QImage.Format.Format_RGB888)
+    canvas.fill(QColor(0, 0, 0))
+    p = QPainter(canvas)
+    try:
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
+        p.drawImage(0, 0, _mag_cover(panels[1], canvas_w, canvas_h, _mag_off(opts, 1)))
+
+        band = min(canvas_h, S(1060))
+        g = QLinearGradient(0, canvas_h - band, 0, canvas_h)
+        g.setColorAt(0.0, QColor(0, 0, 0, 0))
+        g.setColorAt(1.0, QColor(0, 0, 0, 215))
+        p.fillRect(0, canvas_h - band, canvas_w, band, QBrush(g))
+        g2 = QLinearGradient(0, canvas_h, int(canvas_w * 0.52), canvas_h - band)
+        g2.setColorAt(0.0, QColor(0, 0, 0, 145))
+        g2.setColorAt(1.0, QColor(0, 0, 0, 0))
+        p.fillRect(0, 0, canvas_w, canvas_h, QBrush(g2))
+
+        tx = sx0 + S(110)
+        tw = int((sx1 - sx0) * 0.50)
+        f_head = _qfont(fam_h, S(108), bold=True)
+        f_deck = _qfont(fam_b, S(32))
+        lines_h = _wrap(f_head, str(opts.get("headline", "")), tw)
+        lines_d = _wrap(f_deck, str(opts.get("deck", "")), tw)[:3]
+        block = (S(62) + int(S(108) * lh) * len(lines_h) + S(76) + S(46) * len(lines_d))
+        ty = sy1 - S(150) - block
+
+        _draw_text(p, tx, ty, str(opts.get("kicker", "")),
+                   _qfont(fam_b, S(27), bold=True),
+                   (235, 176, 160) if accent == MAG_RUST else (240, 238, 233), S(6), True)
+        ty += S(62)
+        for ln in lines_h:
+            _draw_text(p, tx, ty, ln, f_head, (255, 255, 255), track_frac * S(108), upper)
+            ty += int(S(108) * lh)
+        p.fillRect(tx, ty + S(24), S(110), max(1, S(3)), QColor(255, 255, 255, 200))
+        ty += S(76)
+        for ln in lines_d:
+            _draw_text(p, tx, ty, ln, f_deck, (223, 220, 215))
+            ty += S(46)
+
+        # ── 오른쪽 아래: 나머지 두 장 + 그 아래 폴리오(우측 정렬) = 한 덩어리
+        th = S(300)
+        fol = "  \u00b7  ".join(x for x in (str(opts.get("place", "")).strip(),
+                                            str(opts.get("date", "")).strip()) if x)
+        f_fol = _qfont(fam_b, S(26))
+        by = sy1 - S(150) - (S(52) if fol else 0) - th
+        smalls = [panels[0], panels[2]]
+        widths = [max(1, int(th * a.shape[1] / a.shape[0])) for a in smalls]
+        total = sum(widths) + S(20)
+        bx = sx1 - S(110) - total
+        for i, arr in enumerate(smalls):
+            p.drawImage(bx, by, _np_to_qimage(arr).scaled(
+                widths[i], th, Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation))
+            bx += widths[i] + S(20)
+        if fol:
+            right = sx1 - S(110)
+            p.fillRect(right - total, by + th + S(18), total, 1,
+                       QColor(255, 255, 255, 110))
+            _draw_text(p, right - _text_w(f_fol, fol, S(5), True), by + th + S(30),
+                       fol, f_fol, (219, 216, 210), S(5), True)
+    finally:
+        p.end()
+    return canvas
+
+
+def _mag_folio(p, fam_b, S, mx, mw, sy1, opts, gray, hair, upper):
+    """지면 하단 러닝풋: 장소(왼쪽) · 날짜(오른쪽). 잡지·인덱스가 공유한다.
+
+    장소/날짜는 사진별 정보가 아니라 지면 전체 정보라 프레임 라벨 옆이 아니라 여기에 둔다
+    (라벨 옆에 두면 '그 사진의 장소/날짜'처럼 읽혔다).
+    """
+    from PySide6.QtGui import QColor
+
+    place = str(opts.get("place", "")).strip()
+    date = str(opts.get("date", "")).strip()
+    if not (place or date):
+        return
+    f = _qfont(fam_b, S(27))
+    p.fillRect(mx, sy1 - S(120), mw, 1, QColor(*hair))
+    y = sy1 - S(102)
+    if place:
+        _draw_text(p, mx, y, place, f, gray, S(4), upper)
+    if date:
+        _draw_text(p, mx + mw - _text_w(f, date, S(4), upper), y, date, f, gray, S(4), upper)

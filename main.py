@@ -2838,7 +2838,7 @@ class Controller(QObject):
 
     @Slot(QUrl, "QVariantMap")
     def wallpaperCompose(self, file_url: QUrl, opts) -> None:  # noqa: N802 (QML 슬롯)
-        """opts: canvasW, canvasH, layout('triptych'|'magazine'), 그리고
+        """opts: canvasW, canvasH, layout('triptych'|'magazine'|'index'|'fullbleed'), 그리고
         트립틱=gap/offsets[3], 잡지=mainSide/typeface/kicker/headline/deck/titles[3]/
         place/date/paths[3]. 3패널 합성 → 저장(스레드)."""
         if self._exporting:
@@ -2880,17 +2880,20 @@ class Controller(QObject):
     def _do_wall_compose(self, path: str, panels, o: dict) -> None:
         try:
             import pipeline
-            if str(o.get("layout", "triptych")) == "magazine":
+            # 글자가 들어가는 지면 계열 — 셋 다 같은 opts 를 먹고 QImage 를 돌려준다.
+            _EDITORIAL = {"magazine": pipeline.compose_magazine,
+                          "index": pipeline.compose_index,
+                          "fullbleed": pipeline.compose_fullbleed}
+            layout = str(o.get("layout", "triptych"))
+            if layout in _EDITORIAL:
                 paths = [str(x) for x in o.get("paths", ["", "", ""])]
-                shots = [self._shot_summary(p)[0] for p in paths]
                 mo = dict(o)
-                if not str(mo.get("date", "")).strip():     # 비어 있으면 히어로 EXIF 로 채움
+                if not str(mo.get("date", "")).strip():     # 비어 있으면 메인 EXIF 로 채움
                     mo["date"] = self._shot_summary(paths[1])[1] if len(paths) > 1 else ""
-                mo["shots"] = shots
-                titles = [str(t) for t in mo.get("titles", ["", "", ""])]
+                mo["shots"] = [self._shot_summary(p)[0] for p in paths]
                 # 메인 사진 캡션은 compose_magazine 이 조립한다(프레임 번호 규칙 단일화)
-                img = pipeline.compose_magazine(panels, int(o["canvasW"]),
-                                                int(o["canvasH"]), mo)
+                img = _EDITORIAL[layout](panels, int(o["canvasW"]),
+                                         int(o["canvasH"]), mo)
                 with QT_IMG_LOCK:            # 인코딩+파일 I/O 동안 플러그인 뮤텍스 점유(decode_lock)
                     ok = bool(img.save(path))
             else:
