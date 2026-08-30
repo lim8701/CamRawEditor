@@ -97,6 +97,23 @@ Item {
         zoom = Math.max(lo, Math.min(hi, z))
     }
 
+    // ★**연속 제스처(드래그·미니맵 끌기)는 `refreshSoon()` 을 쓴다** — 마우스 이동마다
+    //   `refresh()` 를 부르면 이벤트 1건마다 동기 렌더 + 텍스처 업로드가 GUI 스레드에서 돌아
+    //   빠른 드래그에서 프레임을 흘린다(8배 줌 CFA 실측 이벤트당 2.9ms + 업로드, 이동은
+    //   초당 60~120건). 한 이벤트 루프 턴에 **1회**로 묶으면 밀린 요청이 쌓이지 않는다.
+    //   ⚠️모드·줌 전환처럼 **단발** 이벤트는 그대로 `refresh()` — 지연 없이 즉시 그린다.
+    property bool _refreshQueued: false
+    function refreshSoon() {
+        if (peekWin._refreshQueued)
+            return
+        peekWin._refreshQueued = true
+        Qt.callLater(peekWin._runQueuedRefresh)
+    }
+    function _runQueuedRefresh() {
+        peekWin._refreshQueued = false
+        peekWin.refresh()
+    }
+
     // 파이썬에 그림을 요청한다. 뷰포트 크기를 함께 넘겨 화면에 들어갈 픽셀만 만들게 한다.
     function refresh() {
         if (!visible || !controller.rawPeekOpened) return
@@ -653,7 +670,7 @@ Item {
                     peekWin.cy = Math.max(0, Math.min(1, peekWin.cy
                                   - (e.y - py) / sc / visH))
                     px = e.x; py = e.y
-                    peekWin.refresh()
+                    peekWin.refreshSoon()      // 프레임당 1회로 묶는다(위 주석)
                 }
                 onWheel: function (e) {
                     // ⚠️막지 않으면 스크럽하려고 휠을 돌린 것이 **다른 탭의 줌**을 몰래 바꾼다.
@@ -741,7 +758,7 @@ Item {
                         if (mini.paintedWidth <= 0 || mini.paintedHeight <= 0) return
                         peekWin.cx = Math.max(0, Math.min(1, (mx - 1) / mini.paintedWidth))
                         peekWin.cy = Math.max(0, Math.min(1, (my - 1) / mini.paintedHeight))
-                        peekWin.refresh()
+                        peekWin.refreshSoon()  // 끌기도 연속 제스처다(위 주석)
                     }
                     onPressed: function (e) { jump(e.x, e.y) }
                     onPositionChanged: function (e) { if (pressed) jump(e.x, e.y) }

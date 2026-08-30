@@ -66,9 +66,47 @@ def _box_down(a, factor):
 
 
 def _nearest_up(a, k):
+    """⚠️**출력 크기에서 도는 확대에 쓰지 말 것** — `_up_qimage`(QImage) 나 `_up_arr`(배열)를
+    쓴다. 순수 numpy 확대는 8배 줌 드래그에서 이벤트당 5.9ms 였고 Qt 는 1.07ms 다(비트 동일).
+    지금은 호출부가 없다 — 작은 배열용으로만 남겨 둔다."""
     if k <= 1:
         return a
     return np.repeat(np.repeat(a, k, axis=0), k, axis=1)
+
+
+def _up_qimage(rgb, k):
+    """(h,w,3) uint8 크롭을 **k배 nearest 확대한 QImage** 로.
+
+    ★확대는 Qt 에 맡긴다 — `np.repeat` 로 배열을 키우면 그 한 줄이 8배 줌 드래그 비용의
+      **72%**(5.91ms / 이벤트 8.2ms, 크롭 212x118 → 출력 1696x944)였다. `FastTransformation`
+      은 같은 nearest 라 **결과가 비트 동일**하고 **1.07ms** 다(실측, 화소 비교로 확인).
+    """
+    img = _to_qimage(rgb)
+    if k <= 1:
+        return img
+    return img.scaled(img.width() * k, img.height() * k,
+                      Qt.AspectRatioMode.IgnoreAspectRatio,
+                      Qt.TransformationMode.FastTransformation)
+
+
+def _up_arr(a, k):
+    """(h,w,3) uint8 을 k배 nearest 확대한 **numpy 배열**(연속 복사본).
+
+    캔버스에 붙여야 하는 경로(디모자이크 패널)용 — Qt 로 확대하고 한 번 복사한다.
+    ⚠️`_qview` 결과를 그대로 들고 있지 말 것: 원본 QImage 가 사라지면 해제된 버퍼를 가리킨다.
+    """
+    if k <= 1:
+        return a
+    return np.ascontiguousarray(_qview(_up_qimage(a, k)))
+
+
+def _qview(img):
+    """RGB888 QImage 의 픽셀 버퍼를 (h,w,3) uint8 **뷰**로 (복사 없음).
+    ⚠️`bytesPerLine` 은 4바이트 정렬로 패딩될 수 있어 폭으로 잘라야 한다.
+    ⚠️돌려준 뷰는 원본 QImage 가 살아 있는 동안만 유효하다."""
+    h, w, bpl = img.height(), img.width(), img.bytesPerLine()
+    buf = np.frombuffer(img.bits(), np.uint8, count=h * bpl).reshape(h, bpl)
+    return buf[:, :w * 3].reshape(h, w, 3)
 
 
 def _mono(size):
@@ -489,7 +527,7 @@ def _render(st, v, c, mode, zoom, note="", grid=False, gain=True):
         c = pad
 
     if mode == MODE_GRAY:
-        a = _nearest_up(_gamma8(lin), zoom)
+        a = _gamma8(lin)                       # ★확대 전(크롭 크기)에서 3채널로 만든다
         rgb = np.dstack([a, a, a])
         texts = [f"Gray — sensor mosaic, no demosaic",
                  f"{note}   {_gain_note(gain, g)}"]
@@ -501,23 +539,25 @@ def _render(st, v, c, mode, zoom, note="", grid=False, gain=True):
             m = (c == ci)
             for k in range(3):
                 col[..., k] += m * lin * CFA_RGB[ci][k]
-        rgb = _nearest_up(_gamma8(col), zoom)
+        rgb = _gamma8(col)                     # ★확대는 아래에서 Qt 가 한다(_up_qimage)
         kind = "X-Trans" if st.is_xtrans else "Bayer" if st.period == 2 else "CFA"
         texts = [f"CFA — every pixel in its own filter colour   {kind} "
                  f"{st.period}x{st.period}",
                  f"{note}   {_gain_note(gain, g)}"]
 
+    img = _up_qimage(rgb, zoom)                # 확대는 Qt(FastTransformation) — _up_qimage 주석
     if grid and st.period >= 3 and st.period * zoom >= 12 and mode == MODE_CFA:
         # 패턴 반복 유닛 경계 — Bayer(2px 주기)는 너무 촘촘해 방해만 되므로 제외.
         # ⚠️QPainter 로 그리지 않는다 — 선 218개(1600x1000)에 **19~21ms** 였다. 알파를 빼도,
         #   `drawLines` 로 묶어도, ARGB32 로 바꿔도 같았다(픽셀당 ~90ns = 래스터 경로가 느린 것).
         #   같은 그림을 numpy 로 블렌드하면 ~2ms 고, 줌>1 은 **동기 렌더**라(is_heavy) 이 차이가
         #   드래그 체감에 그대로 실린다. 결과는 QPainter 판과 화소 단위로 같다(실측).
+        # ⚠️격자는 **확대 뒤**여야 한다(선이 1px). 그래서 QImage 버퍼에 직접 블렌드한다.
+        out = _qview(img)
         step = st.period * zoom
         a = 55.0 / 255.0                       # 흰 선 알파 55/255 — 예전 QPen 과 같은 값
-        rgb[::step, :] = rgb[::step, :] * (1.0 - a) + (255.0 * a + 0.5)
-        rgb[:, ::step] = rgb[:, ::step] * (1.0 - a) + (255.0 * a + 0.5)
-    img = _to_qimage(rgb)
+        out[::step, :] = out[::step, :] * (1.0 - a) + (255.0 * a + 0.5)
+        out[:, ::step] = out[:, ::step] * (1.0 - a) + (255.0 * a + 0.5)
     return img, texts
 
 
@@ -531,15 +571,15 @@ def _render_planes(st, lin, c, zoom, g, note, gain=True):
         col = np.zeros((h, w, 3), np.float32)
         for k in range(3):
             col[..., k] = m * lin * CFA_RGB[ci][k]
-        panels.append(_nearest_up(_gamma8(col), zoom))
+        panels.append(_up_qimage(_gamma8(col), zoom))   # 확대는 Qt(_up_qimage 주석)
         titles.append(f"{CFA_NAME[ci]}  {100.0 * m.mean():.1f}%")
-    ph, pw = panels[0].shape[:2]
+    ph, pw = panels[0].height(), panels[0].width()
     top = 22
     canvas = _bg_canvas(ph + top, pw * len(panels) + gap * (len(panels) - 1))
     xs = []
     for i, pan in enumerate(panels):
         x0 = i * (pw + gap)
-        canvas[top:top + ph, x0:x0 + pw] = pan
+        canvas[top:top + ph, x0:x0 + pw] = _qview(pan)   # QImage 버퍼에서 바로 복사
         xs.append(x0)
     img = _to_qimage(canvas)
     pnt = QPainter(img)
@@ -761,7 +801,7 @@ def demosaic_steps(st, cx: float, cy: float, zoom: int,
         m = (c == ci)
         for ch in range(3):
             mos[..., ch] += m * lin * CFA_RGB[ci][ch]
-    panels = [_nearest_up(_gamma8(mos), k)]
+    panels = [_up_arr(_gamma8(mos), k)]
     titles = ["CFA mosaic (input)"]
 
     cands = demosaic_candidates(st)
@@ -797,7 +837,7 @@ def demosaic_steps(st, cx: float, cy: float, zoom: int,
             img8 = _gamma8(np.clip(lin_sub * cand_gain, 0.0, 1.0))
         else:
             img8 = (np.clip(sub, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
-        panels.append(_nearest_up(img8, kk))
+        panels.append(_up_arr(img8, kk))
         note = _app_choice(st, name)
         titles.append(label + (f"  [{note}]" if note else ""))
     if progress is not None:
