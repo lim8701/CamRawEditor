@@ -10529,19 +10529,6 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                 readonly property real smallGap: safeRect.h * (40 / 2160)
                                 readonly property real smallW: (colW - smallGap) / 2
 
-                                // ---- 인덱스: 정사각 3칸 ----
-                                // ⚠️매거진 미러와 달리 **근사**다. 합성은 헤드라인 줄 수에 따라
-                                //   밴드 높이가 변하는데 여기서 그 흐름까지 재현할 값어치는 없다
-                                //   (이 프리뷰의 일은 '어느 칸에 어떻게 잘려 들어가나' 를 보이는 것).
-                                //   가로 규격(여백 140/280, 간격 40)은 compose_index 와 같다.
-                                readonly property real idxMx: safeRect.x + safeRect.h * (140 / 2160)
-                                readonly property real idxMw: safeRect.w - safeRect.h * (280 / 2160)
-                                readonly property real idxGap: safeRect.h * (40 / 2160)
-                                readonly property real idxSide: Math.max(4, Math.min(
-                                    (idxMw - 2 * idxGap) / 3, safeRect.h * 0.46))
-                                readonly property real idxX0: idxMx + (idxMw - (idxSide * 3 + idxGap * 2)) / 2
-                                readonly property real idxY: safeRect.y + safeRect.h * 0.31
-
                                 // ---- 풀블리드: 메인 풀블리드 + 우하단 작은 2장 ----
                                 // 작은 판의 폭은 사진 비율에 따라 달라지지만(합성은 높이 기준으로
                                 // 폭을 낸다) 여기서는 3:2 로 가정한다 — 자리와 크기감만 보이면 된다.
@@ -10568,8 +10555,8 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         // 남은 높이가 S(120) 이하면 아예 그리지 않는다.
                                         readonly property real smallH: Math.max(1, magMirror.smallH)
                                         visible: !mag || isMain || magMirror.smallsVisible
-                                        x: idx ? wallPreview.idxX0
-                                                 + index * (wallPreview.idxSide + wallPreview.idxGap)
+                                        x: idx ? idxMirror.x0
+                                                 + index * (idxMirror.side + idxMirror.gap)
                                            : fb ? (isMain ? 0
                                                           : wallPreview.fbX0 + (index === 0 ? 0
                                                             : wallPreview.fbTw + wallPreview.safeRect.h * (20 / 2160)))
@@ -10577,14 +10564,14 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                                   : (isMain ? wallPreview.mainX
                                                             : wallPreview.colL + wallPreview.mOut
                                                               + (index === 0 ? 0 : wallPreview.smallW + wallPreview.smallGap))
-                                        y: idx ? wallPreview.idxY
+                                        y: idx ? idxMirror.bandTop
                                            : fb ? (isMain ? 0 : wallPreview.fbY)
                                            : (!mag || isMain ? 0 : magMirror.smallsY)
-                                        width: idx ? wallPreview.idxSide
+                                        width: idx ? idxMirror.side
                                                : fb ? (isMain ? wallPreview.width : wallPreview.fbTw)
                                                : !mag ? wallPreview.cellW
                                                       : (isMain ? wallPreview.mainW : wallPreview.smallW)
-                                        height: idx ? wallPreview.idxSide
+                                        height: idx ? idxMirror.side
                                                 : fb ? (isMain ? wallPreview.height : wallPreview.fbTh)
                                                 : (!mag || isMain ? wallPreview.height : smallH)
                                         clip: true
@@ -10647,6 +10634,143 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                 // 남는 근사 두 가지: QML 워드랩이 QPainter 폭 계산과 미세하게
                                 // 다를 수 있고(줄 수가 갈리는 경계 문장), 작은 판 2장의 가로
                                 // 패킹은 등폭 2칸 근사(합성은 사진 비율대로 이어 붙인다).
+                                // ---- 인덱스 텍스트 미러 — compose_index 의 좌표·크기를
+                                // ms = safeRect.h/2160 로 스케일해 **같은 자리**에 그린다.
+                                // ⚠️상수(140/280/110/172/78/186/44/30/84/96/126/40/20/34/38/62
+                                //   /120/102)는 pipeline.compose_index 와 짝 — 한쪽을 바꾸면 같이.
+                                // ⚠️사진 3칸의 크기·위치도 여기서 나온다(합성과 같은 식) — 헤드라인
+                                //   줄 수가 밴드를 밀기 때문에 텍스트 흐름 없이는 정확할 수 없다.
+                                // 남는 근사: QML 워드랩이 QPainter 폭 계산과 미세하게 다를 수 있다
+                                //   (줄 수가 갈리는 경계 문장).
+                                Item {
+                                    id: idxMirror
+                                    visible: win.wallLayout === 2
+                                    anchors.fill: parent
+                                    readonly property real ms: wallPreview.safeRect.h / 2160
+                                    readonly property real sx0: wallPreview.safeRect.x
+                                    readonly property real sy0: wallPreview.safeRect.y
+                                    readonly property real sy1: wallPreview.safeRect.y + wallPreview.safeRect.h
+                                    // MAG_FACES 미러 — magMirror 와 같은 표(서체를 늘리면 둘 다).
+                                    readonly property string famH: magMirror.famH
+                                    readonly property string famB: magMirror.famB
+                                    readonly property color accent: magMirror.accent
+                                    readonly property bool up: magMirror.up
+                                    readonly property real lhf: magMirror.lhf
+                                    function fpx(v) { return Math.max(1, Math.round(v * ms)) }
+                                    function uc(t) { return up ? t.toUpperCase() : t }
+
+                                    readonly property real mx: sx0 + 140 * ms
+                                    readonly property real mw: wallPreview.safeRect.w - 280 * ms
+                                    readonly property real dw: mw * 0.42
+                                    readonly property real gap: 40 * ms
+                                    // 세로 흐름: 헤드라인(왼쪽)과 리드문(오른쪽)이 나란히 내려가고
+                                    // 둘 중 아래쪽이 괘선·사진 밴드를 민다(합성의 hy = max(hy, dy)).
+                                    readonly property real headStep: 78 * ms * lhf
+                                    readonly property real yHead: sy0 + 172 * ms
+                                    readonly property real yDeck: sy0 + 186 * ms
+                                    readonly property real hy: Math.max(
+                                        yHead + Math.max(1, mIdxHead.lineCount) * headStep,
+                                        yDeck + Math.max(1, mIdxDeck.lineCount) * 44 * ms)
+                                    readonly property real band: (sy1 - 126 * ms) - (hy + 84 * ms) - 96 * ms
+                                    readonly property real side: Math.max(1, Math.min((mw - 2 * gap) / 3, band))
+                                    // ⚠️`top` 은 Item 의 FINAL 프로퍼티라 이름으로 쓸 수 없다(QML 로드 실패).
+                                    readonly property real bandTop: hy + 84 * ms + Math.max(0, (band - side) / 2)
+                                    readonly property real x0: mx + (mw - (side * 3 + gap * 2)) / 2
+                                    // 폴리오 날짜: 비우면 합성이 메인 사진 촬영월로 채운다.
+                                    readonly property string folioDate: win.wallDate.trim() !== ""
+                                                                        ? win.wallDate : win.wallShots[1][1]
+
+                                    Text {   // 키커
+                                        x: idxMirror.mx; y: idxMirror.sy0 + 110 * idxMirror.ms
+                                        text: win.wallKicker.toUpperCase()
+                                        color: idxMirror.accent; font.bold: true
+                                        font.family: idxMirror.famB
+                                        font.pixelSize: idxMirror.fpx(29)
+                                        font.letterSpacing: 6 * idxMirror.ms
+                                    }
+                                    Text {   // 헤드라인
+                                        id: mIdxHead
+                                        x: idxMirror.mx; y: idxMirror.yHead
+                                        width: idxMirror.mw; wrapMode: Text.WordWrap
+                                        text: idxMirror.uc(win.wallHeadline)
+                                        color: "#16161a"; font.bold: true
+                                        font.family: idxMirror.famH
+                                        font.pixelSize: idxMirror.fpx(78)
+                                        font.letterSpacing: magMirror.faceTrack[win.wallTypeface] * 78 * idxMirror.ms
+                                        lineHeight: idxMirror.headStep; lineHeightMode: Text.FixedHeight
+                                    }
+                                    Text {   // 리드문 — 머리 오른쪽 칼럼(합성은 4줄에서 자른다)
+                                        id: mIdxDeck
+                                        x: idxMirror.mx + idxMirror.mw - idxMirror.dw
+                                        y: idxMirror.yDeck
+                                        width: idxMirror.dw; wrapMode: Text.WordWrap
+                                        maximumLineCount: 4
+                                        text: win.wallDeck
+                                        color: "#76767c"
+                                        font.family: idxMirror.famB
+                                        font.pixelSize: idxMirror.fpx(30)
+                                        lineHeight: 44 * idxMirror.ms; lineHeightMode: Text.FixedHeight
+                                    }
+                                    Rectangle {   // 머리 아래 괘선
+                                        x: idxMirror.mx; y: idxMirror.hy + 30 * idxMirror.ms
+                                        width: idxMirror.mw; height: 1; color: "#cdcbc5"
+                                    }
+                                    Repeater {   // 칸 아래 괘선 + 번호 + 제목
+                                        model: 3
+                                        Item {
+                                            required property int index
+                                            readonly property real cx: idxMirror.x0
+                                                + index * (idxMirror.side + idxMirror.gap)
+                                            readonly property real cy: idxMirror.bandTop + idxMirror.side
+                                            Rectangle {
+                                                x: parent.cx; y: parent.cy + 20 * idxMirror.ms
+                                                width: idxMirror.side; height: 1; color: "#cdcbc5"
+                                            }
+                                            Text {
+                                                x: parent.cx; y: parent.cy + 34 * idxMirror.ms
+                                                text: "0" + (parent.index + 1)
+                                                color: idxMirror.accent; font.bold: true
+                                                font.family: idxMirror.famH
+                                                font.pixelSize: idxMirror.fpx(32)
+                                            }
+                                            Text {
+                                                x: parent.cx + 62 * idxMirror.ms
+                                                y: parent.cy + 38 * idxMirror.ms
+                                                width: idxMirror.side - 62 * idxMirror.ms
+                                                elide: Text.ElideRight
+                                                text: win.wallTitles[parent.index]
+                                                color: "#16161a"
+                                                font.family: idxMirror.famB
+                                                font.pixelSize: idxMirror.fpx(29)
+                                            }
+                                        }
+                                    }
+                                    Rectangle {   // 폴리오 괘선
+                                        x: idxMirror.mx; y: idxMirror.sy1 - 120 * idxMirror.ms
+                                        width: idxMirror.mw; height: 1; color: "#cdcbc5"
+                                    }
+                                    Text {
+                                        visible: win.wallPlace !== ""
+                                        x: idxMirror.mx; y: idxMirror.sy1 - 102 * idxMirror.ms
+                                        text: idxMirror.uc(win.wallPlace)
+                                        color: "#76767c"
+                                        font.family: idxMirror.famB
+                                        font.pixelSize: idxMirror.fpx(27)
+                                        font.letterSpacing: 4 * idxMirror.ms
+                                    }
+                                    Text {
+                                        id: mIdxDate
+                                        visible: idxMirror.folioDate !== ""
+                                        x: idxMirror.mx + idxMirror.mw - width
+                                        y: idxMirror.sy1 - 102 * idxMirror.ms
+                                        text: idxMirror.uc(idxMirror.folioDate)
+                                        color: "#76767c"
+                                        font.family: idxMirror.famB
+                                        font.pixelSize: idxMirror.fpx(27)
+                                        font.letterSpacing: 4 * idxMirror.ms
+                                    }
+                                }
+
                                 Item {
                                     id: magMirror
                                     visible: win.wallLayout === 1
