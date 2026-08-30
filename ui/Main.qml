@@ -10364,6 +10364,11 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         var m = controller.loadWallpaperPreset(currentText)
                                         if (m && m.layout !== undefined) {
                                             win.wallApplyState(m)
+                                            // ★이름 칸을 같이 채운다 — Save 버튼이 '이름이 비어
+                                            //   있지 않을 때'만 켜지므로, 안 채우면 불러온
+                                            //   프리셋을 고쳐서 덮어쓸 방법이 없다(이름을 정확히
+                                            //   다시 타이핑해야만 했다).
+                                            wallPresetName.text = currentText
                                             win.wallResult = "Preset loaded: " + currentText
                                         }
                                     }
@@ -10413,14 +10418,20 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                 }
                                 DarkButton {
                                     id: wallPresetSave
-                                    text: "Save"
+                                    // 같은 이름이 이미 있으면 덮어쓰기다 — 되돌릴 수 없으니
+                                    // 누르기 전에 라벨로 알린다.
+                                    readonly property bool isOverwrite:
+                                        win.wallPresets.indexOf(wallPresetName.text.trim()) >= 0
+                                    text: isOverwrite ? "Overwrite" : "Save"
                                     enabled: wallPresetName.text.trim() !== ""
                                     onClicked: {
                                         var n = wallPresetName.text.trim()
+                                        var was = wallPresetSave.isOverwrite
                                         controller.saveWallpaperPreset(n, win.wallCurrentState())
                                         win.wallRefreshPresets()
-                                        wallPresetName.text = ""
-                                        win.wallResult = "Preset saved: " + n
+                                        // ★이름을 지우지 않는다 — 고치고 다시 저장하는 흐름에서
+                                        //   매번 다시 타이핑하게 된다. 새로 만들 때는 칸을 비우면 된다.
+                                        win.wallResult = (was ? "Preset updated: " : "Preset saved: ") + n
                                     }
                                 }
                             }
