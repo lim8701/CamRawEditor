@@ -586,8 +586,9 @@ DM_WINDOW = 2048
 def _app_choice(st, name):
     """앱이 실제로 쓰는 것 — 라벨에 표시한다. `raw_loader._export_demosaic` 과 같아야 한다."""
     # Bayer·X-Trans 공통: 프록시 LINEAR / export AHD(X-Trans 에선 Markesteijn 3-pass).
-    if name == "LINEAR":
-        return "app: proxy"
+    # ⚠️후보 집합이 양쪽 다 ("AHD",) 라 **LINEAR 는 패널에 뜨지 않는다** — 예전의
+    #   `if name == "LINEAR": return "app: proxy"` 분기는 도달 불가라 지웠다. 프록시 후보를
+    #   다시 세우게 되면 그 라벨도 같이 되살릴 것.
     return "app: export" if name == "AHD" else ""
 
 

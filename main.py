@@ -1180,6 +1180,7 @@ class Controller(QObject):
     #   안 했는데 사이드카가 생기고**(로드 직후 edited 배지), **Reset 직후 다시 edited 가 된다**
     #   (실측 재현: 동기 시절엔 안 생기고 비동기로 바꾼 뒤 생김). 파생 렌더 결과와 편집값은
     #   서로 다른 알림이어야 한다.
+    wallShotsChanged = Signal()       # 배경화면 슬롯 EXIF 요약이 워커에서 도착(미리보기 재평가)
     stampDefaultsChanged = Signal()   # 스탬프 '내 기본값' 갱신 알림
     exportOptsChanged = Signal()      # 기억된 export 옵션 갱신 알림
     stampFontsChanged = Signal()      # 폰트 목록(사용자 추가/삭제) 갱신 알림
@@ -1246,6 +1247,7 @@ class Controller(QObject):
                                      #  ⚠️seq 없음 — 다운로드는 모델 전역(이미지 무관), finally 로 항상 해제
     _aiNrInitSig = Signal(bool)      # (내부) ORT 세션 초기화(GPU 점유) 오버레이 ON/OFF — 세션 전역
     _stampSpriteSig = Signal(object)  # (내부) 스탬프 스프라이트 워커 -> 메인 (seq, layer, wr, hr)
+    _shotInfoSig = Signal()           # (내부) EXIF 요약 워커 -> 메인(큐잉 연결로 스레드 경계 통과)
     _updateSig = Signal(object)      # (내부) 업데이트 확인 워커 -> 메인 (새 버전 태그, 릴리스 URL)
     _folderScanSig = Signal(object)  # (내부) 폴더 스캔 워커 -> 메인 (seq, folder, items, likes, edited, force)
     _indexProgressSig = Signal(object)  # (내부) 폴더 배치 인덱싱 워커 -> 메인 (seq, done, total, status)
@@ -1513,6 +1515,9 @@ class Controller(QObject):
         self._aiNrDlSig.connect(self._on_ai_nr_dl)
         self._aiNrInitSig.connect(self._on_ai_nr_init)
         self._stampSpriteSig.connect(self._on_stamp_sprite)
+        self._shotInfoSig.connect(self.wallShotsChanged)   # 워커 → GUI 스레드에서 알림
+        self._shot_cache = {}        # 경로 -> (촬영정보 1줄, 촬영월) — 배경화면 미리보기용
+        self._shot_pending = set()   # 워커가 읽는 중인 경로(중복 스레드 방지)
         self._updateSig.connect(self._on_update_found)
         self._folderScanSig.connect(self._on_folder_scanned)
         self._indexProgressSig.connect(self._on_index_progress)
@@ -2894,8 +2899,11 @@ class Controller(QObject):
                 # 메인 사진 캡션은 compose_magazine 이 조립한다(프레임 번호 규칙 단일화)
                 img = _EDITORIAL[layout](panels, int(o["canvasW"]),
                                          int(o["canvasH"]), mo)
-                with QT_IMG_LOCK:            # 인코딩+파일 I/O 동안 플러그인 뮤텍스 점유(decode_lock)
-                    ok = bool(img.save(path))
+                # ⚠️**`img.save(path)` 로 직접 저장하지 말 것** — jpg 가 Qt 기본 품질 75 로
+                #   나가고(그레인 같은 고주파에서 8x8 DCT 격자가 보인다) 메모리 인코딩 →
+                #   `.part` → `os.replace` 원자 경로도 건너뛴다(인코딩 중 종료 시 목적지에
+                #   잘린 파일). 아래 트립틱 분기와 같은 함수를 쓴다. 락은 그 안에 있다.
+                ok = pipeline.save_image(img, path, EXPORT_SOFTWARE)
             else:
                 canvas = pipeline.compose_wallpaper(
                     panels, int(o["canvasW"]), int(o["canvasH"]), int(o.get("gap", 18)),
@@ -3033,11 +3041,34 @@ class Controller(QObject):
     def wallShotInfo(self, path: str):  # noqa: N802 (QML 슬롯)
         """배경화면 잡지 **미리보기**용: [촬영정보 1줄, 'September 2023' 월].
         합성(_do_wallpaper)이 쓰는 _shot_summary 와 같은 원천이라 미리보기 텍스트가
-        실제 출력과 같다. 빈 경로/실패면 ["", ""]."""
-        if not path:
+        실제 출력과 같다. 빈 경로/실패면 ["", ""].
+
+        ★⚠️**여기서 EXIF 를 읽지 않는다 — 캐시에 없으면 워커로 넘기고 빈 값을 즉시 돌려준다.**
+          이 슬롯은 QML 바인딩(`win.wallShots`)이 부르므로 **GUI 스레드**다. `_shot_summary`
+          는 RAF 면 임베드 JPEG 만 보지만, 그 외(CR3·비트맵썸 DNG)에서는 `rawpy.imread` 와
+          Qt 인코딩(`_encode_bitmap_jpeg`)까지 가고 그 인코딩은 `QT_IMG_LOCK` 을 잡는다 —
+          슬롯 지정·시작만으로 창이 멈추고, export 인코딩이 진행 중이면 그 뒤로 줄까지 선다.
+          완료되면 `wallShotsChanged` 로 알리고 QML 이 바인딩을 다시 굽는다(`wallShotsRev`)."""
+        key = str(path or "")
+        if not key:
             return ["", ""]
-        line, month = self._shot_summary(path)
-        return [line, month]
+        hit = self._shot_cache.get(key)
+        if hit is not None:
+            return list(hit)
+        if key not in self._shot_pending:
+            self._shot_pending.add(key)
+            threading.Thread(target=self._shot_worker, args=(key,), daemon=True).start()
+        return ["", ""]
+
+    def _shot_worker(self, path: str) -> None:
+        """EXIF 요약을 워커에서 읽어 캐시에 넣고 QML 에 알린다(위 wallShotInfo 주석)."""
+        try:
+            line, month = self._shot_summary(path)
+        except Exception:
+            line, month = "", ""
+        self._shot_cache[path] = (line, month)
+        self._shot_pending.discard(path)
+        self._shotInfoSig.emit()
 
     @Slot(str, result=str)
     def captionTitle(self, path: str) -> str:  # noqa: N802 (QML 슬롯)

@@ -1167,17 +1167,24 @@ def save_image(arr, path, software="") -> bool:
     `Software`/`DateTime` 태그, PNG 은 tEXt `Software`/`Creation Time`. **TIFF 는 남기지
     않는다**(Qt 의 TIFF 핸들러가 setText 를 조용히 버린다 — 실측으로 확인, 에러도 안 낸다).
     시각은 저장 직전의 로컬시로 여기서 만든다(=현상이 끝난 시점). 호출측이 문자열을 넘기는
-    이유는 `main.APP_VERSION` 을 읽으려면 순환 임포트가 되기 때문이다."""
-    arr = np.ascontiguousarray(arr)
-    h, w, _ = arr.shape
-    if arr.dtype == np.uint16:
-        rgbx = np.empty((h, w, 4), np.uint16)
-        rgbx[..., :3] = arr
-        rgbx[..., 3] = 65535                       # X 채널(미사용) — RGBX64 는 알파 무시
-        rgbx = np.ascontiguousarray(rgbx)
-        img = QImage(rgbx.data, w, h, 8 * w, QImage.Format.Format_RGBX64).copy()
+    이유는 `main.APP_VERSION` 을 읽으려면 순환 임포트가 되기 때문이다.
+
+    **`QImage` 를 그대로 넘겨도 된다** — 배경화면 에디토리얼 합성(`compose_magazine`·
+    `compose_index`·`compose_fullbleed`)은 QImage 를 돌려주는데, 그쪽도 품질 95 와 원자적
+    저장(.part → os.replace)을 똑같이 받아야 하기 때문이다."""
+    if isinstance(arr, QImage):
+        img = arr                                  # 배경화면 에디토리얼 합성 결과(위 주석)
     else:
-        img = QImage(arr.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+        arr = np.ascontiguousarray(arr)
+        h, w, _ = arr.shape
+        if arr.dtype == np.uint16:
+            rgbx = np.empty((h, w, 4), np.uint16)
+            rgbx[..., :3] = arr
+            rgbx[..., 3] = 65535                   # X 채널(미사용) — RGBX64 는 알파 무시
+            rgbx = np.ascontiguousarray(rgbx)
+            img = QImage(rgbx.data, w, h, 8 * w, QImage.Format.Format_RGBX64).copy()
+        else:
+            img = QImage(arr.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
     ext = os.path.splitext(path)[1].lstrip(".").lower()
     # ⚠️포맷을 **명시**해서 넘긴다 — 임시 이름이 `<path>.part` 라 Qt 가 확장자로 추론하면
     #   모르는 형식이라 무조건 실패한다(확장자가 없는 게 아니라 Qt 가 `.part` 를 모르는 것).
@@ -1194,6 +1201,12 @@ def save_image(arr, path, software="") -> bool:
     # PNG 은 스펙 권장 키워드가 `Creation Time` 이라 표기가 다르다(형식도 자유).
     now = datetime.datetime.now() if software else None
     from decode_lock import QT_IMG_LOCK
+    # ⚠️**여기가 이 락의 유일한 '초 단위' 보유자다** — 26MP 인코딩 실측 1.4~7.4s
+    #   (jpg q95 1.36 / png8 3.69 / png16 7.41). 나머지 보유자는 전부 ms 단위 디코드라
+    #   export 하는 동안 썸네일·호버 프리뷰가 그만큼 밀린다(탐색기가 안 채워진다).
+    #   ⚠️그래도 **락을 빼면 안 된다** — 파이썬제 QBuffer 인코딩은 교착의 한쪽 다리고
+    #   (decode_lock 주석), 빼면 다른 스레드가 **GIL 을 쥔 채** 플러그인 뮤텍스를 기다려
+    #   앱 전체가 굳는다. 파이썬 락 대기는 GIL 을 놓으므로 '밀리는 것'과 '멈추는 것'의 차이다.
     with QT_IMG_LOCK:               # 파이썬제 QBuffer 인코딩 = 교착 참가자(decode_lock 주석)
         ok = img.save(buf, fmt, quality)
     if not ok:
@@ -1742,7 +1755,12 @@ def compose_fullbleed(panels, canvas_w, canvas_h, opts):
 
 
 def _mag_folio(p, fam_b, S, mx, mw, sy1, opts, gray, hair, upper):
-    """지면 하단 러닝풋: 장소(왼쪽) · 날짜(오른쪽). 잡지·인덱스가 공유한다.
+    """지면 하단 러닝풋: 장소(왼쪽) · 날짜(오른쪽). **인덱스 전용이다.**
+
+    ⚠️예전 주석은 "잡지·인덱스가 공유한다" 였지만 사실이 아니다 — `compose_magazine` 은
+      자기 인라인 폴리오 블록을 그대로 갖고 있고 **상수가 다르다**(잡지 S(126)/S(104)/S(26)
+      vs 여기 S(120)/S(102)/S(27)). 여기를 고쳐도 잡지 레이아웃은 안 바뀐다. 합치려면
+      두 지면의 출력이 달라진다는 것을 먼저 결정할 것.
 
     장소/날짜는 사진별 정보가 아니라 지면 전체 정보라 프레임 라벨 옆이 아니라 여기에 둔다
     (라벨 옆에 두면 '그 사진의 장소/날짜'처럼 읽혔다).

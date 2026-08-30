@@ -1684,9 +1684,20 @@ ApplicationWindow {
     property var wallTitles: ["", "", ""]
     // 슬롯별 [EXIF 촬영정보 1줄, 촬영월] — 합성(_shot_summary)과 같은 원천이라 미리보기의
     // 인덱스 행/폴리오 날짜/메인 캡션 텍스트가 실제 출력과 같다. 슬롯 변경 시 재평가.
-    readonly property var wallShots: [controller.wallShotInfo(win.wallSlots[0]),
-                                      controller.wallShotInfo(win.wallSlots[1]),
-                                      controller.wallShotInfo(win.wallSlots[2])]
+    // ⚠️`wallShotInfo` 는 **캐시에 없으면 빈 값을 즉시** 돌려주고 워커로 읽는다(GUI 스레드에서
+    //   RAW 를 열지 않기 위해서 — main.wallShotInfo 주석). 도착하면 `wallShotsChanged` 가 오고
+    //   아래 `wallShotsRev` 가 올라 이 바인딩이 다시 평가된다.
+    property int wallShotsRev: 0
+    Connections {
+        target: controller
+        function onWallShotsChanged() { win.wallShotsRev += 1 }
+    }
+    readonly property var wallShots: {
+        win.wallShotsRev                       // 의존성 등록용(값 자체는 안 쓴다)
+        return [controller.wallShotInfo(win.wallSlots[0]),
+                controller.wallShotInfo(win.wallSlots[1]),
+                controller.wallShotInfo(win.wallSlots[2])]
+    }
     function wallSetTitle(i, v) {
         var a = win.wallTitles.slice(); a[i] = v; win.wallTitles = a
         controller.setWallpaperText("title" + i, v)
@@ -10534,8 +10545,18 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                 // 폭을 낸다) 여기서는 3:2 로 가정한다 — 자리와 크기감만 보이면 된다.
                                 readonly property real fbTh: safeRect.h * (300 / 2160)
                                 readonly property real fbTw: fbTh * 1.5
+                                // ⚠️`compose_fullbleed` 는 `by = sy1 - S(150) - (S(52) if fol else 0) - th`
+                                //   다 — 폴리오(장소·날짜)가 **비어 있으면 S(52) 를 빼지 않는다**.
+                                //   여기서 202 를 상수로 빼면 폴리오가 빈 사진에서 미리보기와
+                                //   출력이 52/2160 만큼 어긋난다.
+                                readonly property bool fbFolio:
+                                        win.wallPlace.trim() !== ""
+                                        || (win.wallDate.trim() !== "" ? true
+                                            : String(win.wallShots[1][1] || "") !== "")
                                 readonly property real fbY: safeRect.y + safeRect.h
-                                                            - safeRect.h * (202 / 2160) - fbTh
+                                                            - safeRect.h * (150 / 2160)
+                                                            - (fbFolio ? safeRect.h * (52 / 2160) : 0)
+                                                            - fbTh
                                 readonly property real fbX0: safeRect.x + safeRect.w
                                                              - safeRect.h * (110 / 2160)
                                                              - (fbTw * 2 + safeRect.h * (20 / 2160))
@@ -11079,7 +11100,10 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         TextField {
                                             id: wallTitleField
                                             Layout.fillWidth: true
-                                            visible: win.wallEditorial && wallCard.slotPath !== ""
+                                            // ⚠️풀블리드 제외 — `compose_fullbleed` 는 `titles` 를
+                                            //   아예 읽지 않는다(입력해도 출력물에 안 나온다).
+                                            visible: (win.wallLayout === 1 || win.wallLayout === 2)
+                                                     && wallCard.slotPath !== ""
                                             placeholderText: "Frame title (printed in the index)"
                                             text: win.wallTitles[wallCard.slot]
                                             font.pixelSize: 12

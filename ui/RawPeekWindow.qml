@@ -787,7 +787,9 @@ Item {
                         NumberAnimation {
                             id: creep
                             target: bBar; property: "frac"
-                            to: Math.min(bBar.step + 0.45, 0.97)
+                            // ⚠️`step` 아래로 내려가면 안 된다 — 마지막 콜백(frac=1.0)에서
+                            //   목표가 0.97 이면 막대가 100%→97% 로 **뒷걸음질**한다.
+                            to: Math.max(bBar.step, Math.min(bBar.step + 0.45, 0.97))
                             duration: 5000; easing.type: Easing.OutCubic
                         }
                     }
