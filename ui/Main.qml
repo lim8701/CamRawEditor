@@ -1715,6 +1715,11 @@ ApplicationWindow {
         win.wallGap = num("gap", 18, 0, 60)
         win.wallDualAspect = controller.wallpaperText("dual") !== "0"
         win.wallRefreshPresets()
+        // 마지막에 쓰던 프리셋을 다시 고른다. ⚠️**상태를 다시 적용하지는 않는다** — 위에서
+        //   복원한 '마지막 작업 상태' 에는 저장하지 않은 편집이 들어 있을 수 있고, 프리셋을
+        //   덮어 적용하면 그걸 날린다. 여기서 필요한 것은 **이름뿐**이다(Save 버튼이 켜진다).
+        var lastP = controller.wallpaperText("lastPreset")
+        win.wallPresetCur = (lastP !== "" && win.wallPresets.indexOf(lastP) >= 0) ? lastP : ""
     }
     // 앞 3개는 기존 순서 유지(저장된 resIndex 호환) + 16:10 3종 + 현재 화면 크기
     readonly property var wallResW: [3840, 2560, 1920, 3840, 2560, 1920, controller.screenW]
@@ -1741,6 +1746,16 @@ ApplicationWindow {
     // 설정 영구 저장(controller → 사용자 데이터 폴더의 wallpaper.json). 값은 문자열로 넘긴다.
     function wallSave(key, v) { controller.setWallpaperText(key, String(v)) }
     property var wallPresets: []                  // 프리셋 이름 목록(콤보 모델)
+    // 지금 편집 중인 프리셋 이름. 콤보 선택과 이름 칸이 **여기에** 동기화된다(둘을 직접
+    // 건드리면 생성 순서에 의존한다 — 자식이 먼저 완성되므로 루트 onCompleted 에서 위젯을
+    // 직접 대입하면 늦거나 이르다). 빈 문자열 = 이름 없는 새 구성.
+    // ★영구 저장 키는 wallpaper.json 의 `lastPreset` 이고, 다음 실행 때 이걸 다시 고른다 —
+    //   안 그러면 사진·텍스트는 복원되는데 이름이 비어 Save 버튼이 꺼져 있어 저장을 못 한다.
+    property string wallPresetCur: ""
+    function wallSetPresetCur(name) {
+        win.wallPresetCur = String(name)
+        controller.setWallpaperText("lastPreset", String(name))
+    }
     function wallRefreshPresets() { win.wallPresets = controller.wallpaperPresetNames() }
     // 현재 패널 상태 → 프리셋 저장용 맵(사진 슬롯 포함)
     function wallCurrentState() {
@@ -10364,17 +10379,31 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         var m = controller.loadWallpaperPreset(currentText)
                                         if (m && m.layout !== undefined) {
                                             win.wallApplyState(m)
-                                            // ★이름 칸을 같이 채운다 — Save 버튼이 '이름이 비어
-                                            //   있지 않을 때'만 켜지므로, 안 채우면 불러온
+                                            // ★이름도 같이 잡는다 — Save 버튼이 '이름이 비어
+                                            //   있지 않을 때'만 켜지므로, 안 잡으면 불러온
                                             //   프리셋을 고쳐서 덮어쓸 방법이 없다(이름을 정확히
                                             //   다시 타이핑해야만 했다).
-                                            wallPresetName.text = currentText
+                                            win.wallSetPresetCur(currentText)
                                             win.wallResult = "Preset loaded: " + currentText
                                         }
                                     }
                                     Connections {
                                         target: wallPresetCombo.popup
                                         function onClosed() { viewport.forceActiveFocus() }
+                                    }
+                                    // 목록이나 현재 이름이 바뀌면 선택을 맞춘다(시작 시 복원 포함).
+                                    // ⚠️currentIndex 를 바인딩으로 두면 사용자가 고르는 순간
+                                    //   내부에서 대입돼 바인딩이 끊기므로 명령형으로 맞춘다.
+                                    function syncSel() {
+                                        var i = win.wallPresetCur === "" ? -1
+                                                : win.wallPresets.indexOf(win.wallPresetCur)
+                                        if (currentIndex !== i) currentIndex = i
+                                    }
+                                    Component.onCompleted: syncSel()
+                                    Connections {
+                                        target: win
+                                        function onWallPresetCurChanged() { wallPresetCombo.syncSel() }
+                                        function onWallPresetsChanged() { wallPresetCombo.syncSel() }
                                     }
                                 }
                                 // flat Button 글리프는 어두워 안 보임 → 흰 글리프 Rectangle 패턴
@@ -10401,6 +10430,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                             var n = wallPresetCombo.currentText
                                             controller.deleteWallpaperPreset(n)
                                             win.wallRefreshPresets()
+                                            if (win.wallPresetCur === n) win.wallSetPresetCur("")
                                             win.wallResult = "Preset deleted: " + n
                                         }
                                     }
@@ -10415,6 +10445,17 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                     placeholderText: "New preset name"
                                     font.pixelSize: 12
                                     onAccepted: wallPresetSave.clicked()
+                                    // 현재 프리셋을 따라간다(시작 복원·콤보 선택·저장 직후).
+                                    // 사용자가 타이핑하는 것은 건드리지 않는다 — 타이핑은
+                                    // wallPresetCur 를 바꾸지 않으므로 이 핸들러가 안 돈다.
+                                    text: win.wallPresetCur
+                                    Connections {
+                                        target: win
+                                        function onWallPresetCurChanged() {
+                                            if (wallPresetName.text !== win.wallPresetCur)
+                                                wallPresetName.text = win.wallPresetCur
+                                        }
+                                    }
                                 }
                                 DarkButton {
                                     id: wallPresetSave
@@ -10431,6 +10472,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         win.wallRefreshPresets()
                                         // ★이름을 지우지 않는다 — 고치고 다시 저장하는 흐름에서
                                         //   매번 다시 타이핑하게 된다. 새로 만들 때는 칸을 비우면 된다.
+                                        win.wallSetPresetCur(n)
                                         win.wallResult = (was ? "Preset updated: " : "Preset saved: ") + n
                                     }
                                 }
