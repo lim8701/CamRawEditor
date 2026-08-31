@@ -4185,19 +4185,26 @@ class Controller(QObject):
             self._raw_peek_publish(img, cap, rid)
             return
 
-        with self._peek_lock:
-            self._peek_job = (mode, cx, cy, zoom, w, h, gain, rid)
-            if self._peek_running:
-                return                        # 진행 중 — 최신 요청만 남기고 이어 받는다
-            self._peek_running = True
         # ⚠️'rendering…' 배지는 **오래 걸리는 것에만** 띄운다(전체보기 0.25~0.38s / 디모자이크
         #   재디코드 수 초). 줌 크롭은 워커로 보내도 20~30ms 라, 여기서 busy 를 켜면 드래그
         #   내내 배지가 깜박이기만 한다.
         #   ⚠️디모자이크도 **디코드가 필요한 경우만** — 창이 이미 있으면 8~27ms 짜리 패널
         #     재조립이라, 드래그 내내 배지가 켜져 있게 된다.
-        if zoom <= 1 or (mode == raw_peek.MODE_DEMOSAIC and not dm_cached):
+        slow = zoom <= 1 or (mode == raw_peek.MODE_DEMOSAIC and not dm_cached)
+        with self._peek_lock:
+            self._peek_job = (mode, cx, cy, zoom, w, h, gain, rid)
+            queued = self._peek_running       # 이미 도는 워커가 이 요청을 이어받는다
+            if not queued:
+                self._peek_running = True
+        # ★⚠️**배지는 큐에 넣을 때 켠다 — 워커를 띄우는 요청에서만 켜면 안 된다.**
+        #   드래그 중에는 앞 요청의 워커가 거의 항상 돌고 있어서, 창을 벗어나 **재디코드가
+        #   필요해진 그 요청**은 위에서 큐에 담기기만 하고 배지를 못 켠다 → "디모자이크
+        #   드래그에서 프로그레스가 안 뜰 때가 있다"(사용자 보고). 판정은 요청 자체로 한다.
+        if slow and not self._peek_busy:
             self._peek_busy = True
         self.rawPeekChanged.emit()
+        if queued:
+            return                            # 진행 중 — 최신 요청만 남기고 이어 받는다
         threading.Thread(target=self._raw_peek_render_worker,
                          args=(self._peek_seq,), daemon=True).start()
 
