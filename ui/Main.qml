@@ -10570,6 +10570,12 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         readonly property bool idx: win.wallLayout === 2
                                         readonly property bool fb: win.wallLayout === 3
                                         readonly property bool isMain: index === 1
+                                        // ★풀블리드의 메인은 캔버스 전체라, Repeater 가 나중에
+                                        //   그리는 index 1 이 먼저 그린 index 0(왼쪽 작은 판)을
+                                        //   덮는다 — 프리뷰에 오른쪽 한 장만 보였다.
+                                        //   ⚠️음수 z 로 메인을 내리면 **부모 뒤**로 가서 배경에
+                                        //     묻힌다(Qt Quick 규칙). 작은 판을 올릴 것.
+                                        z: fb && !isMain ? 1 : 0
                                         // 트립틱: 3등분 셀 / 잡지: 메인은 풀블리드(캔버스 기준),
                                         // 0·2 는 텍스트 칼럼 안 작은 판 — 높이·자리는 magMirror 의
                                         // 텍스트 흐름 파생값(합성 avail_h 와 동일 수식). 합성처럼
@@ -10767,11 +10773,15 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         }
                                     }
                                     Rectangle {   // 폴리오 괘선
+                                        // 합성(_mag_folio)은 장소·날짜가 둘 다 비면 괘선까지
+                                        // 통째로 건너뛴다 — 프리뷰만 줄이 남으면 안 된다.
+                                        visible: win.wallPlace.trim() !== ""
+                                                 || idxMirror.folioDate.trim() !== ""
                                         x: idxMirror.mx; y: idxMirror.sy1 - 120 * idxMirror.ms
                                         width: idxMirror.mw; height: 1; color: "#cdcbc5"
                                     }
                                     Text {
-                                        visible: win.wallPlace !== ""
+                                        visible: win.wallPlace.trim() !== ""
                                         x: idxMirror.mx; y: idxMirror.sy1 - 102 * idxMirror.ms
                                         text: idxMirror.uc(win.wallPlace)
                                         color: "#76767c"
@@ -10781,7 +10791,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                     }
                                     Text {
                                         id: mIdxDate
-                                        visible: idxMirror.folioDate !== ""
+                                        visible: idxMirror.folioDate.trim() !== ""
                                         x: idxMirror.mx + idxMirror.mw - width
                                         y: idxMirror.sy1 - 102 * idxMirror.ms
                                         text: idxMirror.uc(idxMirror.folioDate)

@@ -2898,7 +2898,12 @@ class Controller(QObject):
                 mo = dict(o)
                 if not str(mo.get("date", "")).strip():     # 비어 있으면 메인 EXIF 로 채움
                     mo["date"] = self._shot_summary(paths[1])[1] if len(paths) > 1 else ""
-                mo["shots"] = [self._shot_summary(p)[0] for p in paths]
+                # ⚠️`shots` 는 compose_magazine 만 읽는다. `_shot_summary` 는 CR3/DNG 에서
+                #   rawpy 디코드 + QT_IMG_LOCK 까지 가므로 안 쓰는 레이아웃에서 3회를 돌면
+                #   export 스레드가 그만큼 늦고 썸네일 디코드와 락을 다툰다.
+                #   (위 날짜 폴백 1회는 셋 다 폴리오에 쓰므로 남긴다.)
+                mo["shots"] = ([self._shot_summary(p)[0] for p in paths]
+                               if layout == "magazine" else ["", "", ""])
                 # 메인 사진 캡션은 compose_magazine 이 조립한다(프레임 번호 규칙 단일화)
                 img = _EDITORIAL[layout](panels, int(o["canvasW"]),
                                          int(o["canvasH"]), mo)
