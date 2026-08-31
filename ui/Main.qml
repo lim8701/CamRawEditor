@@ -10661,6 +10661,127 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                 // 남는 근사 두 가지: QML 워드랩이 QPainter 폭 계산과 미세하게
                                 // 다를 수 있고(줄 수가 갈리는 경계 문장), 작은 판 2장의 가로
                                 // 패킹은 등폭 2칸 근사(합성은 사진 비율대로 이어 붙인다).
+                                // ---- 풀블리드 텍스트 미러 — compose_fullbleed 의 좌표를
+                                // ms = safeRect.h/2160 로 스케일해 **같은 자리**에 그린다.
+                                // ⚠️상수(110/150/62/108/76/46/32/27/300/18/30/26/20/1060)는
+                                //   pipeline.compose_fullbleed 와 짝 — 한쪽을 바꾸면 같이.
+                                // ★블록이 **아래에서 위로** 쌓인다(합성의 ty = sy1 − S(150) − block).
+                                //   그래서 시작 y 가 자기 줄 수에 달려 있다 — 줄 수는 폭과 글자에서
+                                //   나오지 y 에서 나오지 않으므로 바인딩 루프가 아니다.
+                                // ⚠️스크림은 **아래 세로 밴드만** 그린다. 합성은 왼쪽 아래 대각
+                                //   그라디언트를 한 겹 더 얹는데 QML `Gradient` 는 수직/수평뿐이라
+                                //   (Qt5Compat 미사용) 대각을 정확히 못 그린다. 어긋남은 '프리뷰가
+                                //   실제보다 덜 어둡다' 쪽이라, 여기서 읽히면 출력에서도 읽힌다.
+                                // ⚠️작은 판 2장은 이 미러보다 **위**에 그려져야 한다(합성이 스크림
+                                //   다음에 그린다) — Repeater 셀의 `z: fb && !isMain ? 1 : 0` 이 그 역할.
+                                Item {
+                                    id: fbMirror
+                                    visible: win.wallLayout === 3
+                                    anchors.fill: parent
+                                    readonly property real ms: wallPreview.safeRect.h / 2160
+                                    readonly property real sx0: wallPreview.safeRect.x
+                                    readonly property real sx1: wallPreview.safeRect.x + wallPreview.safeRect.w
+                                    readonly property real sy1: wallPreview.safeRect.y + wallPreview.safeRect.h
+                                    readonly property string famH: magMirror.famH
+                                    readonly property string famB: magMirror.famB
+                                    readonly property bool up: magMirror.up
+                                    readonly property real lhf: magMirror.lhf
+                                    // 키커 색: 합성은 accent 가 러스트일 때만 살구빛을 쓴다.
+                                    readonly property bool rust:
+                                        magMirror.faceAccent[win.wallTypeface] === "#9c3b2e"
+                                    function fpx(v) { return Math.max(1, Math.round(v * ms)) }
+                                    function uc(t) { return up ? t.toUpperCase() : t }
+
+                                    readonly property real tx: sx0 + 110 * ms
+                                    readonly property real tw: (sx1 - sx0) * 0.50
+                                    readonly property real headStep: 108 * ms * lhf
+                                    readonly property real blockH: 62 * ms
+                                        + Math.max(1, mFbHead.lineCount) * headStep
+                                        + 76 * ms + Math.max(1, mFbDeck.lineCount) * 46 * ms
+                                    readonly property real ty0: sy1 - 150 * ms - blockH
+                                    readonly property real yHead: ty0 + 62 * ms
+                                    readonly property real yAfterHead: yHead
+                                        + Math.max(1, mFbHead.lineCount) * headStep
+                                    readonly property real yDeck: yAfterHead + 76 * ms
+                                    // 폴리오 문자열. **있고 없고는 `wallPreview.fbFolio` 하나가 정한다**
+                                    // — 작은 판의 세로 위치도 그걸 보므로 판정이 갈리면 안 된다.
+                                    readonly property string folioDate: win.wallDate.trim() !== ""
+                                        ? win.wallDate : String(win.wallShots[1][1] || "")
+                                    readonly property string folio: {
+                                        var a = win.wallPlace.trim(), b = folioDate.trim()
+                                        return (a !== "" && b !== "") ? a + "  \u00b7  " + b
+                                                                      : (a !== "" ? a : b)
+                                    }
+
+                                    Rectangle {   // 아래 스크림(합성 1번째 겹과 같은 밴드·알파)
+                                        readonly property real band:
+                                            Math.min(wallPreview.height, 1060 * fbMirror.ms)
+                                        x: 0; width: wallPreview.width
+                                        y: wallPreview.height - band; height: band
+                                        gradient: Gradient {
+                                            GradientStop { position: 0.0; color: "#00000000" }
+                                            GradientStop { position: 1.0; color: "#d7000000" }
+                                        }
+                                    }
+                                    Text {   // 키커
+                                        x: fbMirror.tx; y: fbMirror.ty0
+                                        text: win.wallKicker.toUpperCase()
+                                        color: fbMirror.rust ? "#ebb0a0" : "#f0eee9"
+                                        font.bold: true
+                                        font.family: fbMirror.famB
+                                        font.pixelSize: fbMirror.fpx(27)
+                                        font.letterSpacing: 6 * fbMirror.ms
+                                    }
+                                    Text {   // 헤드라인
+                                        id: mFbHead
+                                        x: fbMirror.tx; y: fbMirror.yHead
+                                        width: fbMirror.tw; wrapMode: Text.WordWrap
+                                        text: fbMirror.uc(win.wallHeadline)
+                                        color: "#ffffff"; font.bold: true
+                                        font.family: fbMirror.famH
+                                        font.pixelSize: fbMirror.fpx(108)
+                                        font.letterSpacing:
+                                            magMirror.faceTrack[win.wallTypeface] * 108 * fbMirror.ms
+                                        lineHeight: fbMirror.headStep; lineHeightMode: Text.FixedHeight
+                                    }
+                                    Rectangle {   // 헤드라인 밑줄 바
+                                        x: fbMirror.tx; y: fbMirror.yAfterHead + 24 * fbMirror.ms
+                                        width: 110 * fbMirror.ms
+                                        height: Math.max(1, 3 * fbMirror.ms)
+                                        color: "#c8ffffff"
+                                    }
+                                    Text {   // 리드문(합성은 3줄에서 자른다)
+                                        id: mFbDeck
+                                        x: fbMirror.tx; y: fbMirror.yDeck
+                                        width: fbMirror.tw; wrapMode: Text.WordWrap
+                                        maximumLineCount: 3
+                                        text: win.wallDeck
+                                        color: "#dfdcd7"
+                                        font.family: fbMirror.famB
+                                        font.pixelSize: fbMirror.fpx(32)
+                                        lineHeight: 46 * fbMirror.ms; lineHeightMode: Text.FixedHeight
+                                    }
+                                    // 우하단: 작은 판 아래 괘선 + 폴리오(우측 정렬)
+                                    Rectangle {
+                                        readonly property real total:
+                                            wallPreview.fbTw * 2 + 20 * fbMirror.ms
+                                        visible: wallPreview.fbFolio
+                                        x: fbMirror.sx1 - 110 * fbMirror.ms - total
+                                        y: wallPreview.fbY + wallPreview.fbTh + 18 * fbMirror.ms
+                                        width: total; height: 1; color: "#6effffff"
+                                    }
+                                    Text {
+                                        visible: wallPreview.fbFolio
+                                        x: fbMirror.sx1 - 110 * fbMirror.ms - width
+                                        y: wallPreview.fbY + wallPreview.fbTh + 30 * fbMirror.ms
+                                        text: fbMirror.uc(fbMirror.folio)
+                                        color: "#dbd8d2"
+                                        font.family: fbMirror.famB
+                                        font.pixelSize: fbMirror.fpx(26)
+                                        font.letterSpacing: 5 * fbMirror.ms
+                                    }
+                                }
+
                                 // ---- 인덱스 텍스트 미러 — compose_index 의 좌표·크기를
                                 // ms = safeRect.h/2160 로 스케일해 **같은 자리**에 그린다.
                                 // ⚠️상수(140/280/110/172/78/186/44/30/84/96/126/40/20/34/38/62
