@@ -456,7 +456,8 @@ def _crop_size(st, zoom: int, out_w: int, out_h: int):
 #     각각 3채널로 돌린다(그래서 크롭이 작은데도 화소당 비용이 가장 크다 — Planes 의 크롭은
 #     `_panel_fit` 이 폭을 색 수로 나눈 뒤의 값이다).
 #   ⚠️보수적으로 잡아도 손해는 **한 프레임 지연**뿐이다(그림이 손가락을 한 박자 늦게 따라온다).
-_SYNC_CROP_PX = {MODE_GRAY: 320_000, MODE_CFA: 120_000, MODE_PLANES: 50_000}
+_SYNC_CROP_PX = {MODE_GRAY: 320_000, MODE_CFA: 120_000, MODE_PLANES: 50_000,
+                 MODE_DEMOSAIC: 30_000}      # 크롭 한 변 ~173px (아래 is_heavy 주석)
 
 
 def _panel_fit(st, mode: int, out_w: int, out_h: int):
@@ -515,8 +516,15 @@ def is_heavy(st: RawPeek, mode: int, zoom: int, out_w: int, out_h: int,
     실측(X100V 26MP): 디모자이크 비교 1.13s / 전체보기 0.25~0.38s / 그 외 22~100ms.
     """
     if mode == MODE_DEMOSAIC:
-        # 캐시가 비었거나 **팬으로 창을 벗어난** 렌더만 무겁다(LibRaw 전체 디코드).
-        return not demosaic_cached(st, demosaic_crop(st, cx, cy, zoom, out_w, out_h))
+        # 캐시가 비었거나 **팬으로 창을 벗어난** 렌더는 무겁다(LibRaw 전체 디코드 1.3~3.7s).
+        crop = demosaic_crop(st, cx, cy, zoom, out_w, out_h)
+        if not demosaic_cached(st, crop):
+            return True
+        # ⚠️창 히트여도 **패널이 크면 무겁다** — 저배율에서 크롭이 422x422 면 26ms 라 드래그가
+        #   끊긴다(모자이크 z2 와 같은 이유). 패널 화소 수로 가른다(`_SYNC_CROP_PX` 주석과 같은
+        #   기준, 실측 422²→26.2ms · 211²→8.5 · 105²→4.3 = 약 147 ns/화소 — 모자이크 패널까지
+        #   합쳐 그리므로 화소당 비용이 가장 크다).
+        return crop[2] * crop[3] > _SYNC_CROP_PX[MODE_DEMOSAIC]
     if zoom > 1:
         # ⚠️예전엔 무조건 False(동기)였다 — 2배 줌은 크롭이 커서 CFA 25ms 라 드래그가 끊겼다
         #   (사용자 보고). 크기로 갈라 무거운 것만 워커로 보낸다(`_SYNC_CROP_PX` 주석).
