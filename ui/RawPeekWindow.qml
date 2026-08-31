@@ -718,10 +718,18 @@ Item {
                     // ⚠️rect 가 빈 배열일 때 NaN 이 바인딩으로 새지 않게 가드한다.
                     readonly property bool ok: minimap.r.length === 4
                                                && minimap.visW > 0 && minimap.visH > 0
-                    readonly property real cxp: ok ? 1 + (minimap.r[0] + minimap.r[2] / 2)
-                                                     / minimap.visW * mini.paintedWidth : 0
-                    readonly property real cyp: ok ? 1 + (minimap.r[1] + minimap.r[3] / 2)
-                                                     / minimap.visH * mini.paintedHeight : 0
+                    // ★위치는 **지금 끌고 있는 값**(`peekWin.cx/cy`)에서 낸다 — 마지막으로
+                    //   그려진 rect 로만 그리면 디모자이크 재디코드(1.3~3.7s) 동안 십자선이
+                    //   얼어붙어 **프로그램이 멈춘 것처럼 보인다**(사용자 보고). 크기(bw/bh)는
+                    //   rect 를 그대로 쓴다 — 그건 실제로 그려진 크롭을 뜻해야 한다.
+                    //   ⚠️렌더가 크롭을 가장자리에서 클램프하므로 여기서도 같은 클램프를 건다
+                    //   (안 하면 사진 끝에서 십자선만 화면 밖으로 나간다).
+                    readonly property real halfW: ok ? minimap.r[2] / 2 / minimap.visW : 0
+                    readonly property real halfH: ok ? minimap.r[3] / 2 / minimap.visH : 0
+                    readonly property real liveX: Math.max(halfW, Math.min(1 - halfW, peekWin.cx))
+                    readonly property real liveY: Math.max(halfH, Math.min(1 - halfH, peekWin.cy))
+                    readonly property real cxp: ok ? 1 + liveX * mini.paintedWidth : 0
+                    readonly property real cyp: ok ? 1 + liveY * mini.paintedHeight : 0
                     readonly property real bw: ok ? Math.max(9, minimap.r[2] / minimap.visW
                                                              * mini.paintedWidth) : 0
                     readonly property real bh: ok ? Math.max(9, minimap.r[3] / minimap.visH

@@ -1278,6 +1278,9 @@ class Controller(QObject):
         self._peek_job = None        # 대기 중인 최신 무거운 렌더 요청(코얼레싱)
         self._peek_running = False
         self._peek_lock = threading.Lock()   # ⚠️`_peek_job`/`_peek_running` 은 **짝으로** 본다
+        self._peek_req = 0           # 요청 일련번호(늦게 온 워커 결과를 거르는 기준)
+        self._peek_pub = 0           # 마지막으로 화면에 올린 요청 번호
+        self._peek_last_mode = -1    # 직전 요청의 모드 — 탭 전환 판정(줄 서지 않기)
         # 메인 뷰 캡션 — ★이미지에 굽지 않고 QML 이 고정 높이 밴드에 그린다(raw_peek.py 주석 참조)
         self._peek_caption = ""
         self._peek_status = ""       # 후보 디코드 진행 표시(오래 걸리는 첫 렌더)
@@ -4124,6 +4127,8 @@ class Controller(QObject):
         self._dev_marks = []
         self._peek_busy = False
         self._peek_job = None
+        self._peek_pub = self._peek_req      # 남아 있던 워커 결과를 전부 옛것으로 만든다
+        self._peek_last_mode = -1
         # URL 도 되돌린다 — 프로바이더를 비웠으므로 옛 URL 이 남으면 QML 이 재요청하지 않아
         # 다음 오픈에서 빈 텍스처를 그대로 들고 있게 된다.
         self._peek_counter += 1
@@ -4150,17 +4155,30 @@ class Controller(QObject):
         if st is None:
             return
         import raw_peek
-        if not raw_peek.is_heavy(st, mode, zoom, w, h, cx, cy, gain):
+        self._peek_req += 1
+        rid = self._peek_req
+        heavy = raw_peek.is_heavy(st, mode, zoom, w, h, cx, cy, gain)
+        # ★**탭 전환은 줄을 서지 않는다.** 디모자이크 재디코드(1.3~3.7s)가 도는 중에 다른 탭으로
+        #   가면 워커 큐 뒤에 붙어 **디코드가 끝날 때까지 기다려야 했다**(사용자 보고). 모드가
+        #   바뀌는 요청은 **비용에 상한이 있을 때만** 동기로 돌린다(크롭 렌더 20~30ms).
+        #   ⚠️`zoom <= 1`(전체보기 0.25~0.38s)은 제외 — 전환 한 번에 GUI 가 그만큼 멈춘다.
+        #   ⚠️디모자이크는 **디코드 창이 이미 캐시된 경우만** — 벗어났으면 수 초짜리다.
+        if heavy and zoom > 1 and mode != self._peek_last_mode:
+            if mode != raw_peek.MODE_DEMOSAIC or raw_peek.demosaic_cached(
+                    st, raw_peek.demosaic_crop(st, cx, cy, zoom, w, h)):
+                heavy = False
+        self._peek_last_mode = mode
+        if not heavy:
             try:
                 img, cap = raw_peek.render(st, mode, cx, cy, zoom, w, h, gain=gain)
             except Exception as e:
                 print(f"[rawpeek] render 실패: {type(e).__name__}: {e}")
                 return
-            self._raw_peek_publish(img, cap)
+            self._raw_peek_publish(img, cap, rid)
             return
 
         with self._peek_lock:
-            self._peek_job = (mode, cx, cy, zoom, w, h, gain)
+            self._peek_job = (mode, cx, cy, zoom, w, h, gain, rid)
             if self._peek_running:
                 return                        # 진행 중 — 최신 요청만 남기고 이어 받는다
             self._peek_running = True
@@ -4184,7 +4202,7 @@ class Controller(QObject):
                 st = self._peek
                 if st is None:
                     break
-                mode, cx, cy, zoom, w, h, gain = job
+                mode, cx, cy, zoom, w, h, gain, rid = job
 
                 def _prog(done, total, name, _seq=seq):
                     # 후보 디코드는 종당 ~1.1s(LINEAR)/~4s(Markesteijn 3-pass) — 침묵하면 멈춘
@@ -4194,7 +4212,7 @@ class Controller(QObject):
 
                 out = raw_peek.render(st, mode, cx, cy, zoom, w, h,
                                       progress=_prog, gain=gain)
-                self._rawPeekSig.emit((seq, "view", out))
+                self._rawPeekSig.emit((seq, "view", (out, rid)))
         except Exception as e:
             self._rawPeekSig.emit((seq, "error", f"{type(e).__name__}: {e}"))
         finally:
@@ -4212,9 +4230,15 @@ class Controller(QObject):
             else:
                 self._rawPeekSig.emit((seq, "idle", None))
 
-    def _raw_peek_publish(self, img, caption=None) -> None:
+    def _raw_peek_publish(self, img, caption=None, rid: int = 0) -> None:
+        """⚠️**늦게 온 결과가 새 그림을 덮지 않게** 요청 번호로 거른다 — 탭 전환이 큐를
+        건너뛰므로(rawPeekView 주석) 디모자이크 디코드가 끝나면서 이미 바뀐 화면을 옛 패널로
+        덮는 일이 생긴다."""
         if self._peek_provider is None:
             return
+        if rid and rid < self._peek_pub:
+            return                                   # 이미 더 새 그림이 올라가 있다
+        self._peek_pub = max(self._peek_pub, rid)
         if caption is not None:
             self._peek_caption = "\n".join(caption)
         self._peek_provider.set_image("main", img)
@@ -4249,8 +4273,8 @@ class Controller(QObject):
                 self._peek_mini_url = f"image://rawpeek/mini?v={self._peek_counter}"
             self.rawPeekChanged.emit()
         elif kind == "view":
-            img, cap = payload
-            self._raw_peek_publish(img, cap)
+            (img, cap), rid = payload
+            self._raw_peek_publish(img, cap, rid)
         elif kind == "status":
             self._peek_status, self._peek_prog = payload
             self.rawPeekChanged.emit()
