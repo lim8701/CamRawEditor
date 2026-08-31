@@ -4139,10 +4139,12 @@ class Controller(QObject):
                     w: int, h: int, gain: bool = True) -> None:
         """현재 모드/팬/줌으로 main 그림을 갱신한다.
 
-        ★가벼운 것(모자이크 zoom>=2, 경계)은 **동기** — 22~100ms 라 드래그가 즉시 따라온다.
-          무거운 것(전체보기 zoom==1 250~385ms, 디모자이크 비교 = LibRaw 재디코드 1.3~3.7s)만
-          워커로 보내고 **코얼레싱**한다(`_stamp_worker` 와 같은 패턴). 드래그마다 스레드를
-          띄우면 요청이 쌓여 오히려 늦는다.
+        ★판정은 `raw_peek.is_heavy` 한 곳이다. 가벼운 것(작은 크롭)은 **동기** — 드래그가
+          즉시 따라온다. 무거운 것(전체보기 250~385ms, 디모자이크 재디코드 1.3~3.7s, 그리고
+          **크롭이 큰 저배율 줌**)은 워커로 보내고 **코얼레싱**한다(`_stamp_worker` 와 같은
+          패턴). 드래그마다 스레드를 띄우면 요청이 쌓여 오히려 늦는다.
+          ⚠️예전엔 `zoom > 1` 이면 무조건 동기였는데, 2배 줌은 크롭이 커서 CFA 25ms 라
+          드래그가 끊겼다(사용자 보고). 크기 기준은 `raw_peek._SYNC_CROP_PX` 주석 참조.
         """
         st = self._peek
         if st is None:
@@ -4162,7 +4164,11 @@ class Controller(QObject):
             if self._peek_running:
                 return                        # 진행 중 — 최신 요청만 남기고 이어 받는다
             self._peek_running = True
-        self._peek_busy = True
+        # ⚠️'rendering…' 배지는 **오래 걸리는 것에만** 띄운다(전체보기 0.25~0.38s / 디모자이크
+        #   재디코드 수 초). 줌 크롭은 워커로 보내도 20~30ms 라, 여기서 busy 를 켜면 드래그
+        #   내내 배지가 깜박이기만 한다.
+        if zoom <= 1 or mode == raw_peek.MODE_DEMOSAIC:
+            self._peek_busy = True
         self.rawPeekChanged.emit()
         threading.Thread(target=self._raw_peek_render_worker,
                          args=(self._peek_seq,), daemon=True).start()

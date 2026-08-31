@@ -425,10 +425,7 @@ def mosaic(st: RawPeek, mode: int, cx: float, cy: float, zoom: int,
         return out
 
     # 1:1 이상 — 화면에 들어갈 픽셀 수만 잘라낸다
-    # ⚠️ceil 로 잡으면 cw*zoom 이 요청 폭을 넘어(1608 > 1600) 뷰포트 밖으로 밀린다 → 내림.
-    cw = max(st.period, int(out_w // zoom))
-    ch = max(st.period, int(out_h // zoom))
-    cw, ch = min(cw, st.vis_w), min(ch, st.vis_h)
+    cw, ch = _crop_size(st, zoom, out_w, out_h)
     p = st.period
     x = int(np.clip(cx * st.vis_w - cw / 2, 0, st.vis_w - cw)) // p * p
     y = int(np.clip(cy * st.vis_h - ch / 2, 0, st.vis_h - ch)) // p * p
@@ -438,6 +435,28 @@ def mosaic(st: RawPeek, mode: int, cx: float, cy: float, zoom: int,
     st.last_scale = float(zoom)
     return _render(st, v, c, mode, zoom, note=f"{cw}x{ch} @ ({x},{y})  {zoom}x",
                    grid=True, gain=gain)
+
+
+def _crop_size(st, zoom: int, out_w: int, out_h: int):
+    """zoom>1 에서 잘라낼 크롭 크기 — `mosaic()` 과 `is_heavy()` 가 **같은 산수**를 봐야 한다.
+    ⚠️ceil 로 잡으면 cw*zoom 이 요청 폭을 넘어(1608 > 1600) 뷰포트 밖으로 밀린다 → 내림."""
+    cw = max(st.period, int(out_w // zoom))
+    ch = max(st.period, int(out_h // zoom))
+    return min(cw, st.vis_w), min(ch, st.vis_h)
+
+
+# 동기로 그릴 크롭 화소 상한 — 넘으면 워커로 보낸다(코얼레싱되므로 GUI 는 안 밀린다).
+# ★비용은 **크롭 화소 수에 비례**한다(확대는 Qt 로 넘겨 거의 상수다). 실측(이 맥, 뷰포트
+#   1700x950, 괄호는 `_panel_fit` 을 거친 실제 크롭):
+#     Gray   z2 403k → 9.3ms · z3 178k → 4.2 · z4 100k → 2.9     (약 23 ns/화소)
+#     CFA    z2 403k → 25.4  · z3 178k → 11.3 · z4 100k → 6.9     (약 65 ns/화소)
+#     Planes z2 129k → 13.9  · z3  57k →  8.6 · z4  32k → 5.4     (약 108 ns/화소)
+#   한 프레임의 절반(≈8ms)을 넘지 않도록 잡은 값이다.
+#   ⚠️모드마다 다른 이유: Gray 는 감마를 1채널로 끝내고, CFA 는 3채널, Planes 는 **패널 3장**을
+#     각각 3채널로 돌린다(그래서 크롭이 작은데도 화소당 비용이 가장 크다 — Planes 의 크롭은
+#     `_panel_fit` 이 폭을 색 수로 나눈 뒤의 값이다).
+#   ⚠️보수적으로 잡아도 손해는 **한 프레임 지연**뿐이다(그림이 손가락을 한 박자 늦게 따라온다).
+_SYNC_CROP_PX = {MODE_GRAY: 320_000, MODE_CFA: 120_000, MODE_PLANES: 50_000}
 
 
 def _panel_fit(st, mode: int, out_w: int, out_h: int):
@@ -499,7 +518,10 @@ def is_heavy(st: RawPeek, mode: int, zoom: int, out_w: int, out_h: int,
         # 캐시가 비었거나 **팬으로 창을 벗어난** 렌더만 무겁다(LibRaw 전체 디코드).
         return not demosaic_cached(st, demosaic_crop(st, cx, cy, zoom, out_w, out_h))
     if zoom > 1:
-        return False
+        # ⚠️예전엔 무조건 False(동기)였다 — 2배 줌은 크롭이 커서 CFA 25ms 라 드래그가 끊겼다
+        #   (사용자 보고). 크기로 갈라 무거운 것만 워커로 보낸다(`_SYNC_CROP_PX` 주석).
+        cw, ch = _crop_size(st, zoom, *_panel_fit(st, mode, out_w, out_h))
+        return cw * ch > _SYNC_CROP_PX.get(mode, 200_000)
     return not _cache_hit(st, _full_key(st, mode, out_w, out_h, gain))
 
 
