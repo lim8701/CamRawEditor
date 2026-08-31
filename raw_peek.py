@@ -93,21 +93,28 @@ def _up_arr(a, k):
     """(h,w,3) uint8 을 k배 nearest 확대한 **numpy 배열**(연속 복사본).
 
     캔버스에 붙여야 하는 경로(디모자이크 패널)용 — Qt 로 확대하고 한 번 복사한다.
-    ⚠️`_qview` 결과를 그대로 들고 있지 말 것: 원본 QImage 가 사라지면 해제된 버퍼를 가리킨다.
-    ★⚠️**복사는 `np.array(..., copy=True)` 로 강제한다.** `np.ascontiguousarray` 는 뷰가 이미
-      연속이면 **복사하지 않고 그대로 돌려준다** — 확대본은 `bytesPerLine == w*3` 이라 항상
-      그 경우다(폭 100/101/102/211/212 전부 확인). 그러면 QImage 가 이 함수에서 나가며 해제돼
-      배열이 **해제된 버퍼**를 가리키고, 디모자이크 패널이 간헐적으로 깨진다(사용자 보고).
+
+    ★⚠️**확대본 QImage 를 지역 변수에 붙잡은 뒤 복사한다.** `np.array(_qview(_up_qimage(...)))`
+      처럼 한 줄로 쓰면 안 된다 — `_qview` 가 반환하는 순간 인자였던 QImage 의 참조가 사라져
+      **복사가 시작되기 전에 버퍼가 해제된다**(바이트코드에서 `CALL`(_qview) 이 `CALL_KW`
+      (np.array) 보다 먼저 인자를 버린다). `QImage.bits()` 의 memoryview 는 `obj is None` 이라
+      원본을 붙잡아 주지도 않는다. 눈에 안 띄는 이유는 그 사이에 할당이 없어 해제된 블록이
+      그대로 남아 있어서일 뿐이다 — 디모자이크 패널이 간헐적으로 깨진 것이 이 계열이다.
+    ⚠️`np.ascontiguousarray` 로는 복사가 보장되지 않는다(뷰가 이미 연속이면 그대로 돌려준다).
+      `np.array(..., copy=True)` 로 강제할 것.
     """
     if k <= 1:
         return a
-    return np.array(_qview(_up_qimage(a, k)), dtype=np.uint8, copy=True)
+    img = _up_qimage(a, k)                    # ★지역에 붙잡아 둔다(위 주석) — 복사가 끝날 때까지
+    return np.array(_qview(img), dtype=np.uint8, copy=True)
 
 
 def _qview(img):
     """RGB888 QImage 의 픽셀 버퍼를 (h,w,3) uint8 **뷰**로 (복사 없음).
-    ⚠️`bytesPerLine` 은 4바이트 정렬로 패딩될 수 있어 폭으로 잘라야 한다.
-    ⚠️돌려준 뷰는 원본 QImage 가 살아 있는 동안만 유효하다."""
+    ⚠️`bytesPerLine` 은 4바이트 정렬로 패딩된다 — `scaled()` 결과도 폭이 4의 배수가 아니면
+      패딩이 붙는다(실측: 폭 202 → 608, w*3 = 606). 그래서 폭으로 잘라야 한다. 잘라도 마지막
+      축만 쪼개는 reshape 라 **복사 없이 뷰**로 남는다.
+    ⚠️돌려준 뷰는 **원본 QImage 가 살아 있는 동안만** 유효하다(`_up_arr` 주석의 사고 참조)."""
     h, w, bpl = img.height(), img.width(), img.bytesPerLine()
     buf = np.frombuffer(img.bits(), np.uint8, count=h * bpl).reshape(h, bpl)
     return buf[:, :w * 3].reshape(h, w, 3)

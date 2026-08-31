@@ -4158,17 +4158,25 @@ class Controller(QObject):
         self._peek_req += 1
         rid = self._peek_req
         heavy = raw_peek.is_heavy(st, mode, zoom, w, h, cx, cy, gain)
+        dm_cached = None                      # 디모자이크: 디코드 창이 이미 있나(아래 두 곳이 본다)
+        if mode == raw_peek.MODE_DEMOSAIC:
+            dm_cached = raw_peek.demosaic_cached(
+                st, raw_peek.demosaic_crop(st, cx, cy, zoom, w, h))
         # ★**탭 전환은 줄을 서지 않는다.** 디모자이크 재디코드(1.3~3.7s)가 도는 중에 다른 탭으로
         #   가면 워커 큐 뒤에 붙어 **디코드가 끝날 때까지 기다려야 했다**(사용자 보고). 모드가
         #   바뀌는 요청은 **비용에 상한이 있을 때만** 동기로 돌린다(크롭 렌더 20~30ms).
         #   ⚠️`zoom <= 1`(전체보기 0.25~0.38s)은 제외 — 전환 한 번에 GUI 가 그만큼 멈춘다.
         #   ⚠️디모자이크는 **디코드 창이 이미 캐시된 경우만** — 벗어났으면 수 초짜리다.
         if heavy and zoom > 1 and mode != self._peek_last_mode:
-            if mode != raw_peek.MODE_DEMOSAIC or raw_peek.demosaic_cached(
-                    st, raw_peek.demosaic_crop(st, cx, cy, zoom, w, h)):
+            if mode != raw_peek.MODE_DEMOSAIC or dm_cached:
                 heavy = False
         self._peek_last_mode = mode
         if not heavy:
+            # ⚠️**대기 중인 옛 요청을 버린다.** 동기로 그린 이 화면이 그보다 새것이다. 안 버리면
+            #   워커가 나중에 그걸 집어 **아무도 안 보는 탭을 위해 수 초짜리 디코드**를 한 번 더
+            #   돌리고, 그 동안 'decoding…' 배지가 이미 끝난 화면 위에 남는다.
+            with self._peek_lock:
+                self._peek_job = None
             try:
                 img, cap = raw_peek.render(st, mode, cx, cy, zoom, w, h, gain=gain)
             except Exception as e:
@@ -4185,7 +4193,9 @@ class Controller(QObject):
         # ⚠️'rendering…' 배지는 **오래 걸리는 것에만** 띄운다(전체보기 0.25~0.38s / 디모자이크
         #   재디코드 수 초). 줌 크롭은 워커로 보내도 20~30ms 라, 여기서 busy 를 켜면 드래그
         #   내내 배지가 깜박이기만 한다.
-        if zoom <= 1 or mode == raw_peek.MODE_DEMOSAIC:
+        #   ⚠️디모자이크도 **디코드가 필요한 경우만** — 창이 이미 있으면 8~27ms 짜리 패널
+        #     재조립이라, 드래그 내내 배지가 켜져 있게 된다.
+        if zoom <= 1 or (mode == raw_peek.MODE_DEMOSAIC and not dm_cached):
             self._peek_busy = True
         self.rawPeekChanged.emit()
         threading.Thread(target=self._raw_peek_render_worker,
