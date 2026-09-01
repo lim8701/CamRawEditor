@@ -13,6 +13,7 @@ import QtQuick.Controls.Basic as B
 
 Flickable {
     id: root
+    objectName: "locationPanel"   // 헤드리스 레이아웃 측정용(폭이 300px 패널에 들어가는지)
 
     // 탐색기에서 체크된 사진 수 / 일괄 적용 요청(경로 수집은 Main.qml 이 한다).
     property int checkedCount: 0
@@ -94,12 +95,27 @@ Flickable {
             }
         }
 
+        // ⚠️**OSM 저작권 표기는 의무다**(User-Agent 와 같은 급). Qt 의 지도가 자체 표기를
+        //   그리지만 274px 상자 안에서 잘릴 수 있어(실측: 오프스크린에서 상자 밖에 놓였다)
+        //   여기에 한 줄로 못 박아 둔다.
+        B.Label {
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+            color: "#6a6a6a"; font.pixelSize: 10
+            text: "Map data \u00a9 OpenStreetMap contributors"
+        }
+
         // ── 좌표 ──
         // 지도가 주 입력이지만, 타일이 안 뜨는(오프라인) 상황에서 유일한 폴백이다.
+        // ⚠️패널은 300px 고정이다(스크롤바 12 + 여백 24 → 쓸 수 있는 폭 약 264).
+        //   라벨과 필드를 한 줄에 넷 늘어놓으면 잘린다 — 라벨 열을 좁게 고정하고 한 줄에 하나씩.
         RowLayout {
             Layout.fillWidth: true
             spacing: 8
-            B.Label { text: "Lat"; color: "#9a9a9a"; font.pixelSize: 11 }
+            B.Label {
+                text: "Lat"; color: "#9a9a9a"; font.pixelSize: 11
+                Layout.preferredWidth: 26
+            }
             B.TextField {
                 id: latField
                 objectName: "gpsLatField"
@@ -119,7 +135,14 @@ Flickable {
                     }
                 }
             }
-            B.Label { text: "Lon"; color: "#9a9a9a"; font.pixelSize: 11 }
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+            B.Label {
+                text: "Lon"; color: "#9a9a9a"; font.pixelSize: 11
+                Layout.preferredWidth: 26
+            }
             B.TextField {
                 id: lonField
                 objectName: "gpsLonField"
@@ -159,12 +182,12 @@ Flickable {
                 onClicked: { latField.text = ""; lonField.text = ""; controller.clearGps() }
             }
             DarkButton {
+                Layout.fillWidth: true
                 text: root.checkedCount > 0
                       ? "Apply to " + root.checkedCount + " checked" : "Apply to checked"
                 enabled: root.enabledForPhoto && controller.gpsSet && root.checkedCount > 0
                 onClicked: root.applyToCheckedRequested()
             }
-            Item { Layout.fillWidth: true }
         }
 
         Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
@@ -185,10 +208,13 @@ Flickable {
         RowLayout {
             Layout.fillWidth: true
             spacing: 8
-            B.Label { text: "Camera clock"; color: "#9a9a9a"; font.pixelSize: 11 }
+            B.Label {
+                text: "Clock"; color: "#9a9a9a"; font.pixelSize: 11
+                Layout.preferredWidth: 40
+            }
             B.ComboBox {
                 id: tzCombo
-                Layout.preferredWidth: 110
+                Layout.fillWidth: true
                 font.pixelSize: 12
                 // -12..+14 정시 오프셋. 30/45분 지역은 아래 미세 보정으로 맞춘다.
                 model: {
@@ -199,26 +225,29 @@ Flickable {
                 }
                 currentIndex: 12 + Math.round(root.localUtcOffsetHours())
             }
-            B.Label { text: "Shift"; color: "#9a9a9a"; font.pixelSize: 11 }
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+            B.Label {
+                text: "Shift"; color: "#9a9a9a"; font.pixelSize: 11
+                Layout.preferredWidth: 40
+            }
             B.SpinBox {
                 id: shiftSpin
-                Layout.preferredWidth: 110
+                Layout.fillWidth: true
                 from: -3600; to: 3600; stepSize: 10; value: 0
                 font.pixelSize: 12
                 textFromValue: function (v) { return v + " s" }
                 valueFromText: function (t) { return parseInt(t) || 0 }
             }
         }
-        RowLayout {
+        DarkButton {
             Layout.fillWidth: true
-            spacing: 8
-            DarkButton {
-                text: root.checkedCount > 0
-                      ? "Load GPX for " + root.checkedCount + " checked..." : "Load GPX..."
-                enabled: root.checkedCount > 0
-                onClicked: root.loadGpxRequested()
-            }
-            Item { Layout.fillWidth: true }
+            text: root.checkedCount > 0
+                  ? "Load GPX for " + root.checkedCount + " checked..." : "Load GPX..."
+            enabled: root.checkedCount > 0
+            onClicked: root.loadGpxRequested()
         }
         B.Label {
             Layout.fillWidth: true

@@ -46,29 +46,39 @@ Item {
                 if (c.isValid) root.picked(c.latitude, c.longitude)
             }
         }
+    }
 
-        MapQuickItem {
-            visible: root.hasPin
-            coordinate: QtPositioning.coordinate(root.lat, root.lon)
-            anchorPoint.x: pin.width / 2
-            anchorPoint.y: pin.height          // 핀 끝이 좌표를 가리킨다
-            sourceItem: Canvas {
-                id: pin
-                width: 22; height: 30
-                onPaint: {
-                    var ctx = getContext("2d"); ctx.reset()
-                    ctx.strokeStyle = "#1a1a1a"; ctx.lineWidth = 2
-                    ctx.fillStyle = "#8ab4f8"
-                    ctx.beginPath()
-                    ctx.arc(11, 11, 9, Math.PI * 0.82, Math.PI * 0.18)
-                    ctx.lineTo(11, 29)
-                    ctx.closePath(); ctx.fill(); ctx.stroke()
-                    ctx.fillStyle = "#1a1a1a"
-                    ctx.beginPath(); ctx.arc(11, 11, 3.2, 0, 2 * Math.PI); ctx.fill()
-                }
+    // ★⚠️**핀은 `MapView` 의 자식으로 선언하면 안 보인다.** `MapView` 는 `Map` 을 감싼 평범한
+    //   `Item` 이라 그 안에 적은 `MapQuickItem` 은 Item 의 자식으로 들어갈 뿐 **지도의 mapItems
+    //   에 등록되지 않는다**(클릭 좌표는 바뀌는데 핀만 안 그려진다 — 실제로 그랬다).
+    //   `Map` 에 직접 넣거나 `addMapItem` 으로 등록해야 한다.
+    MapQuickItem {
+        id: pinItem
+        visible: root.hasPin
+        coordinate: QtPositioning.coordinate(root.lat, root.lon)
+        anchorPoint.x: pin.width / 2
+        anchorPoint.y: pin.height              // 핀 끝이 좌표를 가리킨다
+        // ⚠️`Canvas` 를 sourceItem 으로 쓰지 않는다 — 지도 아이템은 소스를 텍스처로 굽는데
+        //   Canvas 는 첫 paint 시점이 그보다 늦어 빈 텍스처가 남을 수 있다. 도형으로 그린다.
+        sourceItem: Item {
+            id: pin
+            width: 22; height: 30
+            Rectangle {                        // 꼬리(머리보다 먼저 — 뒤에 깔린다)
+                x: 10; y: 12; width: 2; height: 18
+                color: "#1a1a1a"
+            }
+            Rectangle {                        // 머리
+                x: 2; y: 0; width: 18; height: 18; radius: 9
+                color: "#8ab4f8"
+                border.color: "#1a1a1a"; border.width: 2
+            }
+            Rectangle {                        // 가운데 구멍
+                x: 8; y: 6; width: 6; height: 6; radius: 3
+                color: "#1a1a1a"
             }
         }
     }
+    Component.onCompleted: view.map.addMapItem(pinItem)
 
     // 타일은 온라인이라야 온다 — 안 뜨는 상황을 침묵으로 두지 않는다(좌표칸이 폴백).
     B.Label {
