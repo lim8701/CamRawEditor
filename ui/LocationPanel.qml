@@ -377,11 +377,31 @@ Flickable {
         }
 
         // ── 동작 ──
-        DarkButton {
+        // Apply = 초안을 사진에 붙인다 / Revert = 초안을 버리고 사진에 붙어 있던 값으로 되돌린다.
+        // ★⚠️**Revert 가 필요한 이유: 초안 이동은 `Ctrl+Z` 로 못 되돌린다.** 지도 클릭은
+        //   사진을 건드리지 않으므로(초안 규율) undo 스냅샷이 쌓이지 않는다 — 위치가 이미
+        //   있는 사진에서 지도를 잘못 눌러 핀이 옮겨지면, Revert 가 없으면 **되돌릴 방법이
+        //   전혀 없다**(Apply 해서 덮어쓰거나 사진을 넘겼다 오는 것뿐이었다).
+        RowLayout {
             Layout.fillWidth: true
-            text: "Apply to this photo"
-            enabled: root.enabledForPhoto && root.hasDraft && root.draftDiffers
-            onClicked: root.applyToPhoto()
+            spacing: 8
+            DarkButton {
+                Layout.fillWidth: true
+                text: "Apply to this photo"
+                enabled: root.enabledForPhoto && root.hasDraft && root.draftDiffers
+                onClicked: root.applyToPhoto()
+            }
+            DarkButton {
+                text: "Revert"
+                // 되돌릴 차이가 있을 때만. 사진에 위치가 없는데 핀만 찍은 경우도 여기 해당하며,
+                // 그때는 `syncDraftFromPhoto` 가 hasDraft 를 false 로 만들어 핀이 사라진다.
+                enabled: root.enabledForPhoto && root.draftDiffers
+                onClicked: {
+                    root.syncDraftFromPhoto()
+                    // 값만 되돌리고 시야를 두면 핀이 화면 밖에 있을 수 있다 — 같이 따라간다.
+                    if (mapLoader.item && root.hasDraft) mapLoader.item.recenter()
+                }
+            }
         }
         RowLayout {
             Layout.fillWidth: true
@@ -427,10 +447,9 @@ Flickable {
                 text: "Clock"; color: "#9a9a9a"; font.pixelSize: 11
                 Layout.preferredWidth: 40
             }
-            B.ComboBox {
+            DarkComboBox {
                 id: tzCombo
                 Layout.fillWidth: true
-                font.pixelSize: 12
                 // -12..+14 정시 오프셋. 30/45분 지역은 아래 미세 보정으로 맞춘다.
                 model: {
                     var a = []
@@ -448,11 +467,10 @@ Flickable {
                 text: "Shift"; color: "#9a9a9a"; font.pixelSize: 11
                 Layout.preferredWidth: 40
             }
-            B.SpinBox {
+            DarkSpinBox {
                 id: shiftSpin
                 Layout.fillWidth: true
                 from: -3600; to: 3600; stepSize: 10; value: 0
-                font.pixelSize: 12
                 textFromValue: function (v) { return v + " s" }
                 valueFromText: function (t) { return parseInt(t) || 0 }
             }

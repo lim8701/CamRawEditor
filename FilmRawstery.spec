@@ -24,6 +24,7 @@ BUNDLE_ID = "io.github.lim8701.FilmRawstery"
 # --- QML (개별 명시: 새 .qml 추가 시 여기에 등록. 위치: ui/ — frozen 도 lib/ui/ 로 동형) ---
 QML = ["Main.qml", "Splash.qml", "PreviewWindow.qml", "CurveEditor.qml", "FilmStrip.qml",
        "EditedBadge.qml", "DarkButton.qml", "DarkTextField.qml",
+       "DarkComboBox.qml", "DarkSpinBox.qml",
        "ShortcutHelp.qml", "RawPeekWindow.qml",
        "LocationPanel.qml", "LocationMap.qml"]
 datas = [(os.path.join("ui", q), "ui") for q in QML]
