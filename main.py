@@ -3602,8 +3602,10 @@ class Controller(QObject):
         그 사진들은 로드돼 있지 않으므로 QML 편집 파이프라인을 태울 수 없다 — 사이드카를
         읽어 gps 키만 병합하고 다시 쓴다.
 
-        ⚠️**지금 열려 있는 사진은 건너뛴다** — 여기서 디스크를 고쳐 봐야 메모리 상태가 그대로라
-          다음 자동저장이 방금 쓴 값을 덮는다. 호출부(QML)가 그 한 장은 `setGps` 로 처리한다.
+        ⚠️**지금 열려 있는 사진은 사이드카에 직접 쓰지 않는다** — 메모리 상태가 그대로라
+          다음 자동저장이 방금 쓴 값을 덮는다. 그 한 장은 `_set_gps` 로 반영해 평소의 저장
+          경로(editSaveWatch -> commitEditSnapshot)를 타게 한다. ★판정을 QML 로 빼지 말 것 —
+          거기서 보이는 `imagePath` 는 `_path` 라 로드 중에는 `_ui_path` 와 다르다.
         ⚠️`v` 마커를 함께 넣어야 한다 — 없으면 QML `onEditsReady` 가 `e.v === undefined` 로 보고
           **`resetAllEdits()` 로 떨어져** 방금 쓴 위치가 무시된다.
         """
@@ -3617,7 +3619,11 @@ class Controller(QObject):
         n = 0
         for raw in paths:
             path = str(raw)
-            if not path or os.path.normcase(os.path.abspath(path)) == cur:
+            if not path:
+                continue
+            if os.path.normcase(os.path.abspath(path)) == cur:
+                self._set_gps(gps, src if gps else "")   # 열려 있는 사진은 메모리로(위 주석)
+                n += 1
                 continue
             if self._write_gps_sidecar(path, gps, src):
                 n += 1

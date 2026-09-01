@@ -1089,7 +1089,7 @@ ApplicationWindow {
             //   `_load` 가 파일의 EXIF GPS 로 폴백해 사용자가 지운 위치가 되살아난다.
             "gpsLat": controller.gpsSet ? controller.gpsLat : null,
             "gpsLon": controller.gpsSet ? controller.gpsLon : null,
-            "gpsAlt": controller.gpsSet ? controller.gpsAlt : null,
+            "gpsAlt": controller.gpsSet ? win.gpsAltOrNull() : null,
             "gpsSrc": controller.gpsSrc
         }
         // 마스킹(선택 클래스 + 로컬 조정) 병합. 마스크 픽셀은 저장 안 함 — 로드 시 클래스로 재생성.
@@ -2130,7 +2130,7 @@ ApplicationWindow {
             // ★여기가 CPU/GPU export 공용 단일 출처라 한 곳이면 두 경로가 다 덮인다.
             "gpsLat": controller.gpsSet ? controller.gpsLat : null,
             "gpsLon": controller.gpsSet ? controller.gpsLon : null,
-            "gpsAlt": controller.gpsSet ? controller.gpsAlt : null
+            "gpsAlt": controller.gpsSet ? win.gpsAltOrNull() : null
         }
         // 하늘(로컬) 조정 병합 — CPU render_full 이 보관된 마스크(controller._sky_mask)와 함께 적용.
         var sk = win.skyEditParams()
@@ -4038,15 +4038,23 @@ ApplicationWindow {
     // 위치는 **룩이 아니라 사진별 메타데이터**다 — 레시피에도, 룩 복사에도 실리지 않는다.
     property var gpxPanel: null          // 요청한 LocationPanel(오프셋·상태를 주고받는다)
 
-    // 체크된 사진 전부에 지금 위치를 적용. 사이드카에 직접 쓴다(그 사진들은 로드돼 있지 않다).
+    // ⚠️파이썬의 `None` 은 QML 에서 `null` 이 아니라 **`undefined`** 로 온다(실측:
+    //   `controller.gpsAlt.toFixed` 가 'of undefined' 로 터졌다). `JSON.stringify` 는
+    //   undefined 값을 **키째 버리므로** 사이드카/undo 스냅샷에서 조용히 사라진다.
+    //   고도를 읽는 곳은 전부 이걸 거친다.
+    function gpsAltOrNull() {
+        var a = controller.gpsAlt
+        return (a === undefined || a === null) ? null : a
+    }
+
+    // 체크된 사진 전부에 패널의 **초안** 좌표를 적용. 사이드카에 직접 쓴다
+    // (그 사진들은 로드돼 있지 않아 QML 편집 파이프라인을 태울 수 없다).
     // ⚠️**지금 열려 있는 사진은 컨트롤러가 건너뛴다** — 디스크만 고치면 다음 자동저장이 덮는다.
-    //   이 사진은 이미 그 값을 갖고 있으므로(적용의 출처다) 따로 할 일이 없다.
-    function applyGpsToChecked() {
-        if (!controller.gpsSet) return
+    //   그 한 장은 여기서 `setGps` 로 반영한다(= 'Apply to this photo' 와 같은 경로).
+    function applyGpsToChecked(la, lo, alt, src) {
         var q = Object.keys(win.batchChecked).sort()
         if (q.length === 0) return
-        var n = controller.applyGpsToPaths(q, { "lat": controller.gpsLat, "lon": controller.gpsLon,
-                                                "alt": controller.gpsAlt, "src": controller.gpsSrc })
+        var n = controller.applyGpsToPaths(q, { "lat": la, "lon": lo, "alt": alt, "src": src })
         if (win.gpxPanel) win.gpxPanel.gpxStatus = "Location written to " + n + " photo(s)."
     }
 
@@ -11594,7 +11602,9 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                         Layout.fillHeight: true
                         checkedCount: win.batchCheckedCount
                         panelActive: win.activePanel === 5
-                        onApplyToCheckedRequested: win.applyGpsToChecked()
+                        onApplyToCheckedRequested: win.applyGpsToChecked(
+                            locationPanel.draftLat, locationPanel.draftLon,
+                            locationPanel.draftAlt, locationPanel.draftSrc)
                         // ⚠️신호 핸들러 안의 `this` 는 신뢰할 수 없다 — id 로 잡는다.
                         onLoadGpxRequested: { win.gpxPanel = locationPanel; gpxDialog.open() }
                     }

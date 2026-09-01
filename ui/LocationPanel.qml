@@ -5,6 +5,10 @@
 // 내보낸다(원본 RAW 는 건드리지 않는다).
 //
 // ★위치는 **룩이 아니라 사진별 메타데이터**다 — 레시피(.frpreset)와 룩 복사에는 실리지 않는다.
+//
+// ★⚠️**지도를 클릭해도 사진에 바로 반영하지 않는다.** 클릭이 곧 저장이면 실수로 누른 좌표가
+//   그대로 사이드카에 들어가고 undo 스텝까지 쌓여 혼란스럽다(사용자 보고). 클릭은 **초안**만
+//   바꾸고, `Apply` 를 눌러야 사진에 붙는다.
 // ⚠️QtLocation import 는 `LocationMap.qml` 에 가둬 두고 Loader 로 늦게 켠다(그 파일 주석).
 import QtQuick
 import QtQuick.Controls
@@ -15,7 +19,7 @@ Flickable {
     id: root
     objectName: "locationPanel"   // 헤드리스 레이아웃 측정용(폭이 300px 패널에 들어가는지)
 
-    // 탐색기에서 체크된 사진 수 / 일괄 적용 요청(경로 수집은 Main.qml 이 한다).
+    // 탐색기에서 체크된 사진 수 / 일괄 적용·GPX 요청(경로 수집은 Main.qml 이 한다).
     property int checkedCount: 0
     // 이 패널이 화면에 있는가 — 지도 Loader 를 여기에 물려 **탭을 열 때만** 타일을 받으러 간다.
     property bool panelActive: false
@@ -29,6 +33,60 @@ Flickable {
     ScrollBar.vertical: B.ScrollBar { width: 12; policy: ScrollBar.AsNeeded }
 
     readonly property bool enabledForPhoto: controller.imagePath !== ""
+
+    // ⚠️파이썬의 `None` 은 QML 에서 `undefined` 다 — `null` 비교만으로는 안 걸린다(실측 TypeError).
+    readonly property var photoAlt: {
+        var a = controller.gpsAlt
+        return (a === undefined || a === null) ? null : a
+    }
+
+    // ---------- 초안(draft) ----------
+    // 지도 클릭·좌표 입력이 바꾸는 값. 사진에 붙은 값(controller.gps*)과는 **별개**이고,
+    // `Apply` 를 눌러야 넘어간다. 사진을 넘기면 새 사진의 값으로 다시 맞춰진다(초안 폐기).
+    property bool hasDraft: false
+    property real draftLat: 37.5665
+    property real draftLon: 126.9780
+    property var  draftAlt: null
+    property string draftSrc: ""
+
+    // 초안이 사진에 붙은 값과 다른가 = '아직 적용 안 됨'. 1e-7도 ~= 1cm.
+    readonly property bool draftDiffers:
+        root.hasDraft !== controller.gpsSet
+        || (root.hasDraft && controller.gpsSet
+            && (Math.abs(root.draftLat - controller.gpsLat) > 1e-7
+                || Math.abs(root.draftLon - controller.gpsLon) > 1e-7))
+
+    function syncDraftFromPhoto() {
+        root.hasDraft = controller.gpsSet
+        if (controller.gpsSet) {
+            root.draftLat = controller.gpsLat
+            root.draftLon = controller.gpsLon
+            root.draftAlt = root.photoAlt
+            root.draftSrc = controller.gpsSrc
+        } else {
+            root.draftAlt = null
+            root.draftSrc = ""
+        }
+    }
+    // 사진 전환·undo·프리셋 적용 등 **사진 쪽 값이 바뀌는 모든 경로**가 이 시그널을 지난다.
+    Connections {
+        target: controller
+        function onGpsChanged() { root.syncDraftFromPhoto() }
+    }
+    Component.onCompleted: root.syncDraftFromPhoto()
+
+    function setDraft(la, lo, src) {
+        root.draftLat = la; root.draftLon = lo
+        root.draftAlt = null            // 지도/수동 입력에는 고도가 없다
+        root.draftSrc = src
+        root.hasDraft = true
+    }
+
+    function applyToPhoto() {
+        if (!root.hasDraft) return
+        controller.setGps({ "lat": root.draftLat, "lon": root.draftLon,
+                            "alt": root.draftAlt, "src": root.draftSrc })
+    }
 
     ColumnLayout {
         id: col
@@ -47,8 +105,8 @@ Flickable {
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
             color: "#9a9a9a"; font.pixelSize: 11
-            text: "Click the map to place this photo. The coordinates are written to exported "
-                  + "JPEGs as standard EXIF GPS - the RAW file is never modified."
+            text: "Click the map to choose a spot, then Apply. The coordinates are written to "
+                  + "exported JPEGs as standard EXIF GPS - the RAW file is never modified."
         }
 
         // ── 지도 ──
@@ -68,18 +126,28 @@ Flickable {
                 active: everActive
                 source: "LocationMap.qml"
                 onLoaded: {
-                    item.lat = Qt.binding(function () { return controller.gpsSet ? controller.gpsLat : 37.5665 })
-                    item.lon = Qt.binding(function () { return controller.gpsSet ? controller.gpsLon : 126.9780 })
-                    item.hasPin = Qt.binding(function () { return controller.gpsSet })
-                    item.picked.connect(function (la, lo) {
-                        controller.setGps({ "lat": la, "lon": lo, "alt": null, "src": "map" })
-                    })
+                    // 핀은 **초안**을 가리킨다 — 사용자가 지금 고르는 자리다.
+                    item.lat = Qt.binding(function () { return root.draftLat })
+                    item.lon = Qt.binding(function () { return root.draftLon })
+                    item.hasPin = Qt.binding(function () { return root.hasDraft })
+                    item.picked.connect(function (la, lo) { root.setDraft(la, lo, "map") })
+                    item.recenter()
                 }
             }
             Connections {
                 target: root
                 function onPanelActiveChanged() {
-                    if (root.panelActive) mapLoader.everActive = true
+                    if (!root.panelActive) return
+                    if (!mapLoader.everActive) { mapLoader.everActive = true; return }
+                    if (mapLoader.item) mapLoader.item.recenter()   // 탭에 들어올 때만 시야 이동
+                }
+            }
+            // 사진을 넘기면 그 사진의 위치로 시야를 옮긴다(클릭에는 반응하지 않는다).
+            Connections {
+                target: controller
+                function onGpsChanged() {
+                    if (root.panelActive && mapLoader.item && controller.gpsSet)
+                        mapLoader.item.recenter()
                 }
             }
 
@@ -102,7 +170,7 @@ Flickable {
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
             color: "#6a6a6a"; font.pixelSize: 10
-            text: "Map data \u00a9 OpenStreetMap contributors"
+            text: "Map data © OpenStreetMap contributors"
         }
 
         // ── 좌표 ──
@@ -123,16 +191,18 @@ Flickable {
                 enabled: root.enabledForPhoto
                 font.pixelSize: 12
                 placeholderText: "37.566500"
-                text: controller.gpsSet ? controller.gpsLat.toFixed(6) : ""
+                text: root.hasDraft ? root.draftLat.toFixed(6) : ""
                 onAccepted: { root.commitFields(); focus = false }
                 Keys.onEscapePressed: focus = false
-                // ⚠️인라인 `text:` 바인딩은 첫 사용자 편집에서 끊긴다 → 다시 맞춰 준다.
+                // ⚠️인라인 `text:` 바인딩은 첫 사용자 편집에서 끊긴다 → 초안이 바뀌면 다시 맞춘다.
                 Connections {
-                    target: controller
-                    function onGpsChanged() {
-                        var v = controller.gpsSet ? controller.gpsLat.toFixed(6) : ""
-                        if (!latField.activeFocus && latField.text !== v) latField.text = v
-                    }
+                    target: root
+                    function onDraftLatChanged() { latField.resync() }
+                    function onHasDraftChanged() { latField.resync() }
+                }
+                function resync() {
+                    var v = root.hasDraft ? root.draftLat.toFixed(6) : ""
+                    if (!latField.activeFocus && latField.text !== v) latField.text = v
                 }
             }
         }
@@ -150,42 +220,62 @@ Flickable {
                 enabled: root.enabledForPhoto
                 font.pixelSize: 12
                 placeholderText: "126.978000"
-                text: controller.gpsSet ? controller.gpsLon.toFixed(6) : ""
+                text: root.hasDraft ? root.draftLon.toFixed(6) : ""
                 onAccepted: { root.commitFields(); focus = false }
                 Keys.onEscapePressed: focus = false
                 Connections {
-                    target: controller
-                    function onGpsChanged() {
-                        var v = controller.gpsSet ? controller.gpsLon.toFixed(6) : ""
-                        if (!lonField.activeFocus && lonField.text !== v) lonField.text = v
-                    }
+                    target: root
+                    function onDraftLonChanged() { lonField.resync() }
+                    function onHasDraftChanged() { lonField.resync() }
+                }
+                function resync() {
+                    var v = root.hasDraft ? root.draftLon.toFixed(6) : ""
+                    if (!lonField.activeFocus && lonField.text !== v) lonField.text = v
                 }
             }
         }
 
+        // 지금 상태를 한 줄로 — '아직 적용 안 됨'을 눈에 띄게 말한다.
         B.Label {
             Layout.fillWidth: true
-            color: "#7a7a7a"; font.pixelSize: 10
-            text: controller.gpsSet
-                  ? ("Set" + (controller.gpsSrc !== "" ? " from " + controller.gpsSrc : "")
-                     + (controller.gpsAlt !== null ? "  -  " + controller.gpsAlt.toFixed(0) + " m" : ""))
-                  : "No location on this photo"
+            wrapMode: Text.WordWrap
+            font.pixelSize: 10
+            color: root.draftDiffers ? "#e0c07a" : "#7a7a7a"
+            text: root.draftDiffers
+                  ? "Not applied yet - press Apply to attach it to this photo."
+                  : (controller.gpsSet
+                     ? ("On this photo"
+                        + (controller.gpsSrc !== "" ? "  -  from " + controller.gpsSrc : "")
+                        + (root.photoAlt !== null
+                           ? "  -  " + root.photoAlt.toFixed(0) + " m" : ""))
+                     : "No location on this photo")
         }
 
         // ── 동작 ──
+        DarkButton {
+            Layout.fillWidth: true
+            text: "Apply to this photo"
+            enabled: root.enabledForPhoto && root.hasDraft && root.draftDiffers
+            onClicked: root.applyToPhoto()
+        }
         RowLayout {
             Layout.fillWidth: true
             spacing: 8
             DarkButton {
                 text: "Clear"
-                enabled: root.enabledForPhoto && controller.gpsSet
-                onClicked: { latField.text = ""; lonField.text = ""; controller.clearGps() }
+                enabled: root.enabledForPhoto && (controller.gpsSet || root.hasDraft)
+                onClicked: {
+                    root.hasDraft = false
+                    root.draftAlt = null; root.draftSrc = ""
+                    latField.text = ""; lonField.text = ""
+                    if (controller.gpsSet) controller.clearGps()
+                }
             }
             DarkButton {
                 Layout.fillWidth: true
                 text: root.checkedCount > 0
                       ? "Apply to " + root.checkedCount + " checked" : "Apply to checked"
-                enabled: root.enabledForPhoto && controller.gpsSet && root.checkedCount > 0
+                enabled: root.enabledForPhoto && root.hasDraft && root.checkedCount > 0
                 onClicked: root.applyToCheckedRequested()
             }
         }
@@ -275,11 +365,11 @@ Flickable {
         return -(new Date().getTimezoneOffset()) / 60
     }
 
-    // 좌표칸 -> 컨트롤러. 못 읽는 값이면 아무것도 하지 않는다(칸은 다음 gpsChanged 에 복구된다).
+    // 좌표칸 -> **초안**. 못 읽는 값이면 아무것도 하지 않는다(칸은 다음 초안 변경에 복구된다).
     function commitFields() {
         var la = parseFloat(latField.text), lo = parseFloat(lonField.text)
         if (isNaN(la) || isNaN(lo)) return
         if (la < -90 || la > 90 || lo < -180 || lo > 180) return
-        controller.setGps({ "lat": la, "lon": lo, "alt": null, "src": "manual" })
+        root.setDraft(la, lo, "manual")
     }
 }

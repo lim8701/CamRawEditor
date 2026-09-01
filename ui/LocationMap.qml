@@ -32,12 +32,18 @@ Item {
         }
     }
 
+    // 지도를 핀 위치로 옮긴다 — **명시적 호출로만** 한다(사진을 열 때, 탭에 들어올 때).
+    // ★⚠️`map.center` 를 좌표에 **바인딩하지 말 것** — 클릭할 때마다 지도가 핀을 가운데로
+    //   끌어와 화면이 튄다(사용자 보고). 핀을 찍는 것과 시야를 옮기는 것은 다른 동작이다.
+    function recenter() {
+        view.map.center = QtPositioning.coordinate(root.lat, root.lon)
+    }
+
     MapView {
         id: view
         anchors.fill: parent
         map.plugin: osmPlugin
         map.zoomLevel: 13
-        map.center: QtPositioning.coordinate(root.lat, root.lon)
 
         // 클릭 = 그 지점으로 핀. MapView 가 드래그/휠을 이미 쓰므로 탭만 받는다.
         TapHandler {
@@ -78,7 +84,7 @@ Item {
             }
         }
     }
-    Component.onCompleted: view.map.addMapItem(pinItem)
+    Component.onCompleted: { view.map.addMapItem(pinItem); root.recenter() }
 
     // 타일은 온라인이라야 온다 — 안 뜨는 상황을 침묵으로 두지 않는다(좌표칸이 폴백).
     B.Label {

@@ -93,6 +93,24 @@ UI 가 "GPS is written to JPEG exports only" 를 명시한다.
 | 하루 전 | **None** |
 | 시간대를 UTC+0 으로 잘못 주면 | **None** (틀린 오프셋은 조용히 통과하지 않는다) |
 
+## UI 규율 — 클릭은 저장이 아니다
+
+★**지도 클릭은 '초안(draft)'만 바꾼다.** `Apply` 를 눌러야 사진에 붙는다.
+
+처음에는 클릭이 곧 `controller.setGps` 였는데, 그러면 실수로 누른 좌표가 **그대로 사이드카에
+저장되고 undo 스텝까지 쌓인다**("사용자가 실수로 클릭한 부분이 바로 반영되어버리면 혼란"). 지금은
+
+- 지도 클릭 · 좌표칸 입력 → **초안**(`draftLat`/`draftLon`/`hasDraft`)만 바뀐다
+- `Apply to this photo` → `controller.setGps` (= 사이드카 저장 + undo 스텝 1개)
+- `Apply to N checked` → 초안 좌표를 체크된 사진들에 쓴다
+- 초안이 저장값과 다르면 상태 줄이 **"Not applied yet"** 를 띄운다
+- 사진을 넘기면 `gpsChanged` 로 초안이 새 사진 값에 다시 맞춰진다(= 초안 폐기)
+
+★⚠️**`map.center` 를 좌표에 바인딩하지 말 것.** 바인딩하면 클릭할 때마다 지도가 핀을 가운데로
+끌어와 화면이 튄다("매우 불편함"). 핀을 찍는 것과 시야를 옮기는 것은 다른 동작이다 —
+시야 이동은 `recenter()` 를 **명시적으로 부를 때만**(지도를 처음 켤 때 · 탭에 들어올 때 ·
+사진이 바뀌어 그 사진의 위치가 있을 때) 일어난다.
+
 ## UI
 
 **Location 탭(`Ctrl+6`)** — 지도 픽커 + 좌표칸 + 체크한 여러 장 일괄 적용 + GPX 로드.
@@ -102,6 +120,22 @@ UI 가 "GPS is written to JPEG exports only" 를 명시한다.
   부류). 가둬 두고 `Loader` 로 늦게 켜면 최악이 '탭이 비어 있음'으로 끝난다.
 - `Loader` 는 **탭을 처음 열 때** 켜진다 — 앱 시작 때 타일을 받으러 나가지 않는다.
 - 좌표칸은 지도가 주 입력인데도 남겨 뒀다 — **오프라인에서 타일이 안 뜰 때 유일한 폴백**이다.
+
+### ⚠️핀은 `MapView` 의 자식으로 선언하면 안 보인다
+
+`MapView` 는 `Map` 을 감싼 **평범한 `Item`** 이다. 그 안에 적은 `MapQuickItem` 은 그 Item 의
+자식으로 들어갈 뿐 **지도의 `mapItems` 에 등록되지 않는다** — 클릭 좌표는 바뀌는데 핀만 안
+그려진다(실제로 그랬다). `view.map.addMapItem(pinItem)` 으로 등록한다(`mapItems` 0 → 1 확인).
+
+⚠️핀 그림에 **`Canvas` 를 sourceItem 으로 쓰지 않는다** — 지도 아이템은 소스를 텍스처로 굽는데
+Canvas 의 첫 paint 가 그보다 늦어 빈 텍스처가 남을 수 있다. `Rectangle` 도형으로 그린다.
+
+### ⚠️파이썬의 `None` 은 QML 에서 `undefined` 다
+
+`gpsAlt`(`QVariant`, 고도 없음 = `None`)를 QML 에서 `!== null` 로만 검사했다가
+`toFixed of undefined` 로 터졌다. 더 조용한 쪽이 문제다: **`JSON.stringify` 는 값이
+`undefined` 인 키를 통째로 버려서** 사이드카·undo 스냅샷에서 `gpsAlt` 가 소리 없이 사라진다.
+`win.gpsAltOrNull()` / 패널의 `photoAlt` 로 정규화해 쓴다.
 
 ### ⚠️셀렉터 레일의 인덱스 함정
 
