@@ -140,15 +140,18 @@ Flickable {
         RowLayout {
             Layout.fillWidth: true
             spacing: 8
-            B.TextField {
+            DarkTextField {
                 id: searchField
                 objectName: "gpsSearchField"
                 Layout.fillWidth: true
                 enabled: mapLoader.status === Loader.Ready && !root.searching
-                font.pixelSize: 12
                 placeholderText: "Search a place"
+                clearable: true                  // 탐색기 캡션 검색바와 같은 ✕
                 onAccepted: root.runSearch()
-                Keys.onEscapePressed: { root.searchResults = []; focus = false }
+                // ✕ 는 입력만 비우는 게 아니라 **결과 목록과 안내문까지** 치운다 — 검색 상태를
+                // 통째로 되돌리는 버튼이라야 "지웠는데 결과가 남아 있다"가 안 생긴다.
+                onCleared: { root.searchResults = []; root.searchNote = "" }
+                onEscaped: { root.searchResults = []; searchField.input.focus = false }
             }
             DarkButton {
                 text: "Go"
@@ -245,6 +248,36 @@ Flickable {
                 }
             }
 
+            // ── 시야를 핀으로 되돌리기 ──
+            // 지도를 끌어 옮기면 핀이 화면 밖으로 나갈 수 있는데, `recenter()` 는 사진을 열거나
+            // 탭에 들어올 때만 불려서 **손으로 되돌릴 방법이 없었다**(지도 중심을 좌표에
+            // 바인딩하지 않는 것은 의도다 — 클릭마다 화면이 튀지 않게 하려고, LocationMap 주석).
+            // ⚠️패널 세로 공간을 안 쓰도록 지도 위에 얹는다(패널 폭 300px · 지도 높이 260 고정).
+            Rectangle {
+                anchors.right: parent.right; anchors.top: parent.top
+                anchors.margins: 8
+                width: 26; height: 26; radius: 5
+                visible: mapLoader.status === Loader.Ready && root.hasDraft
+                color: recenterHover.hovered ? "#3a3f4b" : "#232323cc"
+                border.color: "#555"; border.width: 1
+                Text {
+                    anchors.centerIn: parent
+                    text: "⌖"                     // 조준점 — '여기로 돌아오기'
+                    color: "#d8d8d8"; font.pixelSize: 15
+                }
+                HoverHandler { id: recenterHover }
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: if (mapLoader.item) mapLoader.item.recenter()
+                }
+                ToolTip.visible: recenterHover.hovered
+                ToolTip.delay: 400
+                ToolTip.text: root.draftDiffers
+                              ? "Back to the pin you are placing"
+                              : "Back to this photo's location"
+            }
+
             // QtLocation 이 없는 빌드에서도 앱은 살아 있다 — 여기만 비고 좌표칸은 그대로 쓴다.
             B.Label {
                 anchors.centerIn: parent
@@ -278,16 +311,15 @@ Flickable {
                 text: "Lat"; color: "#9a9a9a"; font.pixelSize: 11
                 Layout.preferredWidth: 26
             }
-            B.TextField {
+            DarkTextField {
                 id: latField
                 objectName: "gpsLatField"
                 Layout.fillWidth: true
                 enabled: root.enabledForPhoto
-                font.pixelSize: 12
                 placeholderText: "37.566500"
                 text: root.hasDraft ? root.draftLat.toFixed(6) : ""
-                onAccepted: { root.commitFields(); focus = false }
-                Keys.onEscapePressed: focus = false
+                onAccepted: { root.commitFields(); latField.input.focus = false }
+                onEscaped: latField.input.focus = false
                 // ⚠️인라인 `text:` 바인딩은 첫 사용자 편집에서 끊긴다 → 초안이 바뀌면 다시 맞춘다.
                 Connections {
                     target: root
@@ -296,7 +328,7 @@ Flickable {
                 }
                 function resync() {
                     var v = root.hasDraft ? root.draftLat.toFixed(6) : ""
-                    if (!latField.activeFocus && latField.text !== v) latField.text = v
+                    if (!latField.input.activeFocus && latField.text !== v) latField.text = v
                 }
             }
         }
@@ -307,16 +339,15 @@ Flickable {
                 text: "Lon"; color: "#9a9a9a"; font.pixelSize: 11
                 Layout.preferredWidth: 26
             }
-            B.TextField {
+            DarkTextField {
                 id: lonField
                 objectName: "gpsLonField"
                 Layout.fillWidth: true
                 enabled: root.enabledForPhoto
-                font.pixelSize: 12
                 placeholderText: "126.978000"
                 text: root.hasDraft ? root.draftLon.toFixed(6) : ""
-                onAccepted: { root.commitFields(); focus = false }
-                Keys.onEscapePressed: focus = false
+                onAccepted: { root.commitFields(); lonField.input.focus = false }
+                onEscaped: lonField.input.focus = false
                 Connections {
                     target: root
                     function onDraftLonChanged() { lonField.resync() }
@@ -324,7 +355,7 @@ Flickable {
                 }
                 function resync() {
                     var v = root.hasDraft ? root.draftLon.toFixed(6) : ""
-                    if (!lonField.activeFocus && lonField.text !== v) lonField.text = v
+                    if (!lonField.input.activeFocus && lonField.text !== v) lonField.text = v
                 }
             }
         }
