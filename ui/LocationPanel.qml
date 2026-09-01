@@ -377,21 +377,44 @@ Flickable {
         }
 
         // ── 동작 ──
-        // Apply = 초안을 사진에 붙인다 / Revert = 초안을 버리고 사진에 붙어 있던 값으로 되돌린다.
+        // ★두 Apply 는 **범위만 다른 같은 동작**이다(이 사진 / 탐색기에서 체크한 N장).
+        //   예전에는 "Apply to this photo" 와 "Apply to N checked" 를 서로 다른 행에 폭도
+        //   다르게 놓아 **중복 버튼처럼 보이고 배치도 사선으로 어긋났다**(사용자 보고).
+        //   그래서 "Apply to" 를 **그룹 라벨로 올리고 버튼에는 범위만** 남긴다 — 문구 중복이
+        //   사라지고, 둘 다 같은 폭으로 쌓여 정렬이 맞는다.
+        // ⚠️라벨은 섹션 제목(LOCATION/GPX TRACK)이 아니라 **필드 라벨(Lat/Clock)과 같은 급**으로
+        //   둔다 — 같은 굵기로 하면 Location 섹션 안에서 제목이 둘로 보인다.
+        B.Label {
+            text: "Apply to"
+            color: "#9a9a9a"; font.pixelSize: 11
+        }
+        DarkButton {
+            Layout.fillWidth: true
+            text: "This photo"
+            enabled: root.enabledForPhoto && root.hasDraft && root.draftDiffers
+            onClicked: root.applyToPhoto()
+        }
+        DarkButton {
+            Layout.fillWidth: true
+            // 체크가 없으면 숫자를 못 쓰니 문구만 — 비활성이라 눌리지도 않는다.
+            text: root.checkedCount > 0
+                  ? root.checkedCount + " checked photos" : "Checked photos"
+            enabled: root.enabledForPhoto && root.hasDraft && root.checkedCount > 0
+            onClicked: root.applyToCheckedRequested()
+        }
+        // Revert = 초안을 사진에 붙어 있던 값으로 되돌린다 / Clear = 위치 자체를 없앤다.
         // ★⚠️**Revert 가 필요한 이유: 초안 이동은 `Ctrl+Z` 로 못 되돌린다.** 지도 클릭은
         //   사진을 건드리지 않으므로(초안 규율) undo 스냅샷이 쌓이지 않는다 — 위치가 이미
         //   있는 사진에서 지도를 잘못 눌러 핀이 옮겨지면, Revert 가 없으면 **되돌릴 방법이
         //   전혀 없다**(Apply 해서 덮어쓰거나 사진을 넘겼다 오는 것뿐이었다).
+        // ⚠️둘 다 `fillWidth` 로 **정확히 반씩** 나눈다(한쪽만 fill 하면 다시 사선이 된다).
+        //   덜 파괴적인 Revert 를 왼쪽에 둔다.
         RowLayout {
             Layout.fillWidth: true
             spacing: 8
             DarkButton {
                 Layout.fillWidth: true
-                text: "Apply to this photo"
-                enabled: root.enabledForPhoto && root.hasDraft && root.draftDiffers
-                onClicked: root.applyToPhoto()
-            }
-            DarkButton {
+                Layout.preferredWidth: 1     // Clear 와 같은 값 = 남는 공간을 정확히 반씩
                 text: "Revert"
                 // 되돌릴 차이가 있을 때만. 사진에 위치가 없는데 핀만 찍은 경우도 여기 해당하며,
                 // 그때는 `syncDraftFromPhoto` 가 hasDraft 를 false 로 만들어 핀이 사라진다.
@@ -402,11 +425,11 @@ Flickable {
                     if (mapLoader.item && root.hasDraft) mapLoader.item.recenter()
                 }
             }
-        }
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 8
             DarkButton {
+                Layout.fillWidth: true
+                // ⚠️Revert 와 **같아야** 한다 — `fillWidth` 는 implicitWidth 위에 남는 공간을
+                //   나눠 주므로, 글자가 긴 쪽이 넓어진다(실측 Revert 143 / Clear 125).
+                Layout.preferredWidth: 1
                 text: "Clear"
                 enabled: root.enabledForPhoto && (controller.gpsSet || root.hasDraft)
                 onClicked: {
@@ -415,13 +438,6 @@ Flickable {
                     latField.text = ""; lonField.text = ""
                     if (controller.gpsSet) controller.clearGps()
                 }
-            }
-            DarkButton {
-                Layout.fillWidth: true
-                text: root.checkedCount > 0
-                      ? "Apply to " + root.checkedCount + " checked" : "Apply to checked"
-                enabled: root.enabledForPhoto && root.hasDraft && root.checkedCount > 0
-                onClicked: root.applyToCheckedRequested()
             }
         }
 
