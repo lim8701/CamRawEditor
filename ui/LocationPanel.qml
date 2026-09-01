@@ -6,9 +6,11 @@
 //
 // ★위치는 **룩이 아니라 사진별 메타데이터**다 — 레시피(.frpreset)와 룩 복사에는 실리지 않는다.
 //
-// ★⚠️**지도를 클릭해도 사진에 바로 반영하지 않는다.** 클릭이 곧 저장이면 실수로 누른 좌표가
-//   그대로 사이드카에 들어가고 undo 스텝까지 쌓여 혼란스럽다(사용자 보고). 클릭은 **초안**만
+// ★⚠️**지도를 더블클릭해도 사진에 바로 반영하지 않는다.** 그게 곧 저장이면 실수로 누른 좌표가
+//   그대로 사이드카에 들어가고 undo 스텝까지 쌓여 혼란스럽다(사용자 보고). 더블클릭은 **초안**만
 //   바꾸고, `Apply` 를 눌러야 사진에 붙는다.
+// ⚠️핀 지정은 **더블클릭**이다(단일 클릭 아님) — 지도를 훑어보려고 누르기만 해도 핀이 옮겨져
+//   초안이 조용히 바뀌었다. 초안은 `Ctrl+Z` 가 안 닿으므로(아래 Revert 주석) 특히 나빴다.
 // ⚠️QtLocation import 는 `LocationMap.qml` 에 가둬 두고 Loader 로 늦게 켠다(그 파일 주석).
 import QtQuick
 import QtQuick.Controls
@@ -113,6 +115,14 @@ Flickable {
                             "alt": root.draftAlt, "src": root.draftSrc })
     }
 
+    // 초안과 사진의 위치를 모두 없앤다. 확인 대화상자(`clearConfirm`)를 거쳐서만 불린다.
+    function doClear() {
+        root.hasDraft = false
+        root.draftAlt = null; root.draftSrc = ""
+        latField.text = ""; lonField.text = ""
+        if (controller.gpsSet) controller.clearGps()
+    }
+
     ColumnLayout {
         id: col
         width: root.width - 24
@@ -130,8 +140,8 @@ Flickable {
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
             color: "#9a9a9a"; font.pixelSize: 11
-            text: "Click the map to choose a spot, then Apply. The coordinates are written to "
-                  + "exported JPEGs as standard EXIF GPS - the RAW file is never modified."
+            text: "Double-click the map to choose a spot, then Apply. The coordinates are written "
+                  + "to exported JPEGs as standard EXIF GPS - the RAW file is never modified."
         }
 
         // ── 장소 검색 ──
@@ -432,12 +442,9 @@ Flickable {
                 Layout.preferredWidth: 1
                 text: "Clear"
                 enabled: root.enabledForPhoto && (controller.gpsSet || root.hasDraft)
-                onClicked: {
-                    root.hasDraft = false
-                    root.draftAlt = null; root.draftSrc = ""
-                    latField.text = ""; lonField.text = ""
-                    if (controller.gpsSet) controller.clearGps()
-                }
+                // ⚠️바로 지우지 않는다 — 아래 확인 대화상자를 거친다(Revert 와 달리 사진에
+                //   붙은 값을 없애는 동작이라, 오조작이면 되돌리려고 undo 를 찾아야 한다).
+                onClicked: clearConfirm.open()
             }
         }
 
@@ -530,5 +537,102 @@ Flickable {
         if (isNaN(la) || isNaN(lo)) return
         if (la < -90 || la > 90 || lo < -180 || lo > 180) return
         root.setDraft(la, lo, "manual")
+    }
+
+    // ── Clear 확인 ──
+    // 모양은 앱의 다른 확인 대화상자(`Main.qml` 의 `quitDialog`·`aiCpuDialog`)와 같은 컨셉이다:
+    // 어두운 라운드 카드 + 상단 필름 퍼포레이션 + 반씩 나눈 두 버튼.
+    // ⚠️`Overlay.overlay` 에 중앙 정렬한다 — 이 패널이 `Flickable` 안이라 여기에 그리면
+    //   스크롤을 따라 움직이고 폭 300px 에 갇힌다.
+    Popup {
+        id: clearConfirm
+        objectName: "clearConfirm"   // 헤드리스 확인용(패널의 다른 objectName 과 같은 목적)
+        modal: true
+        dim: true
+        width: 380
+        padding: 0
+        anchors.centerIn: Overlay.overlay
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Overlay.modal: Rectangle { color: "#000000"; opacity: 0.55 }
+        background: Rectangle {
+            color: "#232325"; radius: 16
+            border.color: "#3d3d40"; border.width: 1
+        }
+
+        // 사진에 이미 붙어 있던 값을 지우는가(= 되돌리려면 undo 가 필요) / 초안만 버리는가.
+        readonly property bool removesApplied: controller.gpsSet
+
+        contentItem: ColumnLayout {
+            spacing: 0
+            FilmStrip {
+                Layout.fillWidth: true
+                Layout.leftMargin: 16; Layout.rightMargin: 16
+                Layout.preferredHeight: 26
+            }
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.margins: 24
+                spacing: 12
+
+                B.Label {
+                    text: clearConfirm.removesApplied ? "Remove this photo's location?"
+                                                      : "Discard the pin?"
+                    color: "#f2f2f2"; font.pixelSize: 18; font.bold: true
+                    Layout.alignment: Qt.AlignHCenter
+                }
+                B.Label {
+                    // ★GPS 는 `editParams()` 에 들어가므로 undo 스냅샷에 실린다 — 지운 뒤에도
+                    //   Ctrl+Z 로 돌아온다(확인함). 초안만 버리는 경우는 애초에 사진이 안 바뀐다.
+                    text: clearConfirm.removesApplied
+                          ? "The location is removed from this photo and will not be written to "
+                            + "exports. Ctrl+Z brings it back."
+                          : "The pin you placed is discarded. This photo has no location saved, "
+                            + "so nothing on it changes."
+                    color: "#9a9a9a"; font.pixelSize: 13
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 8
+                    spacing: 12
+                    Rectangle {                      // Cancel
+                        Layout.fillWidth: true; Layout.preferredWidth: 0
+                        Layout.preferredHeight: 40; radius: 8
+                        color: ccCancel.containsMouse ? "#3a3a3d" : "#2e2e31"
+                        border.color: "#55555a"; border.width: 1
+                        B.Label {
+                            anchors.centerIn: parent; text: "Cancel"
+                            color: "#e6e6e6"; font.pixelSize: 13
+                        }
+                        MouseArea {
+                            id: ccCancel
+                            anchors.fill: parent; hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: clearConfirm.close()
+                        }
+                    }
+                    Rectangle {                      // 확인 — 지우는 쪽이라 붉은 기운
+                        Layout.fillWidth: true; Layout.preferredWidth: 0
+                        Layout.preferredHeight: 40; radius: 8
+                        color: ccOk.containsMouse ? "#8a3b3b" : "#6f3030"
+                        border.color: "#a24a4a"; border.width: 1
+                        B.Label {
+                            anchors.centerIn: parent
+                            text: clearConfirm.removesApplied ? "Remove" : "Discard"
+                            color: "#f2f2f2"; font.pixelSize: 13; font.bold: true
+                        }
+                        MouseArea {
+                            id: ccOk
+                            anchors.fill: parent; hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: { root.doClear(); clearConfirm.close() }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

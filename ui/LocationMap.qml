@@ -141,9 +141,14 @@ Item {
         map.plugin: osmPlugin
         map.zoomLevel: 13
 
-        // 클릭 = 그 지점으로 핀. MapView 가 드래그/휠을 이미 쓰므로 탭만 받는다.
+        // **더블클릭** = 그 지점으로 핀. MapView 가 드래그/휠을 이미 쓰므로 탭만 받는다.
+        // ★⚠️단일 클릭이었을 때 지도를 보려고 누르기만 해도 핀이 옮겨졌다 — 위치가 이미
+        //   붙은 사진에서 특히 위험했다(초안이 조용히 바뀌고, 초안은 Ctrl+Z 가 안 닿는다).
+        //   지도에서 '누르기 = 이동/훑어보기', '더블클릭 = 여기로 지정' 이 일반적인 규약이다.
+        // ⚠️`MapView` 는 더블탭에 기본 동작이 없다(DragHandler·WheelHandler·PinchHandler 뿐) —
+        //   그래서 확대와 충돌하지 않는다.
         TapHandler {
-            onTapped: function (evt, btn) {
+            onDoubleTapped: function (evt, btn) {
                 var c = view.map.toCoordinate(evt.position)
                 if (c.isValid) root.picked(c.latitude, c.longitude)
             }

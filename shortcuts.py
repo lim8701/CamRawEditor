@@ -95,6 +95,11 @@ MOUSE = [
         ("Double-click", "Open a photo"),
         ("Click",        "In the contact sheet, select without opening"),
     ]),
+    ("Location map", [
+        ("Double-click", "Put the pin here (press Apply to attach it to the photo)"),
+        ("Drag",         "Move the map"),
+        ("Wheel",        "Zoom in or out"),
+    ]),
     ("Tone curve", [
         ("Click",              "Add a point"),
         ("Drag",               "Move a point"),
