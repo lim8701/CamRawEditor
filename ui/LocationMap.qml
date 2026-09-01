@@ -18,18 +18,63 @@ Item {
     property bool hasPin: false
     signal picked(real lat, real lon)
 
+    // 타일 소스. ★⚠️**Qt 의 기본 설정을 쓰면 안 된다** — Qt 의 OSM 플러그인은 시작 시
+    // `maps-redirect.qt.io` 에 제공자를 물어보는데, 실측 결과 **`street` 를 포함한 전 타입이
+    // Thunderforest 로 리디렉트된다**(키가 필요한 상용 서비스). 키 없는 요청은 IP 단위로
+    // 허용량이 있고, 넘으면 지도 대신 **"API Key Required" 워터마크 타일**이 온다(사용자 보고).
+    //   → 리디렉트를 끄고(`providersrepository.disabled`) OSM 본 서버를 직접 지정한다.
+    // ⚠️하드코딩 폴백 제공자(Street Map 등)도 그대로 남아 있으므로 **`activeMapType` 을
+    //   Custom URL Map 으로 직접 바꿔야 한다**(`useCustomTiles`). 안 그러면 여전히 Thunderforest 다.
+    // 타일 서버를 바꿔 끼우는 자리(생성 시점에만 유효 — 플러그인 파라미터라 나중에 바꿔도
+    // 반영되지 않는다). OSM 본 서버는 **가벼운 사용**을 전제로 한 공용 자원이라, 사용자가
+    // 늘면 자기 키를 쓰는 제공자(Thunderforest·MapTiler 등)로 갈아 끼우는 것이 정도다.
+    property string tileHost: "https://tile.openstreetmap.org/"
+
     Plugin {
         id: osmPlugin
         name: "osm"
         // ⚠️**식별 가능한 User-Agent 는 선택이 아니다** — OSM 타일 사용 정책이 요구한다.
         //   Qt 기본값("Qt Location based application")으로 배포하면 정책 위반이고
-        //   타일 서버가 차단할 수 있다.
+        //   타일 서버가 차단할 수 있다. (실측: 이 값이 실제 타일 요청 헤더로 나간다.)
         // ⚠️`controller` 가 아직/이미 없는 순간에 바인딩이 재평가되면 TypeError 가 난다(실측:
         //   컴포넌트 파괴 시점). 폴백을 둔다 — UA 는 비면 안 되고 버전은 부가 정보다.
         PluginParameter {
             name: "osm.useragent"
             value: "FilmRawstery/" + (controller ? controller.appVersion : "")
+                   + " (+https://github.com/lim8701/FilmRawstery)"
         }
+        PluginParameter { name: "osm.mapping.providersrepository.disabled"; value: true }
+        PluginParameter { name: "osm.mapping.custom.host"; value: root.tileHost }
+        PluginParameter {
+            name: "osm.mapping.custom.mapcopyright"
+            value: "© <a href='https://www.openstreetmap.org/copyright'>OpenStreetMap</a> contributors"
+        }
+        PluginParameter {
+            name: "osm.mapping.custom.datacopyright"
+            value: "© <a href='https://www.openstreetmap.org/copyright'>OpenStreetMap</a> contributors"
+        }
+        // ★⚠️**앱 전용 캐시 폴더를 쓴다.** Qt 기본 캐시에는 리디렉트 시절 받은
+        //   "API Key Required" 워터마크 타일이 그대로 저장돼 있어, 타일 소스를 고쳐도
+        //   **계속 그 그림이 보인다**(실측: 캐시를 지우기 전에는 요청이 0건이었다).
+        PluginParameter {
+            name: "osm.mapping.cache.directory"
+            value: controller ? controller.mapCacheDir : ""
+        }
+        // 사진 위치를 고르는 용도라 이 정도면 넉넉하다(무한히 커지지 않게 상한을 둔다).
+        PluginParameter { name: "osm.mapping.cache.disk.size"; value: 20971520 }   // 20 MiB
+    }
+
+    // Custom URL Map 을 활성 타입으로 만든다. ⚠️`supportedMapTypes` 는 **비동기로 채워지므로**
+    //   완료 시점과 변경 시점 양쪽에서 시도해야 한다(한 번만 부르면 놓친다).
+    function useCustomTiles() {
+        var ts = view.map.supportedMapTypes
+        for (var i = 0; i < ts.length; i++) {
+            if (ts[i].style === MapType.CustomMap) {
+                if (view.map.activeMapType !== ts[i]) view.map.activeMapType = ts[i]
+                return true
+            }
+        }
+        return false
     }
 
     // ---------- 장소 검색(지오코딩) ----------
@@ -132,7 +177,20 @@ Item {
             }
         }
     }
-    Component.onCompleted: { view.map.addMapItem(pinItem); root.recenter() }
+    // ⚠️`supportedMapTypes` 는 **비동기로 채워진다** — 완료 시점에 한 번만 부르면 목록이
+    //   아직 비어 있어 놓친다(실측: 타일 요청 0건). 목록이 바뀔 때마다 다시 시도한다.
+    //   ⚠️`map.onSupportedMapTypesChanged:` 같은 점 표기 시그널 핸들러는 **조용히 안 걸린다**
+    //     (경고도 안 난다) — `Connections` 로 명시할 것.
+    Connections {
+        target: view.map
+        function onSupportedMapTypesChanged() { root.useCustomTiles() }
+    }
+
+    Component.onCompleted: {
+        view.map.addMapItem(pinItem)
+        root.useCustomTiles()
+        root.recenter()
+    }
 
     // 타일은 온라인이라야 온다 — 안 뜨는 상황을 침묵으로 두지 않는다(좌표칸이 폴백).
     B.Label {

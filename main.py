@@ -3460,6 +3460,23 @@ class Controller(QObject):
     gpsSrc = Property(str, _get_gps_src, notify=gpsChanged)
     gpsText = Property(str, _get_gps_text, notify=gpsChanged)
 
+    def _get_map_cache_dir(self) -> str:
+        """지도 타일 디스크 캐시 폴더(QML `osm.mapping.cache.directory` 로 넘긴다).
+
+        ★**Qt 기본 캐시를 쓰면 안 된다.** Qt 의 OSM 플러그인은 제공자 목록을
+        `maps-redirect.qt.io` 에서 받는데 그게 **`street` 까지 Thunderforest 로 넘긴다** —
+        키 없는 요청은 허용량을 넘으면 **"API Key Required" 워터마크 타일**이 오고, 그게
+        `~/Library/Caches/QtLocation`(Windows 는 로컬 캐시)에 **그대로 저장된다.**
+        타일 소스를 OSM 본 서버로 바꿔도 그 캐시가 살아 있으면 계속 그 그림이 보인다(실측).
+        앱 전용 폴더를 쓰면 그 오염된 캐시를 아예 읽지 않는다.
+        """
+        import app_dirs
+        d = app_dirs.user_data_path(os.path.join("cache", "maptiles"))
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    mapCacheDir = Property(str, _get_map_cache_dir, constant=True)
+
     @staticmethod
     def _gps_tuple(g):
         """`{lat, lon, alt}` 스러운 것 -> `(lat, lon, alt|None)`. 좌표가 못 쓸 값이면 None.

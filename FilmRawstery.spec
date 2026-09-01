@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import PySide6                     # Qt 설치 경로(지도 QML 모듈/플러그인 수집)
+from PySide6.QtCore import QLibraryInfo
 from PyInstaller.utils.hooks import collect_data_files, collect_all
 
 CONSOLE = False
@@ -41,14 +42,23 @@ datas += [
 # ⚠️`excludes` 에서 빼는 것만으로는 부족하다 — QML 모듈과 geoservices 플러그인은 **데이터**라
 #   파이썬 import 탐지에 안 걸린다. 빠지면 배포본에서만 지도가 빈다(소스 실행은 멀쩡).
 #   `Qt.labs.animation` 은 QtLocation 의 `MapView.qml` 이 import 한다.
-_qt_root = os.path.join(os.path.dirname(PySide6.__file__), "Qt")
-for _rel in (os.path.join("qml", "QtLocation"),
-             os.path.join("qml", "QtPositioning"),
-             os.path.join("qml", "Qt", "labs", "animation"),
-             os.path.join("plugins", "geoservices")):
-    _src = os.path.join(_qt_root, _rel)
+# ★⚠️**경로를 `PySide6/Qt/...` 로 박지 말 것 — 그건 macOS/Linux 레이아웃이다.**
+#   Windows 휠은 `PySide6/qml`·`PySide6/plugins` 로 **중간 `Qt/` 가 없어서**, 박아 두면
+#   `isdir` 이 False 가 되어 **아무 말 없이 하나도 수집하지 않는다**(윈도우 배포본만 지도가 빈다).
+#   `QLibraryInfo` 로 실제 경로를 얻고, 목적지는 PySide6 패키지 기준 **상대경로 그대로** 쓴다.
+_pkg = os.path.dirname(PySide6.__file__)
+_qml_dir = QLibraryInfo.path(QLibraryInfo.LibraryPath.QmlImportsPath)
+_plug_dir = QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath)
+for _base, _sub in ((_qml_dir, os.path.join("QtLocation",)),
+                    (_qml_dir, "QtPositioning"),
+                    (_qml_dir, os.path.join("Qt", "labs", "animation")),
+                    (_plug_dir, "geoservices")):
+    _sub = os.path.join(*_sub) if isinstance(_sub, tuple) else _sub
+    _src = os.path.join(_base, _sub)
     if os.path.isdir(_src):
-        datas.append((_src, os.path.join("PySide6", "Qt", _rel)))
+        datas.append((_src, os.path.join("PySide6", os.path.relpath(_base, _pkg), _sub)))
+    else:
+        raise SystemExit(f"[spec] 지도 데이터를 못 찾음: {_src} — Location 탭이 빈 채로 배포된다")
 
 # --- LUT: ARR(Stuart Sowerby) 흑백 LUT 는 재배포 금지 → 번들에서 제외 ---
 _ARR_LUTS = {"acros.cube", "acros_g.cube", "acros_r.cube", "acros_ye.cube",

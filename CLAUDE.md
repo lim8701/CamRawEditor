@@ -297,7 +297,12 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   함정 — 디코드 전이라 빠져나온 사진에 새 좌표가 저장된다). 알림은 `_on_render_ready` 에서.
   ⚠️`import QtLocation` 은 **`ui/LocationMap.qml` 한 파일에 가둔다**(Main.qml 에 두면 모듈이 빠진
   배포본에서 앱이 통째로 안 뜬다). ⚠️패키징은 excludes 해제만으로 부족 — QML 모듈·geoservices
-  플러그인을 `datas` 에 명시해야 한다. 상세는 `docs/geotagging.md`
+  플러그인을 `datas` 에 명시해야 하고, **경로를 `PySide6/Qt/...` 로 박으면 Windows 에서 조용히
+  누락된다**(윈도우 휠은 중간 `Qt/` 가 없다 → `QLibraryInfo` 사용).
+  ★⚠️**타일은 Qt 기본 설정을 쓰면 안 된다** — `maps-redirect.qt.io` 가 `street` 까지
+  Thunderforest 로 넘겨 "API Key Required" 워터마크가 뜬다. 리디렉트를 끄고 OSM 본 서버를
+  `Custom URL Map` 으로 직접 지정하며, **앱 전용 타일 캐시**를 쓴다(Qt 기본 캐시에 워터마크
+  타일이 남아 고쳐도 계속 보인다). 상세는 `docs/geotagging.md`
 - **컨택트 시트**(빈 캔버스의 폴더 격자): **클릭=선택 / 더블클릭=열기**(탐색기와 같은 규칙),
   선택 상태는 탐색기 `currentIndex` 에서 **파생**한다(진실원 하나). 뜨는 규칙은 **두 줄뿐** —
   `G`(또는 경로 표시줄 ▦)로 켜고 끄며, 아직 사진을 안 열었으면 켜져 있다. ⚠️**조건을 늘리지

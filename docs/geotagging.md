@@ -160,6 +160,55 @@ Canvas 의 첫 paint 가 그보다 늦어 빈 텍스처가 남을 수 있다. `R
 (StackLayout 페이지 번호는 5로 고정인데). → 모델 각 항목에 **명시적 `panel:` 필드**를 넣고
 `modelData.panel` 로 판정/대입한다.
 
+## 타일 소스 — ★Qt 기본 설정을 쓰면 "API Key Required" 가 뜬다
+
+Qt 의 OSM 플러그인은 시작할 때 `maps-redirect.qt.io` 에 제공자를 물어본다. **실측 결과 전 타입이
+Thunderforest 로 리디렉트된다** — `street` 도 마찬가지다:
+
+```
+$ curl -sL http://maps-redirect.qt.io/osm/5.8/street
+{ "UrlTemplate" : "http://a.tile.thunderforest.com/atlas/%z/%x/%y.png", ... }
+```
+
+Thunderforest 는 키가 필요한 상용 서비스이고, 키 없는 요청은 **IP 단위 허용량**이 있다. 넘으면
+지도 대신 **"API Key Required" 워터마크 타일**이 온다(사용자 보고). 그래서:
+
+```qml
+PluginParameter { name: "osm.mapping.providersrepository.disabled"; value: true }
+PluginParameter { name: "osm.mapping.custom.host"; value: "https://tile.openstreetmap.org/" }
+```
+
+⚠️**리디렉트를 껐다고 끝이 아니다.** 하드코딩 폴백 제공자(Street Map 등)가 그대로 남아 있고
+`activeMapType` 은 여전히 그쪽이다 → **`Custom URL Map`(style 100)으로 직접 바꿔야 한다**
+(`useCustomTiles()`).
+
+⚠️`supportedMapTypes` 는 **비동기로 채워진다.** `Component.onCompleted` 에서 한 번만 부르면
+목록이 비어 있어 놓친다(실측: 타일 요청 0건). 그리고 **`map.onSupportedMapTypesChanged:` 같은
+점 표기 시그널 핸들러는 조용히 안 걸린다**(경고도 안 난다) — `Connections` 로 명시할 것.
+
+★⚠️**타일 디스크 캐시가 문제를 살려 둔다.** 리디렉트 시절 받은 워터마크 타일이
+`~/Library/Caches/QtLocation`(Windows 는 로컬 캐시)에 저장돼 있어, 타일 소스를 고쳐도 계속 그
+그림이 보인다 — 고친 뒤 **네트워크 요청이 0건**이었던 것이 그 증거다. **앱 전용 캐시 폴더**
+(`osm.mapping.cache.directory` = `controller.mapCacheDir`)를 써서 오염된 캐시를 아예 읽지 않는다.
+상한 20 MiB.
+
+### 실측(로컬 타일 서버로 확인)
+
+`tileHost` 만 로컬 서버로 돌려 실제 `LocationMap.qml` 이 보내는 요청을 받아 봤다:
+
+```
+GET /13/6985/3171.png
+UA: FilmRawstery/1.11.1 (+https://github.com/lim8701/FilmRawstery)
+```
+
+정확한 `{z}/{x}/{y}` 경로와 **우리 User-Agent** 가 나가고, 앱 캐시 폴더에 파일이 쌓인다.
+
+### OSM 본 서버를 쓰는 것에 대해
+
+OSM 타일 서버는 **가벼운 사용**을 전제로 한 공용 자원이다. 사진 한 장에 지도를 몇 번 보는
+용도는 그 범위지만, **사용자가 늘면 자기 키를 쓰는 제공자로 갈아 끼우는 것이 정도다.**
+`LocationMap.qml` 의 `tileHost` 가 그 자리다(플러그인 파라미터라 **생성 시점에만** 유효).
+
 ## 네트워크·프라이버시
 
 - ★⚠️**OSM 타일 정책은 식별 가능한 User-Agent 를 요구한다.** Qt 기본값
@@ -178,6 +227,11 @@ Canvas 의 첫 paint 가 그보다 늦어 빈 텍스처가 남을 수 있다. `R
   탐지에 안 걸린다. `qml/QtLocation` · `qml/QtPositioning` · `qml/Qt/labs/animation`
   (`MapView.qml` 이 import 한다) · `plugins/geoservices` 를 `datas` 에 명시했다.
   빠지면 **소스 실행은 멀쩡하고 배포본에서만** 지도가 빈다.
+- ★⚠️**경로를 `PySide6/Qt/...` 로 박지 말 것 — 그건 macOS/Linux 레이아웃이다.** Windows 휠은
+  `PySide6/qml`·`PySide6/plugins` 로 **중간 `Qt/` 가 없다.** 박아 두면 `isdir` 이 False 가 되어
+  **아무 말 없이 하나도 수집하지 않고**, 윈도우 배포본만 지도가 빈다. `QLibraryInfo` 로 실제
+  경로를 얻고 목적지는 PySide6 패키지 기준 상대경로를 그대로 쓴다. 못 찾으면 **빌드를 세운다**
+  (조용히 빠지는 것이 최악이다).
 - 실측 데이터 1.29MB + Qt 프레임워크(QtLocation 3.2M / QtPositioning 1.1M /
   QtPositioningQuick 0.7M) ≈ **6MB**. .app 457MB 대비 무시할 수준이다.
   ⚠️218MB 짜리는 **QtWebEngine** 이고 여기서 쓰지 않는다.
