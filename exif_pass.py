@@ -36,6 +36,15 @@ _DROP_IFD0 = {0x0111, 0x0117, 0x0144, 0x0145, 0x014A, 0x0201, 0x0202}
 # ExifIFD 에서 버릴 태그 — Interop IFD 는 값어치 대비 복잡도가 커서 뺀다(문서 '태그 정책').
 _DROP_EXIF = {_INTEROP_IFD}
 
+# ★MakerNote 를 실어도 되는 제조사 서명(블록 머리). **화이트리스트다** — 재직렬화가 blob 의
+# 절대 위치를 바꾸므로, 내부 오프셋이 **자기 블록 기준**인 형식만 안전하다.
+#   후지: `FUJIFILM` + 바이트 8~11 = 자기 기준 IFD 오프셋(12). 실측 63/63 태그 값까지 동일.
+# ⚠️**캐논은 깨진다** — EOS R6 JPEG 실측 114개 중 **39개만 일치**(TIFF 헤더 기준 오프셋이라
+#   옮기면 값이 엉뚱한 곳을 가리킨다). 태그 수는 그대로라 **개수만 세면 못 잡는다.**
+# ⚠️조용히 틀린 메타데이터는 없는 것보다 나쁘다 → **측정으로 확인된 것만 싣는다.**
+#   다른 제조사를 추가하려면 먼저 `docs/exif_passthrough.md` 의 대조 실측을 통과시킬 것.
+_MAKERNOTE_SAFE = (b"FUJIFILM",)
+
 _APP1_MAX_PAYLOAD = 65533         # FFE1 <len> 의 len 은 자기 자신 2B 를 포함한다
 
 
@@ -195,7 +204,8 @@ def build_app1(parsed, *, software="", when="", width=0, height=0,
     try:
         ifd0 = [e for e in parsed["ifd0"]
                 if e[0] not in _DROP_IFD0 and e[0] not in (_EXIF_IFD, _GPS_IFD)]
-        exif = [e for e in parsed["exif"] if e[0] not in _DROP_EXIF]
+        exif = [e for e in parsed["exif"] if e[0] not in _DROP_EXIF
+                and (e[0] != _MAKERNOTE or e[3].startswith(_MAKERNOTE_SAFE))]
 
         # --- 원본 Software(카메라 펌웨어)를 ProcessingSoftware 로 옮긴다 ---
         # ⚠️`dcraw ...` 는 카메라가 아니라 LibRaw 가 프리뷰를 뽑으며 쓴 값이라 옮기지 않는다
@@ -223,6 +233,12 @@ def build_app1(parsed, *, software="", when="", width=0, height=0,
         elif keep_gps:
             gps_ent = list(parsed["gps"])
         else:
+            gps_ent = []
+        # ⚠️**좌표가 없는 GPS IFD 는 통째로 버린다.** 여러 바디가 위치를 못 받았을 때도
+        #   `GPSVersionID`(0x0000) 하나뿐인 껍데기를 써 넣는다 — 실측: 보유 사진 427장 중
+        #   121장(Canon EOS R6 전량)이 이 상태다. 그대로 실으면 좌표 없는 빈 IFD ~30 B 가
+        #   export 마다 붙는데 어떤 리더에도 의미가 없다. 판정 기준은 `GPSLatitude`(0x0002).
+        if not any(t == 0x0002 for t, _, _, _ in gps_ent):
             gps_ent = []
 
         if exif:
