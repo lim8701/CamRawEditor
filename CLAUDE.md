@@ -446,7 +446,11 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   macOS 는 IOKit 어서션(`_mac_keep_awake`) — **시스템만 잡고 디스플레이는 안 잡는다**(화면이
   꺼져도 export 가 계속 돈다). ⚠️`caffeinate` 자식 프로세스 금지 — 어서션은 프로세스 귀속이라
   강제 종료돼도 커널이 회수하지만 자식은 살아남아 절전을 영영 막는다.
-- 16bit TIFF 미지원(QImage 8bit). 필요 시 tifffile/imageio 추가.
+- **16bit PNG/TIFF 지원됨**(`save_image` 의 `uint16` → `RGBX64` 경로). 실측: 4096계조 램프를
+  `.tif` 로 저장 후 되읽어 **비트 동일**(8bit 강등 아님) — `image_loader` 도 16bit 소스를
+  그대로 받아 헤드룸 상한이 3.834 로 올라간다. ⚠️**JPEG 은 Qt 가 8bit 로 자동 강등**하고,
+  **TIFF 에는 현상 크레딧이 안 남는다**(Qt TIFF 핸들러가 `setText` 를 조용히 버린다).
+  ⚠️16bit 는 **CPU export 전용**이다(GPU export 는 8bit grab).
 
 ## macOS 패키징 (.app + DMG)
 
