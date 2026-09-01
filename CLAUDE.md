@@ -163,6 +163,7 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
 | `lut.py` | `.cube` 3D LUT 파서 → 2D 아틀라스(셰이더용) + **사용자 LUT 저장소**(`user:<파일명>`, app_dirs `luts/`). ★사용자 LUT 은 **`simExpEV` 보정을 받지 않는다**(그 보정은 번들 후지 LUT 의 톤커브 이중적용을 상쇄하는 것 — 남의 큐브엔 상쇄할 게 없고 밝기가 룩이다). 게이트가 `main._update_sim_ev` 와 `pipeline.render_full` **두 곳**에 있다. ⚠️**LUT 마다 N 이 다를 수 있다** — 셰이더 `lutSize` 는 `controller.lutSizeFor(key)` 로 키별 N 을 받고, QML 은 텍스처 소스와 **같은 식**(`win.curSimKey`)에서 파생시켜야 한다 |
 | `decode_lock.py` | ★⚠️**Qt 이미지 디코드/인코드(QImageReader/QImageWriter/loadFromData/QImage.save)는 전부 `QT_IMG_LOCK` 안에서** — 파이썬제 QBuffer 를 문 read/write(플러그인 뮤텍스 쥔 채 GIL 재획득)와 GIL 쥔 채 뮤텍스를 기다리는 loadFromData 가 겹치면 **앱 전체 '응답 없음' 교착**(2026-08 py-spy 실측 + 해머 재현, 인덱싱×썸네일에서 발생). 픽셀 연산(convertToFormat/scaled/QImage(numpy))은 무관 — 잡지 말 것 |
 | `exif_info.py` | RAF 임베드 JPEG에서 EXIF 촬영정보 추출(exifread) → 패널/오버레이 |
+| `exif_pass.py` | **원본 EXIF 통과**(export JPEG 한정) — 소스 APP1 을 파싱해 남길 것만 골라 **재직렬화**한다. 쓰기는 `pipeline._ifd_block` 재사용, 이 모듈이 더하는 건 **파서**다. ★⚠️`pipeline` 을 모듈 레벨에서 import 하므로 **`pipeline` 쪽 import 는 반드시 함수 안**(순환 import). ★⚠️**바이트순서를 안 보고 값을 뒤집으면 안 된다** — `II` 소스에서 `0x8769`(ExifIFD 포인터)가 깨져 **서브 IFD 전체(MakerNote 63개 포함)가 조용히 0개**가 됐다(에러 없음). ⚠️MakerNote 는 UNDEFINED blob 그대로 옮긴다 — **후지는 self-relative 라 이동해도 안 깨진다**(실측), 니콘·캐논은 2단계에서 재측정. ⚠️실패하면 None 을 돌려 `_exif_app1` 크레딧 전용으로 폴백 — 메타데이터 때문에 산출물을 깨뜨리지 않는다. 경위·측정·태그 정책은 `docs/exif_passthrough.md` |
 | `haze.py` | 디헤이즈 물리(DCP): 이미지당 투과율 t-맵/대기광 A/신뢰도 conf 추정(numpy 독립) |
 | `mist.py` | 미스트(디퓨전) 산란 모델 `out=(1−k)L+k(P⊗(L·E))` — **프론트엔드 맨 앞**(카메라네이티브 scene-linear = 유저 WB·매트릭스·노출보다 앞이라 산란 필드가 슬라이더와 무관해진다). 프리뷰는 **3단**: CPU 필드 3장 → `mistfield.frag` 합성 → `adjust.frag` 가 그 한 장만 섞는다. ⚠️**미측정 모델**(글레어 문헌의 1/θ² prior — 그레인·디헤이즈와 지위가 다르다). ★⚠️`adjust.frag` 에 **샘플러를 늘리지 말 것** — D3D11 은 스테이지당 16개뿐인데 이미 다 쓴다(늘렸다가 파이프라인 생성 실패로 죽었고 **qsb 컴파일은 통과한다**). 계수·실측·기각 기록은 `docs/mist_filter.md` |
 | `depth.py` | 거리 범위 마스킹(Depth Anything V3 Small ONNX, log-depth 정규화, DirectML 우선) — 상대 거리 맵 → near/far 밴드 마스크. 셰이더/pipeline 무변경(기존 마스크 경로 재사용). `docs/depth_masking.md` |
@@ -422,6 +423,14 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   → `saveGrab` 이 소스 원본 크기에서 기대 치수를 계산해 워커에서 **지오메트리 전에**
   정규화(배율 100% 면 no-op, 동일 객체). ⚠️CPU 점유율 질문(커뮤니티): CPU export 는
   numpy 단일 코어 위주라 12스레드 CPU 에서 8~10% 로 보이는 게 정상 — iGPU 유무와 무관.
+- **원본 EXIF 통과**: `save_image(..., src_path=, keep_gps=)` 가 **JPEG 에만** 원본 EXIF 를
+  재직렬화해 싣는다(`exif_pass.app1_for_export`). 실측 RAF: 태그 **2개 → 115개**, MakerNote
+  63/63, APP1 **3122 B**(소스 65450 B 의 4.8% — 나머지는 썸네일·패딩), 픽셀 비트 동일.
+  ⚠️**소스 경로는 요청 시점 스냅샷**이어야 한다 — CPU 는 `src[0]`, **GPU 는 `_gpu_params["srcPath"]`**
+  (워커가 `self._path` 를 읽으면 export 중 사진을 바꿨을 때 남의 EXIF 가 박힌다).
+  ⚠️Orientation 은 **1 로 고정**(회전을 픽셀에 이미 구웠다 — 안 하면 뷰어가 이중 회전),
+  `0xA002/0xA003` 은 export 치수로, 원본 `Software` 는 `0x000B ProcessingSoftware` 로 옮긴다.
+  ⚠️배경화면 합성은 소스가 3장이라 **통과시키지 않는다**(크레딧만).
 - **지오태그**: 사용자가 붙인 위치가 있으면 **JPEG 에만** EXIF GPS IFD 를 남긴다
   (`pipeline.gps_from_params` → `save_image(..., gps=)`, 호출부는 CPU/GPU export 2곳).
   ⚠️`_exif_app1` 은 **인라인 값 경로**(4B 이하)와 **2-패스 오프셋 레이아웃**이 있어야 GPS IFD 를

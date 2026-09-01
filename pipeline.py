@@ -1085,8 +1085,31 @@ JPEG_EXTS = ("jpg", "jpeg", "jfif")   # ⚠️Qt 가 JPEG 핸들러로 매핑하
                                      #   (jfif 누락 시 그 경로만 Qt 기본 품질 75 로 저장된다)
 
 
-# EXIF/TIFF 값 타입 -> 요소 하나의 바이트 수. 여기 쓰는 것만 둔다.
-_TIFF_TYPE_SIZE = {1: 1, 2: 1, 4: 4, 5: 8}   # BYTE / ASCII / LONG / RATIONAL
+# EXIF/TIFF 값 타입 -> 요소 하나의 바이트 수.
+# ★쓰기(`_ifd_block`)는 payload 길이만 보므로 이 표가 필요 없다. **읽기(`exif_pass.parse_app1`)가
+#   쓴다** — 오프셋에서 값을 떼어내려면 타입 x count 로 바이트 길이를 알아야 한다.
+# ⚠️실측 소스(X100V RAF)에 실제로 나오는 타입은 SHORT 18 / RATIONAL 10 / ASCII 9 /
+#   UNDEFINED 8 / LONG 4 / SRATIONAL 3 이다 — **SHORT 가 최다**인데 예전엔 빠져 있었다.
+#   모르는 타입은 파서가 길이를 못 구해 엔트리를 통째로 버리므로 표를 좁게 두면 조용히 샌다.
+_TIFF_TYPE_SIZE = {
+    1: 1,    # BYTE
+    2: 1,    # ASCII
+    3: 2,    # SHORT
+    4: 4,    # LONG
+    5: 8,    # RATIONAL   (LONG 둘)
+    6: 1,    # SBYTE
+    7: 1,    # UNDEFINED  (MakerNote 가 이것)
+    8: 2,    # SSHORT
+    9: 4,    # SLONG
+    10: 8,   # SRATIONAL  (SLONG 둘)
+    11: 4,   # FLOAT
+    12: 8,   # DOUBLE
+}
+
+# 바이트순서 변환 시 뒤집을 **하위 단위** 크기(0 = 뒤집지 않음).
+# ⚠️RATIONAL/SRATIONAL 은 8바이트지만 **4바이트 둘**(분자/분모)이라 4로 뒤집어야 한다.
+_TIFF_SWAP_UNIT = {1: 0, 2: 0, 6: 0, 7: 0,          # 바이트열 — 순서 개념 없음
+                   3: 2, 8: 2, 4: 4, 9: 4, 11: 4, 5: 4, 10: 4, 12: 8}
 
 
 def _ifd_block(entries, data_off: int, blobs: bytearray) -> bytes:
@@ -1257,7 +1280,7 @@ def _insert_app1(jpeg: bytes, app1: bytes) -> bytes:
     return jpeg[:i] + app1 + jpeg[i:]
 
 
-def save_image(arr, path, software="", gps=None) -> bool:
+def save_image(arr, path, software="", gps=None, src_path="", keep_gps=True) -> bool:
     """(H,W,3) RGB 저장. dtype 으로 비트깊이 결정:
     - uint8  -> RGB888 (jpg/png/tif 8bit)
     - uint16 -> RGBX64 (png/tif 16bit, 알파 없음). jpg 는 8bit 만 가능(Qt 가 자동 강등).
@@ -1271,6 +1294,13 @@ def save_image(arr, path, software="", gps=None) -> bool:
     `gps`: `(lat, lon, alt|None)` 십진 도. 주면 **JPEG 에만** EXIF GPS IFD 를 남긴다
     (사용자가 앱에서 붙인 위치 — 원본 RAW 는 건드리지 않는다). PNG 의 tEXt 와 TIFF 는
     GPS 를 담을 표준 자리가 없어 **의도적으로 뺐다**.
+
+    `src_path`: 원본 사진 경로. 주면 **JPEG 에만** 그 파일의 EXIF 를 통과시킨다
+    (`exif_pass.app1_for_export` — 카메라·렌즈·촬영일·MakerNote). 실패하거나 소스에 APP1 이
+    없으면 **크레딧 전용 APP1 로 조용히 폴백**한다. ⚠️배경화면 합성처럼 소스가 여러 장인
+    호출은 넘기지 않는다(어느 사진의 EXIF 인지 정할 수 없다).
+    `keep_gps`: `gps` 인자가 없을 때 **원본 EXIF 의 GPS 를 통과시킬지**(앱 설정, 기본 ON).
+    ⚠️`gps` 가 있으면 사용자가 붙인 좌표가 항상 이긴다 — 이 값과 무관하다.
 
     **`QImage` 를 그대로 넘겨도 된다** — 배경화면 에디토리얼 합성(`compose_magazine`·
     `compose_index`·`compose_fullbleed`)은 QImage 를 돌려주는데, 그쪽도 품질 95 와 원자적
@@ -1327,12 +1357,26 @@ def save_image(arr, path, software="", gps=None) -> bool:
             # ISO 8601 로컬시. 스펙은 RFC 1123 을 권하지만 그 형식은 월/요일 이름이 로케일에
             # 흔들려(strftime %b/%a) 파일 내용이 기계에 따라 달라진다.
             + _png_text_chunk("Creation Time", now.strftime("%Y-%m-%dT%H:%M:%S")))
-    elif (software or gps) and ext in JPEG_EXTS:
+    elif (software or gps or src_path) and ext in JPEG_EXTS:
         # ⚠️`gps` 만 있고 `software` 가 빈 호출도 성립한다 — 그때 `now` 는 None 이다.
-        data = _insert_app1(bytes(data),
-                            _exif_app1(software,
-                                       now.strftime("%Y:%m:%d %H:%M:%S") if now else "",
-                                       gps))
+        when = now.strftime("%Y:%m:%d %H:%M:%S") if now else ""
+        app1 = None
+        if src_path:
+            # 원본 EXIF 통과(`exif_pass`) — 실패하면 None 이라 아래 크레딧 전용으로 폴백한다.
+            # ★⚠️**import 는 반드시 함수 안에 둔다** — `exif_pass` 가 모듈 레벨에서 `pipeline`
+            #   을 import 하므로(`_ifd_block`/`_gps_entries` 를 쓴다) 여기를 모듈 레벨로 올리면
+            #   순환 import 가 된다.
+            # ⚠️여기서 예외가 새면 export 전체가 죽는다. exif_pass 는 자체적으로 다 삼키지만
+            #   import 실패(배포본에서 spec 누락 등)까지 막으려고 한 겹 더 감싼다.
+            try:
+                import exif_pass
+                app1 = exif_pass.app1_for_export(
+                    src_path, software=software, when=when,
+                    width=img.width(), height=img.height(),
+                    gps=gps, keep_gps=keep_gps)
+            except Exception:
+                app1 = None
+        data = _insert_app1(bytes(data), app1 or _exif_app1(software, when, gps))
     # 임시 파일 → os.replace 로 원자적 교체(같은 디렉터리라 항상 동일 볼륨).
     # ⚠️대상 파일을 다른 프로그램이 열고 있으면 Windows 에서 replace 가 막힌다
     #   (실측 PermissionError WinError 5 — 뷰어로 결과를 열어둔 채 재export 하는 흔한 흐름).

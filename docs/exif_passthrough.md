@@ -1,7 +1,32 @@
-# EXIF 메타데이터 통과 — 구현 계획 (미착수)
+# EXIF 메타데이터 통과
 
-> 상태: **계획**. 아직 코드 없음. 착수 전에 아래 '결정이 필요한 것'을 먼저 정할 것.
-> 작성 시점 기준 브랜치: `dev` @ `ea3a658`(지오태깅 머지 직후), 앱 v1.11.1.
+> 상태: **1단계 구현됨**(`exif_pass.py`, v1.11.1). 2·3단계는 계획.
+> 결정된 것: MakerNote **유지** · 원본 GPS **기본 통과 + 끄는 토글** · 원본 Software 를
+> **`0x000B ProcessingSoftware`** 로 보존.
+
+## 구현 결과 (실측, RAF 기준)
+
+| | 이전 | 이후 |
+|---|---|---|
+export JPEG 의 EXIF 태그 | **2개**(Software/DateTime) | **115개** |
+MakerNote | 없음 | **63/63 값까지 동일** |
+APP1 크기 | 90 B | **3122 B**(소스 65450 B 의 4.8%) |
+픽셀 | — | **비트 동일**(변화 없음) |
+
+착지점: `exif_pass.py`(파서 + 빌더) · `pipeline.save_image(..., src_path=, keep_gps=)` ·
+`pipeline._TIFF_TYPE_SIZE`/`_TIFF_SWAP_UNIT` · CPU/GPU export 두 호출부 ·
+Export 옵션의 `Keep original GPS (JPEG)` 체크박스(`prefs.json` 의 `export.keepGps`).
+
+### ★⚠️ 구현 중 실제로 났던 버그 — 바이트순서를 안 보고 뒤집었다
+
+값을 little-endian 으로 정규화하는 함수를 **소스 바이트순서와 무관하게 항상 뒤집도록** 짰다.
+`II`(little) 소스에서 `0x8769`(ExifIFD 포인터)가 뒤집혀 엉뚱한 오프셋이 되고, 파서가 그 자리에서
+IFD 를 못 찾아 **ExifIFD 전체가 조용히 0개**가 됐다 — 예외도 경고도 없고, `MakerNote 63 → 0`,
+`DateTimeOriginal/ISO/조리개 전부 None` 으로만 드러난다. 실측 소스가 전부 `II` 라 **정상 경로에서
+100% 재현**되는데도 "값이 비네" 정도로 보인다. `_to_le` 는 `bo == "<"` 이면 **즉시 반환**한다.
+
+교훈: 통과 기능은 **태그 수를 세는 검증이 필수**다. 파일은 멀쩡히 열리고 픽셀도 맞으므로
+"저장 성공"만 보면 아무 문제가 없어 보인다.
 
 ## 왜 하나
 

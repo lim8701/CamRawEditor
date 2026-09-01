@@ -7545,7 +7545,7 @@ ApplicationWindow {
                         icon: "../assets/icons/chevron_down.svg"
                         Layout.preferredWidth: 26
                         Layout.preferredHeight: exportMainBtn.height   // Export 버튼과 높이 동일하게 고정
-                        tip: "Export options (resolution · render · 16-bit)"
+                        tip: "Export options (resolution · render · 16-bit · GPS)"
                         onClicked: exportOptPopup.opened ? exportOptPopup.close() : exportOptPopup.open()
                         Popup {
                             id: exportOptPopup
@@ -7630,6 +7630,28 @@ ApplicationWindow {
                                     Label {
                                         Layout.fillWidth: true
                                         text: "16-bit (TIFF/PNG · CPU)"
+                                        color: "white"; font.pixelSize: 12
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
+                                }
+                                // 원본 EXIF 의 위치를 내보낼지. ⚠️Location 탭에서 **직접 붙인**
+                                // 좌표는 이 체크와 무관하게 항상 나간다(붙인 것 자체가 의사표시).
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: 6
+                                    CheckBox {
+                                        id: keepGpsCheck
+                                        onToggled: controller.rememberExportOpts({ "keepGps": checked })
+                                        ToolTip.visible: hovered
+                                        ToolTip.text: "Copy the location the camera recorded into exported JPEGs. Turn off to share without revealing where a photo was taken — the rest of the EXIF still goes out. A location you set yourself in the Location tab is always written."
+                                    }
+                                    // 기억된 값 재푸시(인라인 checked 바인딩은 첫 클릭에 파괴된다)
+                                    Binding {
+                                        target: keepGpsCheck; property: "checked"
+                                        value: controller.exportKeepGps
+                                    }
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: "Keep original GPS (JPEG)"
                                         color: "white"; font.pixelSize: 12
                                         verticalAlignment: Text.AlignVCenter
                                     }

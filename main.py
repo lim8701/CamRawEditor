@@ -1551,6 +1551,12 @@ class Controller(QObject):
         self._export_edge = self._sane_export_edge(pref_get("export", "lastEdge", 0))
         self._export_render = 1 if str(pref_get("export", "lastRender", 0)) == "1" else 0
         self._export_16bit = str(pref_get("export", "last16Bit", False)).lower() == "true"
+        # 원본 EXIF 의 GPS 를 export 에 실을지. **기본 ON** — 지도 뷰가 동작하려면 필요하고,
+        # 끄는 쪽이 '기능을 포기하는' 선택이라 기본값이 될 수 없다. 끄면 위치만 빠지고 나머지
+        # EXIF(카메라·렌즈·촬영일)는 그대로 나간다.
+        # ⚠️사용자가 Location 탭에서 **직접 붙인** 좌표는 이 설정과 무관하게 항상 나간다
+        #   (붙이는 행위 자체가 의사표시다 — `exif_pass.build_app1` 의 우선순위).
+        self._export_keep_gps = str(pref_get("export", "keepGps", True)).lower() != "false"
         # 마지막으로 저장한 폴더(없거나 사라졌으면 원본 폴더로 폴백)
         self._export_folder = str(pref_get("export", "lastFolder", "") or "")
         # 배경화면 설정은 레지스트리가 아니라 사용자 데이터 폴더의 JSON(_wall_prefs).
@@ -2652,9 +2658,13 @@ class Controller(QObject):
     def _get_export_16bit(self) -> bool:
         return self._export_16bit
 
+    def _get_export_keep_gps(self) -> bool:
+        return self._export_keep_gps
+
     exportEdge = Property(int, _get_export_edge, notify=exportOptsChanged)
     exportRender = Property(int, _get_export_render, notify=exportOptsChanged)
     export16Bit = Property(bool, _get_export_16bit, notify=exportOptsChanged)
+    exportKeepGps = Property(bool, _get_export_keep_gps, notify=exportOptsChanged)
 
     @Slot("QVariantMap")
     def rememberExportOpts(self, opts: dict) -> None:  # noqa: N802 (QML 슬롯)
@@ -2678,6 +2688,12 @@ class Controller(QObject):
             if v != self._export_16bit:
                 self._export_16bit = v
                 pref_set("export", "last16Bit", "true" if v else "false")
+                changed = True
+        if "keepGps" in o:
+            v = bool(o["keepGps"])
+            if v != self._export_keep_gps:
+                self._export_keep_gps = v
+                pref_set("export", "keepGps", "true" if v else "false")
                 changed = True
         if changed:
             self.exportOptsChanged.emit()
@@ -2801,8 +2817,11 @@ class Controller(QObject):
             import pipeline
             arr = self._render_array(params, src, sky_masks, haze)
             # 지오태그는 픽셀과 무관한 메타데이터라 렌더가 아니라 저장 단계에서 실린다(JPEG 만).
+            # ⚠️`src[0]` = 요청 시점 스냅샷 경로. 워커에서 `self._path` 를 읽으면 export 중에
+            #   다른 사진을 열었을 때 **남의 EXIF 가 박힌다**(WB·경로 스냅샷과 같은 이유).
             ok = pipeline.save_image(arr, path, EXPORT_SOFTWARE,
-                                     gps=pipeline.gps_from_params(params))
+                                     gps=pipeline.gps_from_params(params),
+                                     src_path=src[0], keep_gps=self._export_keep_gps)
             msg = f"Saved: {path}" if ok else f"Save failed: {path}"
         except Exception as exc:
             msg = f"Failed: {exc}"
@@ -3129,6 +3148,10 @@ class Controller(QObject):
         self._gpu_path = file_url.toLocalFile()
         self._remember_export_ext(self._gpu_path)   # CPU 경로와 동일(exportImage 참조)
         self._gpu_params = {k: params[k] for k in params}
+        # ★소스 경로 스냅샷 — EXIF 통과(`exif_pass`)가 워커에서 쓴다. **요청 시점**에 떠야
+        #   한다: 워커가 `self._path` 를 읽으면 export 중 다른 사진을 열었을 때 남의 EXIF 가
+        #   박힌다. CPU export 는 `src` 튜플로 같은 스냅샷을 이미 갖고 있다.
+        self._gpu_params["srcPath"] = self._path
         self._exporting = True
         self._apply_keep_awake(True)
         self._export_progress = 0.0   # GPU 는 진행률 콜백 없음 → 0 유지(오버레이는 인디터미닛 표시)
@@ -3268,8 +3291,13 @@ class Controller(QObject):
                 if s > 0.4:
                     x = gaussian_filter(x, (s, s, 0.0))
                 arr = np.clip(zoom(x, (f, f, 1.0), order=1) + 0.5, 0, 255).astype(np.uint8)
+            # ⚠️소스 경로는 `params`(= `_gpu_params` 사본)에서 읽는다 — GPU export 는 CPU 와
+            #   **다른 dict** 를 보므로 `exportImageGpu` 가 요청 시점에 `srcPath` 를 넣어 둔다.
+            #   CLAUDE.md 가 "가장 잘 빠진다"고 적은 경로가 여기다.
             ok = pipeline.save_image(arr, path, EXPORT_SOFTWARE,
-                                     gps=pipeline.gps_from_params(params))
+                                     gps=pipeline.gps_from_params(params),
+                                     src_path=str(params.get("srcPath", "") or ""),
+                                     keep_gps=self._export_keep_gps)
             msg = f"Saved: {path}" if ok else f"Save failed: {path}"
         except Exception as exc:
             msg = f"Failed: {exc}"
