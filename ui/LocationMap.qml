@@ -60,8 +60,11 @@ Item {
             name: "osm.mapping.cache.directory"
             value: controller ? controller.mapCacheDir : ""
         }
-        // 사진 위치를 고르는 용도라 이 정도면 넉넉하다(무한히 커지지 않게 상한을 둔다).
-        PluginParameter { name: "osm.mapping.cache.disk.size"; value: 20971520 }   // 20 MiB
+        // 캐시를 크게 잡는 이유는 용량이 아니라 **남의 서버를 덜 두드리기 위해서**다.
+        // OSM 본 서버는 가벼운 사용을 전제로 한 공용 자원이라(위 tileHost 주석), 자주 다니는
+        // 지역을 재요청하지 않는 것이 그대로 정책 준수다. 실측 타일 ~29KB → 200MiB ≈ 7,000장,
+        // 20MiB 시절의 ~700장에서 10배. 디스크만 쓰고 부작용은 없다.
+        PluginParameter { name: "osm.mapping.cache.disk.size"; value: 209715200 }   // 200 MiB
     }
 
     // Custom URL Map 을 활성 타입으로 만든다. ⚠️`supportedMapTypes` 는 **비동기로 채워지므로**
