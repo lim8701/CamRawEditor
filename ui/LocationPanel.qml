@@ -40,6 +40,31 @@ Flickable {
         return (a === undefined || a === null) ? null : a
     }
 
+    // ---------- 장소 검색 ----------
+    // 지도 컴포넌트(QtLocation)가 질의를 맡고, 여기는 결과만 받아 그린다.
+    property var searchResults: []
+    property string searchNote: ""
+    property bool searching: false
+
+    function runSearch() {
+        if (!mapLoader.item) return
+        var q = searchField.text.trim()
+        if (q === "") return
+        root.searchResults = []
+        root.searchNote = "Searching..."
+        root.searching = true
+        mapLoader.item.search(q)
+    }
+
+    // 결과를 고르면 **시야를 옮기고 초안도 그 자리로** 둔다. 저장은 여전히 Apply 를 눌러야
+    // 일어나므로(위 초안 규율) 잘못 고른 결과가 사진에 남지 않는다.
+    function pickResult(r) {
+        if (mapLoader.item) mapLoader.item.goTo(r.lat, r.lon)
+        root.setDraft(r.lat, r.lon, "search")
+        root.searchResults = []
+        root.searchNote = ""
+    }
+
     // ---------- 초안(draft) ----------
     // 지도 클릭·좌표 입력이 바꾸는 값. 사진에 붙은 값(controller.gps*)과는 **별개**이고,
     // `Apply` 를 눌러야 넘어간다. 사진을 넘기면 새 사진의 값으로 다시 맞춰진다(초안 폐기).
@@ -109,6 +134,69 @@ Flickable {
                   + "exported JPEGs as standard EXIF GPS - the RAW file is never modified."
         }
 
+        // ── 장소 검색 ──
+        // ⚠️Enter/Go 로만 질의한다 — Nominatim 정책이 초당 1회 이하를 요구하므로 타건마다
+        //   부르는 자동완성은 쓰지 않는다(LocationMap.qml 주석).
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+            B.TextField {
+                id: searchField
+                objectName: "gpsSearchField"
+                Layout.fillWidth: true
+                enabled: mapLoader.status === Loader.Ready && !root.searching
+                font.pixelSize: 12
+                placeholderText: "Search a place"
+                onAccepted: root.runSearch()
+                Keys.onEscapePressed: { root.searchResults = []; focus = false }
+            }
+            DarkButton {
+                text: "Go"
+                enabled: mapLoader.status === Loader.Ready && !root.searching
+                         && searchField.text.trim() !== ""
+                onClicked: root.runSearch()
+            }
+        }
+        B.Label {
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+            visible: root.searchNote !== ""
+            color: "#9a9a9a"; font.pixelSize: 10
+            text: root.searchNote
+        }
+        // 결과 — 고르면 지도가 그리로 가고 초안 핀이 놓인다(저장은 Apply 를 눌러야 한다).
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 2
+            visible: root.searchResults.length > 0
+            Repeater {
+                model: root.searchResults
+                delegate: Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: resLabel.implicitHeight + 10
+                    radius: 3
+                    color: resMouse.containsMouse ? "#3a3f4b" : "#333"
+                    B.Label {
+                        id: resLabel
+                        anchors.fill: parent
+                        anchors.margins: 5
+                        text: modelData.label
+                        color: "#d8d8d8"; font.pixelSize: 10
+                        wrapMode: Text.WordWrap
+                        maximumLineCount: 2
+                        elide: Text.ElideRight
+                    }
+                    MouseArea {
+                        id: resMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.pickResult(modelData)
+                    }
+                }
+            }
+        }
+
         // ── 지도 ──
         Rectangle {
             Layout.fillWidth: true
@@ -131,6 +219,12 @@ Flickable {
                     item.lon = Qt.binding(function () { return root.draftLon })
                     item.hasPin = Qt.binding(function () { return root.hasDraft })
                     item.picked.connect(function (la, lo) { root.setDraft(la, lo, "map") })
+                    item.searchDone.connect(function (n) {
+                        root.searching = false
+                        root.searchResults = (n > 0) ? item.results : []
+                        root.searchNote = (n < 0) ? ("Search failed: " + item.searchError)
+                                                  : (n === 0 ? "Nothing found." : "")
+                    })
                     item.recenter()
                 }
             }

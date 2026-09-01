@@ -32,6 +32,54 @@ Item {
         }
     }
 
+    // ---------- 장소 검색(지오코딩) ----------
+    // ★번들 OSM 플러그인의 `GeocodeModel` = Nominatim. **새 의존성이 없다.**
+    // ⚠️Nominatim 사용 정책은 식별 가능한 User-Agent(위 `osm.useragent`)와 **초당 1회 이하**를
+    //   요구한다 → 질의는 **Enter/버튼으로만** 한다. 타건마다 부르는 자동완성은 정책 위반이다.
+    property int searchStatus: GeocodeModel.Null
+    property string searchError: ""
+    property var results: []
+    signal searchDone(int count)      // -1 = 오류
+
+    GeocodeModel {
+        id: geo
+        plugin: osmPlugin
+        autoUpdate: false
+        limit: 6
+        onStatusChanged: {
+            root.searchStatus = status
+            if (status === GeocodeModel.Ready) {
+                var a = []
+                for (var i = 0; i < count; i++) {
+                    var loc = geo.get(i)
+                    a.push({ "label": loc.address.text,
+                             "lat": loc.coordinate.latitude,
+                             "lon": loc.coordinate.longitude })
+                }
+                root.results = a
+                root.searchError = ""
+                root.searchDone(a.length)
+            } else if (status === GeocodeModel.Error) {
+                root.results = []
+                root.searchError = geo.errorString
+                root.searchDone(-1)
+            }
+        }
+    }
+
+    function search(text) {
+        var q = String(text).trim()
+        if (q === "") return
+        root.results = []
+        geo.query = q
+        geo.update()
+    }
+
+    // 검색 결과로 시야를 옮긴다(핀은 호출부가 따로 정한다 — 시야와 핀은 다른 동작이다).
+    function goTo(la, lo) {
+        view.map.center = QtPositioning.coordinate(la, lo)
+    }
+
     // 지도를 핀 위치로 옮긴다 — **명시적 호출로만** 한다(사진을 열 때, 탭에 들어올 때).
     // ★⚠️`map.center` 를 좌표에 **바인딩하지 말 것** — 클릭할 때마다 지도가 핀을 가운데로
     //   끌어와 화면이 튄다(사용자 보고). 핀을 찍는 것과 시야를 옮기는 것은 다른 동작이다.
