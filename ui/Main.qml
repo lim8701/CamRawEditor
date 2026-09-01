@@ -227,6 +227,7 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+3"; enabled: !win._keysBlocked; onActivated: win.activePanel = 2 }
     Shortcut { sequence: "Ctrl+4"; enabled: !win._keysBlocked; onActivated: win.activePanel = 3 }
     Shortcut { sequence: "Ctrl+5"; enabled: controller.wallpaperEnabled && !win._keysBlocked; onActivated: win.activePanel = 4 }
+    Shortcut { sequence: "Ctrl+6"; enabled: !win._keysBlocked; onActivated: win.activePanel = 5 }
 
     // 디스플레이 색관리(프리뷰 전용 sRGB→모니터 색역 보정) 토글.
     Shortcut { sequence: "Ctrl+Shift+M"; enabled: !win._keysBlocked; onActivated: win.displayCM = !win.displayCM }
@@ -1082,7 +1083,14 @@ ApplicationWindow {
             "flipH": flipHBtn.checked, "flipV": flipVBtn.checked,
             "aspectIndex": aspectCombo.currentIndex, "cropLandscape": cropLandscapeBtn.checked,
             "cropX": win.cropX, "cropY": win.cropY, "cropW": win.cropW, "cropH": win.cropH,
-            "geoV": geoVSlider.value, "geoH": geoHSlider.value, "geoScale": geoScaleSlider.value
+            "geoV": geoVSlider.value, "geoH": geoHSlider.value, "geoScale": geoScaleSlider.value,
+            // 지오태그 — 룩이 아니라 사진별 메타데이터(크롭·스탬프 텍스트와 같은 등급).
+            // ⚠️위치가 없어도 **키를 빼지 않고 null 을 넣는다** — 키가 없으면 다음 로드에서
+            //   `_load` 가 파일의 EXIF GPS 로 폴백해 사용자가 지운 위치가 되살아난다.
+            "gpsLat": controller.gpsSet ? controller.gpsLat : null,
+            "gpsLon": controller.gpsSet ? controller.gpsLon : null,
+            "gpsAlt": controller.gpsSet ? controller.gpsAlt : null,
+            "gpsSrc": controller.gpsSrc
         }
         // 마스킹(선택 클래스 + 로컬 조정) 병합. 마스크 픽셀은 저장 안 함 — 로드 시 클래스로 재생성.
         var sk = win.skyEditParams()
@@ -1196,6 +1204,12 @@ ApplicationWindow {
         win.setCropRect(_ev(p,"cropX",0.0), _ev(p,"cropY",0.0), _ev(p,"cropW",1.0), _ev(p,"cropH",1.0))
         geoVSlider.value = _ev(p, "geoV", 0); geoHSlider.value = _ev(p, "geoH", 0)
         geoScaleSlider.value = _ev(p, "geoScale", 100)
+        // 지오태그 복원 — 룩이 아니므로 `lookDef` 가 아니라 **리터럴 폴백**이고,
+        // 컨트롤러 소유 값이라 **대입이 아니라 슬롯을 직접 부른다**(스탬프 텍스트와 같은 규율).
+        var _glat = _ev(p, "gpsLat", null), _glon = _ev(p, "gpsLon", null)
+        if (_glat === null || _glon === null) controller.clearGps()
+        else controller.setGps({ "lat": _glat, "lon": _glon,
+                                 "alt": _ev(p, "gpsAlt", null), "src": _ev(p, "gpsSrc", "") })
         win.applySkyEdits(p, fastMasks === true)   // 마스킹 복원 — fast 는 undo/redo 한정
     }
 
@@ -1291,6 +1305,7 @@ ApplicationWindow {
         controller.setAutoExposure(true)
         curveEditor.resetAll()
         win.resetGeometry()
+        controller.clearGps()        // 위치도 사진별 값 — Reset 은 비운다(촬영 EXIF 복귀는 로드 경로의 몫)
         win.resetSky()
     }
 
@@ -1326,7 +1341,8 @@ ApplicationWindow {
     // (date stamp + geometry. WB·Tint 는 excludeWb 일 때 추가 제외)
     readonly property var _copyExclude: ["dateStamp", "stampText",
         "quarterTurns", "rotateAngle", "flipH", "flipV", "aspectIndex", "cropLandscape",
-        "cropX", "cropY", "cropW", "cropH", "geoV", "geoH", "geoScale"]
+        "cropX", "cropY", "cropW", "cropH", "geoV", "geoH", "geoScale",
+        "gpsLat", "gpsLon", "gpsAlt", "gpsSrc"]
     function copyEdits(excludeWb) {
         if (controller.imagePath === "") return
         var snap = JSON.parse(JSON.stringify(win.editParams()))
@@ -2057,6 +2073,7 @@ ApplicationWindow {
         aspectCombo.currentIndex, cropLandscapeBtn.checked,
         win.cropX, win.cropY, win.cropW, win.cropH,
         geoVSlider.value, geoHSlider.value, geoScaleSlider.value,
+        controller.gpsSet, controller.gpsLat, controller.gpsLon, controller.gpsAlt,
         JSON.stringify(win.skyEditParams())   // 마스킹 값 변경 추적(함수 내부 프로퍼티 읽기까지 추적됨)
     ]
     onEditSaveWatchChanged: win.scheduleSave()
@@ -2108,7 +2125,12 @@ ApplicationWindow {
             "flipH": flipHBtn.checked, "flipV": flipVBtn.checked,
             "quarterTurns": win.quarterTurns, "rotateAngle": rotAngleSlider.value,
             "cropX": win.cropX, "cropY": win.cropY, "cropW": win.cropW, "cropH": win.cropH,
-            "geoV": geoVSlider.value, "geoH": geoHSlider.value, "geoScalePct": geoScaleSlider.value
+            "geoV": geoVSlider.value, "geoH": geoHSlider.value, "geoScalePct": geoScaleSlider.value,
+            // 지오태그(픽셀 무관) — `pipeline.save_image` 가 JPEG EXIF 로만 남긴다.
+            // ★여기가 CPU/GPU export 공용 단일 출처라 한 곳이면 두 경로가 다 덮인다.
+            "gpsLat": controller.gpsSet ? controller.gpsLat : null,
+            "gpsLon": controller.gpsSet ? controller.gpsLon : null,
+            "gpsAlt": controller.gpsSet ? controller.gpsAlt : null
         }
         // 하늘(로컬) 조정 병합 — CPU render_full 이 보관된 마스크(controller._sky_mask)와 함께 적용.
         var sk = win.skyEditParams()
@@ -4010,6 +4032,39 @@ ApplicationWindow {
         defaultSuffix: "frpreset"
         property string sourceFile: ""
         onAccepted: controller.exportPreset(presetExportDialog.sourceFile, selectedFile)
+    }
+
+    // ---------- 지오태그(Location 패널) ----------
+    // 위치는 **룩이 아니라 사진별 메타데이터**다 — 레시피에도, 룩 복사에도 실리지 않는다.
+    property var gpxPanel: null          // 요청한 LocationPanel(오프셋·상태를 주고받는다)
+
+    // 체크된 사진 전부에 지금 위치를 적용. 사이드카에 직접 쓴다(그 사진들은 로드돼 있지 않다).
+    // ⚠️**지금 열려 있는 사진은 컨트롤러가 건너뛴다** — 디스크만 고치면 다음 자동저장이 덮는다.
+    //   이 사진은 이미 그 값을 갖고 있으므로(적용의 출처다) 따로 할 일이 없다.
+    function applyGpsToChecked() {
+        if (!controller.gpsSet) return
+        var q = Object.keys(win.batchChecked).sort()
+        if (q.length === 0) return
+        var n = controller.applyGpsToPaths(q, { "lat": controller.gpsLat, "lon": controller.gpsLon,
+                                                "alt": controller.gpsAlt, "src": controller.gpsSrc })
+        if (win.gpxPanel) win.gpxPanel.gpxStatus = "Location written to " + n + " photo(s)."
+    }
+
+    FileDialog {
+        id: gpxDialog
+        title: "Load GPX track"
+        fileMode: FileDialog.OpenFile
+        nameFilters: ["GPX track (*.gpx)", "All files (*)"]
+        onAccepted: {
+            var q = Object.keys(win.batchChecked).sort()
+            var r = controller.applyGpxToPaths(q, selectedFile,
+                                               win.gpxPanel ? win.gpxPanel.utcOffsetSec : 0)
+            if (win.gpxPanel)
+                win.gpxPanel.gpxStatus = r.error !== ""
+                    ? r.error
+                    : (r.matched + " matched, " + r.unmatched
+                       + " outside the track (left untouched).")
+        }
     }
 
     FileDialog {
@@ -11531,6 +11586,18 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                             }
                         }
                     }
+
+                    // ===== index 5: Location (지오태그 — 사진에 붙일 위치) =====
+                    LocationPanel {
+                        id: locationPanel
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        checkedCount: win.batchCheckedCount
+                        panelActive: win.activePanel === 5
+                        onApplyToCheckedRequested: win.applyGpsToChecked()
+                        // ⚠️신호 핸들러 안의 `this` 는 신뢰할 수 없다 — id 로 잡는다.
+                        onLoadGpxRequested: { win.gpxPanel = locationPanel; gpxDialog.open() }
+                    }
                 }   // end StackLayout
             }       // end 우측 패널 outer ColumnLayout
         }           // end 우측 패널 Rectangle
@@ -11550,30 +11617,34 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                 Repeater {
                     // Wallpaper 는 개인용 기능 — .env 플래그(controller.wallpaperEnabled, 시작 시 고정)
                     // 가 켜졌을 때만 항목 노출. 릴리즈 빌드는 .env 미포함이라 자동 숨김.
+                    // ★`panel` 은 **StackLayout 페이지 번호**다. Repeater 의 `index` 를 쓰면
+                    //   조건부인 Wallpaper 때문에 뒤 항목의 번호가 밀린다(Wallpaper 가 꺼지면
+                    //   Location 이 5 가 아니라 4 가 된다). 항목마다 명시해 둔다.
                     model: {
                         var m = [
-                            { icon: "edit", tip: "Edit", key: "Ctrl+1" },
-                            { icon: "crop", tip: "Crop / Rotate / Geometry", key: "Ctrl+2" },
-                            { icon: "mask", tip: "Masking", key: "Ctrl+3" },
-                            { icon: "stamp", tip: "Date Stamp", key: "Ctrl+4" }
+                            { icon: "edit", tip: "Edit", key: "Ctrl+1", panel: 0 },
+                            { icon: "crop", tip: "Crop / Rotate / Geometry", key: "Ctrl+2", panel: 1 },
+                            { icon: "mask", tip: "Masking", key: "Ctrl+3", panel: 2 },
+                            { icon: "stamp", tip: "Date Stamp", key: "Ctrl+4", panel: 3 }
                         ]
                         if (controller.wallpaperEnabled)
-                            m.push({ icon: "wall", tip: "Wallpaper", key: "Ctrl+5" })
+                            m.push({ icon: "wall", tip: "Wallpaper", key: "Ctrl+5", panel: 4 })
+                        m.push({ icon: "gps", tip: "Location", key: "Ctrl+6", panel: 5 })
                         return m
                     }
                     delegate: Rectangle {
                         width: 40; height: 40
                         radius: 6
-                        color: win.activePanel === index ? "#3a4a6b"
+                        color: win.activePanel === modelData.panel ? "#3a4a6b"
                                : (selMouse.containsMouse ? "#33373f" : "transparent")
-                        border.width: win.activePanel === index ? 1 : 0
+                        border.width: win.activePanel === modelData.panel ? 1 : 0
                         border.color: "#8ab4f8"
 
                         // 기능 아이콘(편집=연필, 크롭=크롭 브래킷). 활성=accent, 비활성=회색.
                         Canvas {
                             anchors.fill: parent
                             property string ic: modelData.icon
-                            property color col: win.activePanel === index ? "#8ab4f8"
+                            property color col: win.activePanel === modelData.panel ? "#8ab4f8"
                                                 : (selMouse.containsMouse ? "#e6e6e6" : "#cfcfcf")
                             onColChanged: requestPaint()
                             onPaint: {
@@ -11631,6 +11702,16 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                     ctx.stroke()
                                     seg7(o + 6.0,  o + 7.5, 5.5, 9, "1101101")   // 2
                                     seg7(o + 15.0, o + 7.5, 5.5, 9, "1011111")   // 6
+                                } else if (ic === "gps") {
+                                    // 위치 = 지도 핀(물방울 외곽 + 가운데 구멍). 24px 에서
+                                    // 읽히도록 구멍은 채우지 않고 뚫어 둔다.
+                                    ctx.lineWidth = 1.8
+                                    var px = o + 12, py = o + 9, r = 6.2
+                                    ctx.beginPath()
+                                    ctx.arc(px, py, r, Math.PI * 0.82, Math.PI * 0.18)
+                                    ctx.lineTo(px, o + 22)
+                                    ctx.closePath(); ctx.stroke()
+                                    ctx.beginPath(); ctx.arc(px, py, 2.2, 0, 2 * Math.PI); ctx.stroke()
                                 } else if (ic === "wall") {
                                     // 배경화면: 세로 패널 3개(트립틱)
                                     ctx.fillRect(o + 3, o + 4, 5, 16)
@@ -11649,7 +11730,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                             anchors.fill: parent
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: win.activePanel = index
+                            onClicked: win.activePanel = modelData.panel
                         }
                         ToolTip.visible: selMouse.containsMouse
                         ToolTip.delay: 1500

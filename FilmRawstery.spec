@@ -5,6 +5,7 @@
 import os
 import re
 import sys
+import PySide6                     # Qt 설치 경로(지도 QML 모듈/플러그인 수집)
 from PyInstaller.utils.hooks import collect_data_files, collect_all
 
 CONSOLE = False
@@ -22,7 +23,8 @@ BUNDLE_ID = "io.github.lim8701.FilmRawstery"
 # --- QML (개별 명시: 새 .qml 추가 시 여기에 등록. 위치: ui/ — frozen 도 lib/ui/ 로 동형) ---
 QML = ["Main.qml", "Splash.qml", "PreviewWindow.qml", "CurveEditor.qml", "FilmStrip.qml",
        "EditedBadge.qml", "DarkButton.qml",
-       "ShortcutHelp.qml", "RawPeekWindow.qml"]
+       "ShortcutHelp.qml", "RawPeekWindow.qml",
+       "LocationPanel.qml", "LocationMap.qml"]
 datas = [(os.path.join("ui", q), "ui") for q in QML]
 datas += [
     ("shaders", "shaders"),   # .frag + 미리 컴파일된 .qsb (frozen 은 런타임 재컴파일 안 함)
@@ -34,6 +36,19 @@ datas += [
     ("NOTICE.txt", "."),
     ("THIRD_PARTY_LICENSES", "THIRD_PARTY_LICENSES"),
 ]
+
+# --- 지도(Location 탭): QtLocation QML 모듈 + OSM geoservices 플러그인 ---
+# ⚠️`excludes` 에서 빼는 것만으로는 부족하다 — QML 모듈과 geoservices 플러그인은 **데이터**라
+#   파이썬 import 탐지에 안 걸린다. 빠지면 배포본에서만 지도가 빈다(소스 실행은 멀쩡).
+#   `Qt.labs.animation` 은 QtLocation 의 `MapView.qml` 이 import 한다.
+_qt_root = os.path.join(os.path.dirname(PySide6.__file__), "Qt")
+for _rel in (os.path.join("qml", "QtLocation"),
+             os.path.join("qml", "QtPositioning"),
+             os.path.join("qml", "Qt", "labs", "animation"),
+             os.path.join("plugins", "geoservices")):
+    _src = os.path.join(_qt_root, _rel)
+    if os.path.isdir(_src):
+        datas.append((_src, os.path.join("PySide6", "Qt", _rel)))
 
 # --- LUT: ARR(Stuart Sowerby) 흑백 LUT 는 재배포 금지 → 번들에서 제외 ---
 _ARR_LUTS = {"acros.cube", "acros_g.cube", "acros_r.cube", "acros_ye.cube",
@@ -75,7 +90,10 @@ excludes = [  # 미사용 Qt 모듈 제거(용량↓). 문제 생기면 먼저 e
     "PySide6.QtCharts", "PySide6.QtDataVisualization", "PySide6.QtGraphs",
     "PySide6.Qt3DCore", "PySide6.Qt3DRender", "PySide6.Qt3DInput", "PySide6.Qt3DLogic",
     "PySide6.Qt3DAnimation", "PySide6.Qt3DExtras", "PySide6.QtPdf", "PySide6.QtPdfWidgets",
-    "PySide6.QtPositioning", "PySide6.QtLocation", "PySide6.QtBluetooth", "PySide6.QtNfc",
+    # ⚠️QtPositioning/QtLocation 은 **제외 금지** — Location 탭(Ctrl+6)의 지도 픽커가 쓴다.
+    #   실측 번들 비용 약 6MB(프레임워크 5.0M + QML 모듈 0.45M + geoservices 플러그인 0.74M).
+    #   빠지면 소스 실행은 되고 **배포본에서만** 지도 Loader 가 Loader.Error 로 빈다.
+    "PySide6.QtBluetooth", "PySide6.QtNfc",
     "PySide6.QtSerialPort", "PySide6.QtSerialBus", "PySide6.QtTest", "PySide6.QtSql",
     "PySide6.QtHelp", "PySide6.QtDesigner", "PySide6.QtScxml", "PySide6.QtSensors",
     "PySide6.QtTextToSpeech", "PySide6.QtRemoteObjects", "PySide6.QtSpatialAudio",

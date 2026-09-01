@@ -281,6 +281,63 @@ def _fmt_date(tag):
     return s.replace(":", "-", 2) if s else None
 
 
+def _gps_deg(tag, ref) -> float:
+    """GPS RATIONAL 3개(도/분/초) + Ref 문자 -> 십진 도. 실패 시 None.
+    ⚠️EXIF 의 위/경도는 **부호가 없다** — 남반구/서반구는 Ref 가 S/W 로만 표시된다."""
+    try:
+        v = tag.values
+        if len(v) < 2:
+            return None
+        d = _ratio(v[0]) or 0.0
+        m = _ratio(v[1]) or 0.0
+        sec = (_ratio(v[2]) or 0.0) if len(v) > 2 else 0.0
+        deg = d + m / 60.0 + sec / 3600.0
+        return -deg if str(ref).strip().upper() in ("S", "W") else deg
+    except Exception:
+        return None
+
+
+def read_gps(path):
+    """파일에 기록된 EXIF GPS -> `(lat, lon, alt|None)` 십진 도. 없거나 실패 시 None.
+
+    카메라가 남긴 좌표를 **초기값**으로 쓰기 위한 것이다. 앱에서 사용자가 붙인 좌표는
+    사이드카가 갖고 있고 그쪽이 우선한다(Controller 가 병합).
+
+    ⚠️정확히 (0, 0)은 **위치로 보지 않는다** — GPS 필드를 0으로 채워 두는 파일이 흔하고,
+      기니만 앞바다를 찍은 사진일 확률보다 그쪽이 압도적으로 높다.
+    """
+    if exifread is None:
+        return None
+    try:
+        tags = _exif_tags(path)
+    except Exception:
+        return None
+    lat_t, lon_t = tags.get("GPS GPSLatitude"), tags.get("GPS GPSLongitude")
+    if not lat_t or not lon_t:
+        return None
+    lat = _gps_deg(lat_t, tags.get("GPS GPSLatitudeRef") or "N")
+    lon = _gps_deg(lon_t, tags.get("GPS GPSLongitudeRef") or "E")
+    if lat is None or lon is None:
+        return None
+    if abs(lat) < 1e-9 and abs(lon) < 1e-9:
+        return None
+    alt = None
+    alt_t = tags.get("GPS GPSAltitude")
+    if alt_t:
+        a = _ratio(_first(alt_t))
+        if a is not None:
+            try:
+                alt = -a if int(str(_first(tags.get("GPS GPSAltitudeRef")) or 0)) == 1 else a
+            except (TypeError, ValueError):
+                alt = a
+    return (lat, lon, alt)
+
+
+def format_gps(lat, lon) -> str:
+    """좌표 -> 패널/오버레이에 쓰는 한 줄. 소수점 6자리 ~= 0.1m 로 사진 위치엔 과분하다."""
+    return f"{float(lat):.6f}, {float(lon):.6f}"
+
+
 def read_shooting_info(path):
     """RAW 경로 -> (fields, summary).
 

@@ -1173,6 +1173,7 @@ class Controller(QObject):
     loadErrorChanged = Signal()        # 디코드 실패(미지원/손상 RAW) 사용자 안내 갱신 알림
     exportProgressChanged = Signal()   # CPU export 진행률(0..1) 갱신 알림(필름 카운터 오버레이용)
     exifChanged = Signal()      # 촬영정보(EXIF) 갱신 알림
+    gpsChanged = Signal()       # 사진에 붙은 위치(지오태그) 변경 알림
     stampChanged = Signal()     # 날짜 스탬프 **편집값**(텍스트/폰트/크기/색/글로우/영역/회전…) 변경
     stampSpriteChanged = Signal()  # 스프라이트(url·wr·hr·bleed) 갱신 — ⚠️**편집이 아니다**
     #   ⚠️둘을 합치지 말 것. QML `editSaveWatch` 가 스탬프 편집값들을 보고 자동저장을 예약하는데,
@@ -1432,6 +1433,11 @@ class Controller(QObject):
         self._screen_w, self._screen_h = 3840, 2160   # main 의 _refresh_cm 이 실제값으로 갱신
         self._exif_fields = []      # [{"label","value"}, ...] 패널용
         self._exif_summary = ""     # 오버레이용 2줄 요약
+        # 지오태그 — `(lat, lon, alt|None)` 십진 도, 없으면 None. ★**룩이 아니라 사진별
+        # 메타데이터다**(크롭·스탬프 텍스트와 같은 등급): 셰이더 uniform 이 0개고 레시피에도
+        # 안 실린다. 원본 RAW 는 절대 건드리지 않고, 사이드카에 저장돼 export JPEG 로만 나간다.
+        self._gps = None
+        self._gps_src = ""          # "map" / "gpx" / "exif" — 어디서 온 좌표인지(표시용)
         self._stamp_text = ""       # 날짜 스탬프 텍스트 ('YY MM DD)
         self._stamp_url = "image://stamp/s?v=0"
         self._stamp_counter = 0
@@ -2794,7 +2800,9 @@ class Controller(QObject):
         try:
             import pipeline
             arr = self._render_array(params, src, sky_masks, haze)
-            ok = pipeline.save_image(arr, path, EXPORT_SOFTWARE)
+            # 지오태그는 픽셀과 무관한 메타데이터라 렌더가 아니라 저장 단계에서 실린다(JPEG 만).
+            ok = pipeline.save_image(arr, path, EXPORT_SOFTWARE,
+                                     gps=pipeline.gps_from_params(params))
             msg = f"Saved: {path}" if ok else f"Save failed: {path}"
         except Exception as exc:
             msg = f"Failed: {exc}"
@@ -3260,7 +3268,8 @@ class Controller(QObject):
                 if s > 0.4:
                     x = gaussian_filter(x, (s, s, 0.0))
                 arr = np.clip(zoom(x, (f, f, 1.0), order=1) + 0.5, 0, 255).astype(np.uint8)
-            ok = pipeline.save_image(arr, path, EXPORT_SOFTWARE)
+            ok = pipeline.save_image(arr, path, EXPORT_SOFTWARE,
+                                     gps=pipeline.gps_from_params(params))
             msg = f"Saved: {path}" if ok else f"Save failed: {path}"
         except Exception as exc:
             msg = f"Failed: {exc}"
@@ -3420,6 +3429,202 @@ class Controller(QObject):
 
     shootingInfo = Property("QVariantList", _get_exif, notify=exifChanged)
     shootingSummary = Property(str, _get_exif_summary, notify=exifChanged)
+
+    # ---------- 지오태그(사진에 사람이 붙이는 위치) ----------
+    # ★설계의 축: **룩이 아니라 사진별 메타데이터**다. 그래서 `_PRESET_KEYS`/`LOOK_DEFAULTS`
+    #   에 넣지 않고(레시피가 남의 좌표를 옮기면 사고다), 셰이더 uniform 도 만들지 않는다.
+    #   `presets.look_hash` 가 `_PRESET_KEYS` 로 걸러 주므로 룩 지문·레시피 배지도 자동으로 안전하다.
+    def _get_gps_set(self) -> bool:
+        return self._gps is not None
+
+    def _get_gps_lat(self) -> float:
+        return float(self._gps[0]) if self._gps else 0.0
+
+    def _get_gps_lon(self) -> float:
+        return float(self._gps[1]) if self._gps else 0.0
+
+    def _get_gps_alt(self):
+        # ⚠️`QVariant` — 고도는 '없음'이 정상값이라 0.0 으로 뭉개면 안 된다(QML 에서 null).
+        return None if (not self._gps or self._gps[2] is None) else float(self._gps[2])
+
+    def _get_gps_src(self) -> str:
+        return self._gps_src
+
+    def _get_gps_text(self) -> str:
+        return exif_info.format_gps(self._gps[0], self._gps[1]) if self._gps else ""
+
+    gpsSet = Property(bool, _get_gps_set, notify=gpsChanged)
+    gpsLat = Property(float, _get_gps_lat, notify=gpsChanged)
+    gpsLon = Property(float, _get_gps_lon, notify=gpsChanged)
+    gpsAlt = Property("QVariant", _get_gps_alt, notify=gpsChanged)
+    gpsSrc = Property(str, _get_gps_src, notify=gpsChanged)
+    gpsText = Property(str, _get_gps_text, notify=gpsChanged)
+
+    @staticmethod
+    def _gps_tuple(g):
+        """`{lat, lon, alt}` 스러운 것 -> `(lat, lon, alt|None)`. 좌표가 못 쓸 값이면 None.
+        QML dict / 사이드카 dict / 파이썬 tuple 을 모두 같은 규칙으로 받는다."""
+        if g is None:
+            return None
+        try:
+            if isinstance(g, (tuple, list)):
+                lat, lon = float(g[0]), float(g[1])
+                alt = g[2] if len(g) > 2 else None
+            else:
+                lat, lon = float(g["lat"]), float(g["lon"])
+                alt = g.get("alt")
+            if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+                return None
+            return (lat, lon, float(alt) if alt is not None else None)
+        except (TypeError, ValueError, KeyError, IndexError):
+            return None
+
+    def _set_gps(self, gps, src: str) -> None:
+        """내부 갱신 — 값이 같으면 시그널을 쏘지 않는다(자동저장이 헛돌지 않게)."""
+        if self._gps == gps and self._gps_src == src:
+            return
+        self._gps, self._gps_src = gps, src
+        self._refresh_gps_field()
+        self.gpsChanged.emit()
+
+    def _refresh_gps_field(self) -> None:
+        """촬영정보 목록의 'GPS' 행을 지금 붙은 위치로 맞춘다(`I` 오버레이가 이걸 그린다).
+
+        ⚠️`exif_info.read_shooting_info` 는 **파일에 적힌 것**만 안다 — 사용자가 앱에서 붙인
+          위치가 우선이므로 행 관리는 여기서 한다. Date 앞에 끼워 촬영정보 뒤쪽에 붙게 둔다."""
+        self._exif_fields = [f for f in self._exif_fields if f["label"] != "GPS"]
+        if self._gps:
+            row = {"label": "GPS", "value": exif_info.format_gps(self._gps[0], self._gps[1])}
+            i = next((k for k, f in enumerate(self._exif_fields) if f["label"] == "Date"),
+                     len(self._exif_fields))
+            self._exif_fields.insert(i, row)
+        self.exifChanged.emit()
+
+    @Slot("QVariantMap")
+    def setGps(self, g) -> None:  # noqa: N802 (QML 슬롯)
+        """현재 사진의 위치를 설정. `{lat, lon, alt(선택), src(선택)}`.
+        ⚠️사이드카 저장은 QML `editSaveWatch` -> `commitEditSnapshot` 이 맡는다(여기서 안 쓴다)."""
+        gps = self._gps_tuple(g)
+        src = ""
+        try:
+            src = str(g.get("src") or "") if not isinstance(g, (tuple, list)) else ""
+        except Exception:
+            src = ""
+        self._set_gps(gps, src if gps else "")
+
+    @Slot()
+    def clearGps(self) -> None:  # noqa: N802 (QML 슬롯)
+        self._set_gps(None, "")
+
+    @Slot("QVariantList", QUrl, int, result="QVariantMap")
+    def applyGpxToPaths(self, paths, gpx_url, utc_offset_sec):  # noqa: N802 (QML 슬롯)
+        """GPX 트랙을 체크된 사진들의 **촬영시각**에 맞춰 각 사진의 사이드카에 써 넣는다.
+
+        -> `{matched, unmatched, error}`.
+
+        ⚠️**못 맞춘 사진은 건드리지 않는다** — 로거를 껐던 구간이나 다른 날 사진에 엉뚱한
+          좌표가 붙는 것보다 비어 있는 편이 낫다(`gpx.match` 의 tolerance).
+        ⚠️`utc_offset_sec` 는 **카메라 시계의 시간대 + 시계 오차**다. EXIF 촬영시각에는
+          시간대가 없어(gpx.py 모듈 주석) 이 값 없이는 매칭이 성립하지 않는다.
+        ⚠️`applyGpsToPaths` 와 같은 이유로 **지금 열려 있는 사진은 건너뛴다**(디스크만 고치면
+          다음 자동저장이 덮는다) — 그 한 장은 매칭 결과를 `setGps` 로 반영한다.
+        """
+        import gpx as gpx_mod
+        try:
+            track = gpx_mod.parse(gpx_url.toLocalFile() if isinstance(gpx_url, QUrl)
+                                  else str(gpx_url))
+        except Exception as exc:
+            return {"matched": 0, "unmatched": 0, "error": f"Could not read the GPX: {exc}"}
+        if not track:
+            return {"matched": 0, "unmatched": 0,
+                    "error": "That GPX has no track points with timestamps."}
+
+        cur = os.path.normcase(os.path.abspath(self._ui_path)) if self._ui_path else ""
+        matched = unmatched = 0
+        for raw in paths:
+            path = str(raw)
+            if not path:
+                continue
+            try:
+                fields, _ = read_shooting_info(path)
+                date = next((f["value"] for f in fields if f["label"] == "Date"), "")
+                when = gpx_mod.shot_epoch(date, utc_offset_sec)
+                hit = gpx_mod.match(track, when) if when is not None else None
+            except Exception as exc:
+                print(f"[gpx] {path}: {exc}")
+                hit = None
+            if hit is None:
+                unmatched += 1
+                continue
+            if os.path.normcase(os.path.abspath(path)) == cur:
+                self._set_gps(self._gps_tuple(hit), "gpx")   # 열려 있는 사진은 메모리로
+                matched += 1
+                continue
+            if self._write_gps_sidecar(path, self._gps_tuple(hit), "gpx"):
+                matched += 1
+            else:
+                unmatched += 1
+        if matched:
+            self._edit_rev += 1
+            self.editsChanged.emit()
+        return {"matched": matched, "unmatched": unmatched, "error": ""}
+
+    def _write_gps_sidecar(self, path: str, gps, src: str) -> bool:
+        """사이드카의 gps 키만 갈아 끼운다(나머지 편집은 보존). 성공 여부 반환.
+
+        ⚠️`v` 마커를 함께 넣어야 한다 — 없으면 QML `onEditsReady` 가 `e.v === undefined` 로 보고
+          **`resetAllEdits()` 로 떨어져** 방금 쓴 위치가 무시된다.
+        """
+        try:
+            p = Path(path)
+            data = self._read_edits(path)
+            data.setdefault("v", 1)
+            data["gpsLat"] = gps[0] if gps else None
+            data["gpsLon"] = gps[1] if gps else None
+            data["gpsAlt"] = gps[2] if gps else None
+            data["gpsSrc"] = src if gps else ""
+            data["appVersion"] = APP_VERSION
+            d = self._edits_dir(str(p.parent))
+            d.mkdir(parents=True, exist_ok=True)
+            _atomic_write_json(d / f"{p.name}.json", data)
+            # 썸네일 '편집됨' 배지 — 위치도 편집이므로 켜지는 게 맞다(사이드카가 생겼다).
+            if str(p.parent) == self._edited_folder and p.name not in self._edited:
+                self._edited.add(p.name)
+            return True
+        except Exception as exc:
+            print(f"[gps] {path}: {exc}")
+            return False
+
+    @Slot("QVariantList", "QVariantMap", result=int)
+    def applyGpsToPaths(self, paths, g) -> int:  # noqa: N802 (QML 슬롯)
+        """체크한 여러 사진의 **사이드카에 직접** 위치를 써 넣는다. 성공 건수 반환.
+
+        그 사진들은 로드돼 있지 않으므로 QML 편집 파이프라인을 태울 수 없다 — 사이드카를
+        읽어 gps 키만 병합하고 다시 쓴다.
+
+        ⚠️**지금 열려 있는 사진은 건너뛴다** — 여기서 디스크를 고쳐 봐야 메모리 상태가 그대로라
+          다음 자동저장이 방금 쓴 값을 덮는다. 호출부(QML)가 그 한 장은 `setGps` 로 처리한다.
+        ⚠️`v` 마커를 함께 넣어야 한다 — 없으면 QML `onEditsReady` 가 `e.v === undefined` 로 보고
+          **`resetAllEdits()` 로 떨어져** 방금 쓴 위치가 무시된다.
+        """
+        gps = self._gps_tuple(g)
+        src = ""
+        try:
+            src = str(g.get("src") or "")
+        except Exception:
+            pass
+        cur = os.path.normcase(os.path.abspath(self._ui_path)) if self._ui_path else ""
+        n = 0
+        for raw in paths:
+            path = str(raw)
+            if not path or os.path.normcase(os.path.abspath(path)) == cur:
+                continue
+            if self._write_gps_sidecar(path, gps, src):
+                n += 1
+        if n:
+            self._edit_rev += 1
+            self.editsChanged.emit()
+        return n
 
     def _exif_field(self, label: str) -> str:
         """캐시된 촬영정보에서 라벨 하나 — 없으면 빈 문자열.
@@ -4370,6 +4575,24 @@ class Controller(QObject):
         except Exception:
             self._stamp_rot = 0
         self._stamp_text = date_stamp.stamp_text_from_date(self._exif_field("Date"))
+        # 지오태그 — **사이드카 우선, 없으면 파일에 적힌 EXIF GPS**.
+        # ⚠️사이드카에 `gpsLat` 키가 **있으면**(값이 null 이어도) 그것이 답이다 — 사용자가
+        #   일부러 지운 위치가 다음 로드에서 EXIF 로 되살아나면 지우기가 안 먹는 것이 된다.
+        if "gpsLat" in e:
+            self._gps = self._gps_tuple({"lat": e.get("gpsLat"), "lon": e.get("gpsLon"),
+                                         "alt": e.get("gpsAlt")})
+            self._gps_src = str(e.get("gpsSrc") or "") if self._gps else ""
+        else:
+            try:
+                self._gps = exif_info.read_gps(path)      # 카메라가 남긴 좌표(대개 없다)
+            except Exception:
+                self._gps = None
+            self._gps_src = "exif" if self._gps else ""
+        # ⚠️`_refresh_gps_field` 는 exifChanged 만 쏜다 — **여기서 gpsChanged 를 쏘면 안 된다.**
+        #   아래 stampChanged 주석과 같은 함정이다: 아직 디코드 전이라 QML `_ui_path` 는 이전
+        #   사진인데 gps 는 `editSaveWatch` 에 들어 있어, 알리면 **빠져나온 사진에 새 사진의
+        #   좌표가 저장된다.** 알림은 `_on_render_ready` 의 `_ui_path` 확정 뒤로 미룬다.
+        self._refresh_gps_field()      # 촬영정보 목록의 GPS 행(=`I` 오버레이) 갱신
         # ⚠️여기서 stampChanged 를 쏘지 말 것 — 아직 **디코드 전**이라 QML 의 `_ui_path` 는
         #   여전히 **이전 사진**이고 `_applying` 도 꺼져 있다. 알리면 editSaveWatch 가 흔들려
         #   자동저장이 예약되고, 500ms 뒤 **빠져나온 사진에 사이드카가 써진다**(편집을 하나도
@@ -6321,6 +6544,7 @@ class Controller(QObject):
             # 자동저장을 아무도 취소하지 않아 500ms 뒤 불필요한 저장이 한 번 더 돈다.
             # `_ui_path` 확정 **뒤**, `editsReady` **직전**이라 예약돼도 곧바로 취소된다.
             self.stampChanged.emit()
+            self.gpsChanged.emit()   # 지오태그도 같은 이유로 여기서(위 ①② 그대로 적용된다)
             self.editsReady.emit()
             self.captionChanged.emit()   # _ui_path 확정 후 캡션 재평가(사이드카 저장분 표시)
             self._maybe_auto_caption()   # 저장된 캡션 없으면 자동 생성(하단 캡션 패널)
@@ -6394,8 +6618,8 @@ def _load_heavy_modules() -> None:
     global date_stamp, make_luts, read_shooting_info, read_orientation, _read_embedded_jpeg
     global embedded_preview_jpeg
     global wb, atlas_qimage, load_cube, PROXY_HEADROOM, load_full, load_proxy
-    global image_loader
-    import date_stamp, image_loader, make_luts, wb                    # noqa: E401
+    global image_loader, exif_info
+    import date_stamp, exif_info, image_loader, make_luts, wb        # noqa: E401
     from exif_info import (read_shooting_info, read_orientation, _read_embedded_jpeg,
                            embedded_preview_jpeg)
     from lut import atlas_qimage, load_cube

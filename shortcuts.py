@@ -36,6 +36,7 @@ KEYS = [
         ("Ctrl+3", ("Ctrl+3",), "Masking"),
         ("Ctrl+4", ("Ctrl+4",), "Date Stamp"),
         ("Ctrl+5", ("Ctrl+5",), "Wallpaper (when enabled)"),
+        ("Ctrl+6", ("Ctrl+6",), "Location (geotag)"),
     ]),
     ("Masking brush", [
         ("A",      ("A",),      "Paint into the mask"),

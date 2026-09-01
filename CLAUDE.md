@@ -172,6 +172,7 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
 | `raw_peek.py` | **RAW Peek**(`R`) — 디모자이크 **이전** 센서 데이터 뷰(Gray/CFA/Planes 모자이크 + 패턴 유닛·채널 레인 히스토그램·마진 판정 텍스트, Demosaic 전후 비교). 읽기 전용 진단이라 **셰이더 uniform·룩 키가 0개**이고 디코드 경로(`raw_loader`/`pipeline`/`wb`/`shaders`)를 안 건드린다 — ★ 렌더 경로 체크리스트 무관. 그림은 numpy→QImage 로 그려 `RawPeekProvider` 로 넘긴다(`adjust.frag` 샘플러 16/16 이라 셰이더 확장 불가). ⚠️`QT_QPA_PLATFORM=offscreen` 은 폰트 DB 가 비어 라벨이 전부 두부가 된다 — 이 모듈 그림을 헤드리스로 뽑을 때 offscreen 금지. ★**표시 게인 토글**(상단 `Display gain`) — 그림 밝기를 올릴지 정한다. 켜면 `_auto_gain`(p99→0.85, 실측 5~15배)으로 센서값이 보이게 하고, 끄면 **센서가 적어 둔 밝기 그대로**다. **Develop 탭 머리 프레임도 같이 따른다** — 단
 켜면 셰이더 t=0 과의 이음새가 벌어지므로(2.7→48.8코드) 이음새 검증은 끈 상태로 할 것. 캡션이 `display gain x5.2` / `display gain off (as recorded)` 로 어느 쪽인지 밝힌다. ⚠️`mosaic()` 의 전체보기 캐시 키에 이 플래그가 들어가야 한다. ⚠️`@Slot` 서명에도 인자를 더할 것 — 파이썬 쪽에만 더하면 QML 인자가 조용히 버려진다. 실측·함정·마진 판정은 `docs/raw_peek.md` |
 | `develop_anim.py` | **Develop 애니메이션**(RAW Peek 5번째 탭) — RAW 에서 최종까지를 하나의 타임라인으로 재생. 단계 스케줄과 t(0..1) 별 uniform 값의 **단일 진실원**. ★⚠️**슬라이더를 건드리지 않는다** — 사이드카 저장·undo·RAW 재디코드가 발동하므로 스냅샷을 한 번 읽고 네 번째 `adjust.frag` 인스턴스(`pipeAnim`, `Loader` 안)에만 쓴다. ⚠️`pipeAnim` 은 프리뷰 전용 장식이고 **★ 렌더 경로 4중 계약의 일부가 아니다**(export 무영향) — 다만 uniform 을 늘리면 이름 집합이 갈라지므로 `python presets.py` 가 `pipe`/`pipeFull`/`pipeAnim` 세 곳을 대조한다. ⚠️중립이 0 이 아닌 것들이 있다(`contrast`·`camM` 대각·**`skyContrast`**=1, `skyC` 의 invert/hasMask 는 실제값 유지, `autoExpEV`=−autoEV). ⚠️머리 그림(Gray/CFA)은 **선형**(감마 없음)이고 **프록시 방향으로 회전**한다 — 센서 공간 그대로 두면 세로 사진에서 레터박스가 투명하게 남아 뒤가 비친다(flip→회전은 실측 매핑). Gray/CFA 그림은 **요청 크기와 정확히 같아야** 한다(늘려 그리면 1px 격자선이 들쭉날쭉해진다). Gray 는 박스 평균 + **격자선**(값의 반점으로는 "센서가 격자"가 안 읽힌다 — 후보 4개 도판으로 결정), CFA 는 nearest + 같은 격자선. ★**단계 순서의 기준은 `adjust.frag` main() 의 실행 순서**이고 `python develop_anim.py` 가 대조한다(주석 번호는 실행 순서와 다르다). ⚠️움직이는 중에는 **그레인 원판을 끈다**(`devMoving`) — `pipe` 의 드래그 폴백과 같은 정책. ⚠️**주석을 근거로 삼지 말 것** — `adjust.frag` 의 "WB 게인은 커밋되면 1" 을 믿고 WB 단계를 "못 보여준다"고 적어 뒀는데, 디코드가 굽는 것은 TREF 기준뿐이라 평소에도 1이 아니었다(실측 6~25%). ⚠️사이드카의 WB 키는 `kelvin` 이 아니라 **`temp`/`tint`** 다. ⚠️QML 바인딩용 notify 는 값이 **확정되는 지점**에서 쏠 것 — `rawPeekAvailable` 이 `imageChanged`(=`_ui_path` 갱신 전)를 쓰다가 한 장 뒤처져 `R` 과 레일 아이콘이 이전 사진 기준으로 켜져 있었다(게터 직접 호출 검증은 못 잡음). 함정·검증은 `docs/develop_anim.md` |
+| `gpx.py` | GPX 트랙 × 촬영시각 매칭(표준 xml.etree, 의존성 0) — 선형 보간 + 허용오차(120s) 밖은 **매칭 실패로 돌려준다**(엉뚱한 좌표를 붙이지 않는다). ★⚠️**EXIF 촬영시각에는 시간대가 없다** — 호출부가 UTC 오프셋(+시계 오차)을 반드시 넘겨야 한다. ⚠️날짜변경선(경도차>180)에서는 보간하지 않고 가까운 점을 쓴다 |
 | `make_luts.py` | 근사 필름룩을 .cube 로 베이크(폴백용) |
 | `shortcuts.py` | **단축키·마우스 조작 목록의 단일 진실원**. 앱 안 `?`/`F1` 오버레이(`ui/ShortcutHelp.qml`)가 `controller.shortcutHelp`/`mouseHelp` 로 받아 그린다 — 목록을 QML/문서에 옮겨 적지 말 것. ★**단축키를 추가/변경하면 `python shortcuts.py`** — ①모든 `Shortcut{}` 이 **`_keysBlocked` 가드**를 쓰는지(예외는 **자기 오버레이를 닫아야 하는 토글 둘** — `R` 과 `?`/F1. 안 쓰면 전체화면 오버레이 위에서 단축키가 샌다: `Enter` 가 RAW Peek 위에서 프리뷰를 열었고, 도움말 위에서 `D`·`Ctrl+Z` 가 뒤의 편집을 바꿨다) ②표와 `ui/Main.qml` 의 실제 `Shortcut{}` 선언(+ **전체화면 오버레이 QML** 의 `Keys.on*Pressed` — `PreviewWindow.qml`·`RawPeekWindow.qml`, 목록은 `declared_tokens()` 안에 있다)을 토큰 단위로 대조한다. ⚠️새 오버레이 .qml 을 만들면 그 목록에 추가할 것. ⚠️`MOUSE` 는 파싱 대상이 아니라 수동 목록이라 검사기가 못 잡는다 |
 | `presets.py` | 레시피 프리셋(`.frpreset`) — 룩만 담는 JSON + 출처 기록, 파일명 새니타이저, 검증기. ★**`LOOK_DEFAULTS` = 룩 키 44개의 공장 기본값 단일 진실원**(QML `applyEdits` 폴백 == `controller.lookDefaults` == 룩 지문 보정). ⚠️**한 키에 기본값은 하나**여야 이 구조가 성립한다. ★**룩 키를 추가하면 `python presets.py`** — 키 집합·QML 기본값·`applyEdits` 폴백·`resetAllEdits` 네 면을 대조해 드리프트를 잡는다. 설계 경위는 `docs/recipe_presets.md` |
@@ -287,6 +288,16 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   ⚠️**프리뷰와 export 의 합성식이 다르다**(export 가 정확한 쪽).
   ⚠️파라미터를 늘리면 **호출부 3곳 + export dict** 를 함께 볼 것. 규칙·함정 전체는
   `docs/date_stamp.md`.
+- **지오태깅**(Location 탭 `Ctrl+6`): 촬영 시점 BT 연결이 어려워 **현상 단계에서 위치를 붙인다**.
+  ★**룩이 아니라 사진별 메타데이터**다 — 셰이더 uniform 0개, `_PRESET_KEYS`/`LOOK_DEFAULTS` 에
+  안 넣고(`look_hash` 가 걸러 준다) `_copyExclude` 에는 넣는다. 원본 RAF 무수정, **export JPEG 의
+  EXIF GPS 로만** 나간다(PNG/TIFF 는 표준 자리가 없어 의도적 제외).
+  ⚠️사이드카 키는 위치가 없어도 **null 로 남긴다** — 키를 빼면 다음 로드에서 파일의 EXIF GPS 로
+  폴백해 지운 위치가 되살아난다. ⚠️`_load` 에서 **`gpsChanged` 를 쏘지 말 것**(스탬프와 같은
+  함정 — 디코드 전이라 빠져나온 사진에 새 좌표가 저장된다). 알림은 `_on_render_ready` 에서.
+  ⚠️`import QtLocation` 은 **`ui/LocationMap.qml` 한 파일에 가둔다**(Main.qml 에 두면 모듈이 빠진
+  배포본에서 앱이 통째로 안 뜬다). ⚠️패키징은 excludes 해제만으로 부족 — QML 모듈·geoservices
+  플러그인을 `datas` 에 명시해야 한다. 상세는 `docs/geotagging.md`
 - **컨택트 시트**(빈 캔버스의 폴더 격자): **클릭=선택 / 더블클릭=열기**(탐색기와 같은 규칙),
   선택 상태는 탐색기 `currentIndex` 에서 **파생**한다(진실원 하나). 뜨는 규칙은 **두 줄뿐** —
   `G`(또는 경로 표시줄 ▦)로 켜고 끄며, 아직 사진을 안 열었으면 켜져 있다. ⚠️**조건을 늘리지
@@ -321,7 +332,9 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
 
 - **담는 키의 단일 진실원 = `main.Controller._PRESET_KEYS`**(QML `presetKeys`). 저장/로드 필터와
   '기본값으로 되돌릴 키' 목록이 반드시 이것 하나를 봐야 한다. 새 슬라이더를 추가하면 넣을지
-  판단할 것 — `python presets.py` 가 `_PRESET_KEYS + 제외 == editParams()` 를 대조한다.
+  판단할 것. (⚠️`python presets.py` 는 `LOOK_DEFAULTS` ↔ `_PRESET_KEYS` ↔ QML 기본값만
+  대조한다 — **`editParams()` 와의 대조는 없다.** 룩이 아닌 키는 검증기가 자체 게이팅으로
+  건너뛰므로 제외 목록에 등록할 필요도 없다: `cropX`·`geoV`·`temp`·`gpsLat` 이 그 상태다.)
 - **제외**: `exposure`·WB·크롭/기하·스탬프 텍스트·`maskLayers`·`aiNr`·`lensCorrection`·NR
   (촬영 조건이거나 그 사진 구도/장비에 묶이거나 부작용을 유발한다 — 이유는 문서).
 - ⚠️적용은 **`applyPresetEdits` 의 3단 병합**이다. 프리셋 dict 를 `applyEdits` 에 그대로 넘기면
@@ -404,6 +417,11 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   → `saveGrab` 이 소스 원본 크기에서 기대 치수를 계산해 워커에서 **지오메트리 전에**
   정규화(배율 100% 면 no-op, 동일 객체). ⚠️CPU 점유율 질문(커뮤니티): CPU export 는
   numpy 단일 코어 위주라 12스레드 CPU 에서 8~10% 로 보이는 게 정상 — iGPU 유무와 무관.
+- **지오태그**: 사용자가 붙인 위치가 있으면 **JPEG 에만** EXIF GPS IFD 를 남긴다
+  (`pipeline.gps_from_params` → `save_image(..., gps=)`, 호출부는 CPU/GPU export 2곳).
+  ⚠️`_exif_app1` 은 **인라인 값 경로**(4B 이하)와 **2-패스 오프셋 레이아웃**이 있어야 GPS IFD 를
+  만들 수 있다 — 원래는 ASCII 전용이었다. ⚠️`_insert_app1` 은 APP1 을 하나만 끼우므로 GPS 는
+  같은 세그먼트 안에 들어가야 한다. 실측 +178B, 픽셀 비트 동일.
 - **현상 크레딧 + 현상 시각**: export 파일에 `Software = Film Rawstery v<ver>` 와 저장 시각을
   남긴다(`main.EXPORT_SOFTWARE` → `pipeline.save_image(..., software=)`, 시각은 save_image 가
   로컬시로 생성). JPEG=EXIF `Software`(0x0131)+**`DateTime`(0x0132)**, PNG=tEXt `Software`+

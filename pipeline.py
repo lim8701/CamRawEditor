@@ -1085,36 +1085,135 @@ JPEG_EXTS = ("jpg", "jpeg", "jfif")   # ⚠️Qt 가 JPEG 핸들러로 매핑하
                                      #   (jfif 누락 시 그 경로만 Qt 기본 품질 75 로 저장된다)
 
 
-def _exif_app1(software: str, when: str = "") -> bytes:
-    """`Software`(0x0131)[+`DateTime`(0x0132)] 만 담은 최소 EXIF APP1 세그먼트.
+# EXIF/TIFF 값 타입 -> 요소 하나의 바이트 수. 여기 쓰는 것만 둔다.
+_TIFF_TYPE_SIZE = {1: 1, 2: 1, 4: 4, 5: 8}   # BYTE / ASCII / LONG / RATIONAL
+
+
+def _ifd_block(entries, data_off: int, blobs: bytearray) -> bytes:
+    """IFD 하나(엔트리 수 + 12바이트 엔트리들 + next-IFD 0)를 만든다.
+
+    entries: `(tag, type, count, payload)` 리스트. **태그 오름차순**이어야 한다(호출부 책임).
+    data_off: 꼬리 데이터 블록의 **TIFF 헤더 기준** 시작 오프셋.
+    blobs: 지금까지 쌓인 꼬리 데이터(제자리로 늘어난다) — 4바이트를 넘는 값만 여기 붙는다.
+
+    ⚠️**4바이트 이하는 오프셋이 아니라 값을 그대로(좌측 정렬) 적는다.** 예전엔 ASCII 문자열
+      둘뿐이라 전부 오프셋이었지만, GPS 는 `GPSVersionID`(BYTE×4)와 `0x8825` 포인터(LONG×1)처럼
+      **인라인이어야만 하는** 값을 갖는다.
+    ⚠️꼬리 데이터는 **짝수 경계**로 맞춘다 — 홀수 길이 ASCII 뒤에 RATIONAL 이 오면 워드 정렬이
+      깨진다(대부분의 리더가 봐주지만 스펙은 정렬을 요구한다).
+    """
+    out = struct.pack("<H", len(entries))
+    for tag, typ, count, payload in entries:
+        out += struct.pack("<HHI", tag, typ, count)
+        if len(payload) <= 4:
+            out += payload + b"\x00" * (4 - len(payload))      # 인라인(좌측 정렬)
+        else:
+            out += struct.pack("<I", data_off + len(blobs))
+            blobs += payload
+            if len(blobs) & 1:
+                blobs += b"\x00"
+    return out + struct.pack("<I", 0)                           # 다음 IFD 없음
+
+
+def _dms_rational(v: float) -> bytes:
+    """십진 도(양수) -> EXIF RATIONAL 3개(도 / 분 / 초, 초는 1/10000 단위) 바이트.
+
+    ⚠️**정수 산술로 쪼갠다** — 부동소수로 나눈 뒤 반올림하면 초가 60.0000 으로 밀려 올라가
+      `31° 59' 60"` 같은 값이 나온다(일부 리더가 이걸 다음 분으로 안 올린다).
+    """
+    t = int(round(v * 36000000))            # 1/10000 초 단위(1도 = 3600초)
+    d, t = divmod(t, 36000000)
+    m, s = divmod(t, 600000)
+    return (struct.pack("<II", d, 1) + struct.pack("<II", m, 1)
+            + struct.pack("<II", s, 10000))
+
+
+def _gps_entries(gps) -> list:
+    """(lat, lon, alt|None) -> GPS IFD 엔트리 리스트(태그 오름차순).
+
+    ⚠️**RATIONAL 은 부호가 없다.** 위/경도는 절댓값을 넣고 부호는 Ref 문자(N/S/E/W)로,
+      고도는 절댓값 + `GPSAltitudeRef`(0=해수면 위, 1=아래)로 나타낸다.
+    """
+    lat, lon, alt = gps
+    e = [
+        (0x0000, 1, 4, bytes((2, 3, 0, 0))),                                # GPSVersionID 2.3.0.0
+        (0x0001, 2, 2, (b"N" if lat >= 0 else b"S") + b"\x00"),             # GPSLatitudeRef
+        (0x0002, 5, 3, _dms_rational(abs(lat))),                            # GPSLatitude
+        (0x0003, 2, 2, (b"E" if lon >= 0 else b"W") + b"\x00"),             # GPSLongitudeRef
+        (0x0004, 5, 3, _dms_rational(abs(lon))),                            # GPSLongitude
+    ]
+    if alt is not None:
+        e.append((0x0005, 1, 1, bytes((0 if alt >= 0 else 1,))))            # GPSAltitudeRef
+        e.append((0x0006, 5, 1, struct.pack("<II",                          # GPSAltitude (1/100 m)
+                                            int(round(abs(alt) * 100)), 100)))
+    e.append((0x0012, 2, 7, b"WGS-84\x00"))                                 # GPSMapDatum
+    return e
+
+
+def gps_from_params(p) -> tuple:
+    """export 파라미터 dict -> `(lat, lon, alt|None)`. 좌표가 없거나 범위를 벗어나면 None.
+
+    ★CPU export(`main._do_export`)와 GPU export(`main._finish_gpu_export`)는 서로 다른
+    코드인데 **같은 판정을 써야** 하므로 여기 한 곳에 둔다.
+    """
+    try:
+        lat, lon = p.get("gpsLat"), p.get("gpsLon")
+        if lat is None or lon is None:
+            return None
+        lat, lon = float(lat), float(lon)
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            return None
+        alt = p.get("gpsAlt")
+        return (lat, lon, float(alt) if alt is not None else None)
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _exif_app1(software: str, when: str = "", gps=None) -> bytes:
+    """`Software`(0x0131)[+`DateTime`(0x0132)][+GPS IFD] 를 담은 최소 EXIF APP1 세그먼트.
 
     Qt 는 EXIF 를 못 쓴다 — `QImageWriter.setText` 는 JPEG 에서 **COM(주석) 마커**로 나가고
     (실측: `exifread` 태그 0개) 탐색기·라이트룸의 'Software' 칸에는 안 뜬다. 그래서 세그먼트를
-    직접 만들어 끼운다. 태그가 둘뿐이라 구조가 짧고, 새 의존성이 필요 없다.
+    직접 만들어 끼운다. 새 의존성이 필요 없다.
 
     `when`: EXIF 형식 `YYYY:MM:DD HH:MM:SS`(로컬시). ★**`DateTime`(0x0132)** 을 쓴다 —
     파일이 만들어진/가공된 시각이다. `DateTimeOriginal`(0x9003)은 **촬영 시각**이므로 현상
     시각을 거기 넣으면 거짓이 된다(그리고 ExifIFD 가 필요해 구조도 커진다).
 
-    구조: `FFE1 <len> "Exif\0\0" | TIFF 헤더(II,42,IFD0=8) | IFD0 | 문자열들`
-    ⚠️IFD 엔트리는 **태그 오름차순**이어야 하고(0x0131 < 0x0132), 값이 4바이트를 넘으면
-      **TIFF 헤더 기준 오프셋**을 적는다(ASCII 문자열은 항상 넘는다 — 문자열 + NUL).
+    `gps`: `(lat, lon, alt|None)` 십진 도. 주면 IFD0 에 `GPSInfo` 포인터(0x8825)를 달고
+    **같은 APP1 안에** GPS IFD 를 함께 만든다. ⚠️`_insert_app1` 은 APP1 을 **하나만** 끼우므로
+    GPS 를 별도 세그먼트로 붙이면 안 된다.
+
+    구조: `FFE1 <len> "Exif\0\0" | TIFF 헤더(II,42,IFD0=8) | IFD0 | [GPS IFD] | 데이터`
+    ⚠️IFD 엔트리는 **각 IFD 안에서** 태그 오름차순이어야 한다(0x0131 < 0x0132 < 0x8825).
+    ⚠️`0x8825` 의 값은 GPS IFD 의 TIFF 기준 절대 오프셋이라 **IFD0 크기가 정해진 뒤에야**
+      알 수 있다 — 그래서 크기를 먼저 계산하고(2-패스) 값을 채워 넣는다.
     """
-    entries = [(0x0131, software.encode("ascii", "replace") + b"\x00")]
+    entries = []
+    if software:
+        b = software.encode("ascii", "replace") + b"\x00"
+        entries.append((0x0131, 2, len(b), b))
     if when:
-        entries.append((0x0132, when.encode("ascii", "replace") + b"\x00"))
+        b = when.encode("ascii", "replace") + b"\x00"
+        entries.append((0x0132, 2, len(b), b))
+    gps_ent = _gps_entries(gps) if gps else []
+    if gps_ent:
+        entries.append((0x8825, 4, 1, b""))        # 값(= GPS IFD 오프셋)은 아래에서 채운다
     entries.sort(key=lambda e: e[0])
-    n = len(entries)
-    ifd_size = 2 + 12 * n + 4                  # count + 엔트리들 + next-IFD
-    data_off = 8 + ifd_size                    # 문자열 블록 시작(TIFF 헤더 기준)
-    ifd = struct.pack("<H", n)
-    blobs = b""
-    for tag, b in entries:
-        ifd += struct.pack("<HHI", tag, 2, len(b))          # 타입 2 = ASCII
-        ifd += struct.pack("<I", data_off + len(blobs))
-        blobs += b
-    ifd += struct.pack("<I", 0)                             # 다음 IFD 없음
-    tiff = b"II" + struct.pack("<H", 42) + struct.pack("<I", 8) + ifd + blobs
+
+    ifd0_size = 2 + 12 * len(entries) + 4          # count + 엔트리들 + next-IFD
+    gps_off = 8 + ifd0_size                        # GPS IFD 는 IFD0 바로 뒤
+    gps_size = (2 + 12 * len(gps_ent) + 4) if gps_ent else 0
+    data_off = gps_off + gps_size                  # 두 IFD 가 공유하는 꼬리 데이터 블록
+    if gps_ent:
+        entries = [(t, ty, c, struct.pack("<I", gps_off) if t == 0x8825 else pl)
+                   for (t, ty, c, pl) in entries]
+
+    blobs = bytearray()
+    ifd0 = _ifd_block(entries, data_off, blobs)
+    gps_ifd = _ifd_block(gps_ent, data_off, blobs) if gps_ent else b""
+    tiff = (b"II" + struct.pack("<H", 42) + struct.pack("<I", 8)
+            + ifd0 + gps_ifd + bytes(blobs))
     payload = b"Exif\x00\x00" + tiff
     return b"\xFF\xE1" + struct.pack(">H", len(payload) + 2) + payload
 
@@ -1158,7 +1257,7 @@ def _insert_app1(jpeg: bytes, app1: bytes) -> bytes:
     return jpeg[:i] + app1 + jpeg[i:]
 
 
-def save_image(arr, path, software="") -> bool:
+def save_image(arr, path, software="", gps=None) -> bool:
     """(H,W,3) RGB 저장. dtype 으로 비트깊이 결정:
     - uint8  -> RGB888 (jpg/png/tif 8bit)
     - uint16 -> RGBX64 (png/tif 16bit, 알파 없음). jpg 는 8bit 만 가능(Qt 가 자동 강등).
@@ -1168,6 +1267,10 @@ def save_image(arr, path, software="") -> bool:
     않는다**(Qt 의 TIFF 핸들러가 setText 를 조용히 버린다 — 실측으로 확인, 에러도 안 낸다).
     시각은 저장 직전의 로컬시로 여기서 만든다(=현상이 끝난 시점). 호출측이 문자열을 넘기는
     이유는 `main.APP_VERSION` 을 읽으려면 순환 임포트가 되기 때문이다.
+
+    `gps`: `(lat, lon, alt|None)` 십진 도. 주면 **JPEG 에만** EXIF GPS IFD 를 남긴다
+    (사용자가 앱에서 붙인 위치 — 원본 RAW 는 건드리지 않는다). PNG 의 tEXt 와 TIFF 는
+    GPS 를 담을 표준 자리가 없어 **의도적으로 뺐다**.
 
     **`QImage` 를 그대로 넘겨도 된다** — 배경화면 에디토리얼 합성(`compose_magazine`·
     `compose_index`·`compose_fullbleed`)은 QImage 를 돌려주는데, 그쪽도 품질 95 와 원자적
@@ -1224,9 +1327,12 @@ def save_image(arr, path, software="") -> bool:
             # ISO 8601 로컬시. 스펙은 RFC 1123 을 권하지만 그 형식은 월/요일 이름이 로케일에
             # 흔들려(strftime %b/%a) 파일 내용이 기계에 따라 달라진다.
             + _png_text_chunk("Creation Time", now.strftime("%Y-%m-%dT%H:%M:%S")))
-    elif software and ext in JPEG_EXTS:
+    elif (software or gps) and ext in JPEG_EXTS:
+        # ⚠️`gps` 만 있고 `software` 가 빈 호출도 성립한다 — 그때 `now` 는 None 이다.
         data = _insert_app1(bytes(data),
-                            _exif_app1(software, now.strftime("%Y:%m:%d %H:%M:%S")))
+                            _exif_app1(software,
+                                       now.strftime("%Y:%m:%d %H:%M:%S") if now else "",
+                                       gps))
     # 임시 파일 → os.replace 로 원자적 교체(같은 디렉터리라 항상 동일 볼륨).
     # ⚠️대상 파일을 다른 프로그램이 열고 있으면 Windows 에서 replace 가 막힌다
     #   (실측 PermissionError WinError 5 — 뷰어로 결과를 열어둔 채 재export 하는 흔한 흐름).
