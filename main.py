@@ -3612,6 +3612,23 @@ class Controller(QObject):
         self._set_gps(gps, src if gps else "")
 
     @Slot()
+    def restoreGpsFromFile(self) -> None:  # noqa: N802 (QML 슬롯)
+        """사이드카에 위치 키가 **없을 때** 쓰는 복원 — 파일에 적힌 EXIF GPS 로 되돌린다.
+
+        ★`clearGps()` 와 다르다. 규약(`docs/geotagging.md`)상 **키가 있으면(값이 null 이어도)
+        사용자의 뜻**이고, **키가 아예 없으면** 아직 아무도 정한 적이 없다는 뜻이라 파일에 적힌
+        좌표를 쓰는 것이 맞다 — `_load` 가 처음 세우는 값과 같아진다.
+        ⚠️예전에는 이 자리도 `clearGps()` 여서, 지오태깅 이전 사이드카나 사이드카 없는 사진에서
+          **카메라가 남긴 좌표가 로드 직후 지워졌다**(실측 재현).
+        ⚠️호출부는 `_applying` 가드 안이라 자동저장이 돌지 않는다 — 안 그러면 편집한 적 없는
+          사진에 사이드카가 생겨 '편집됨' 배지가 켜진다.
+        """
+        path = self._ui_path or self._path
+        # 규칙 자체는 `_gps_for_file` 하나뿐이다 — 빈 dict 를 주어 **EXIF 분기**를 태운다.
+        gps = _gps_for_file(path, {}) if path else None
+        self._set_gps(gps, "exif" if gps else "")
+
+    @Slot()
     def clearGps(self) -> None:  # noqa: N802 (QML 슬롯)
         self._set_gps(None, "")
 

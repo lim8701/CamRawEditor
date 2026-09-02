@@ -1206,9 +1206,16 @@ ApplicationWindow {
         geoScaleSlider.value = _ev(p, "geoScale", 100)
         // 지오태그 복원 — 룩이 아니므로 `lookDef` 가 아니라 **리터럴 폴백**이고,
         // 컨트롤러 소유 값이라 **대입이 아니라 슬롯을 직접 부른다**(스탬프 텍스트와 같은 규율).
-        var _glat = _ev(p, "gpsLat", null), _glon = _ev(p, "gpsLon", null)
-        if (_glat === null || _glon === null) controller.clearGps()
-        else controller.setGps({ "lat": _glat, "lon": _glon,
+        // ★⚠️**'키 없음' 과 '값이 null' 은 다른 뜻이다**(`docs/geotagging.md` 의 규약):
+        //   키가 있으면(null 이어도) **사용자가 정한 것**이고, 키가 아예 없으면 아직 아무도
+        //   정한 적이 없으니 **파일에 적힌 EXIF GPS** 를 쓴다. `_ev` 는 둘 다 null 로 뭉개므로
+        //   여기서는 `undefined` 를 직접 본다 — 뭉갰더니 지오태깅 이전 사이드카에서
+        //   **카메라가 남긴 좌표가 로드 직후 지워졌다**(실측 재현).
+        //   ⚠️undo/redo·프리셋 경로는 `editParams()` 에서 오므로 키가 **항상** 있다 — 이 분기는
+        //     구(舊) 사이드카에서만 탄다(프리셋이 남의 위치를 되살리지 않는다).
+        if (p.gpsLat === undefined) controller.restoreGpsFromFile()
+        else if (p.gpsLat === null || p.gpsLon === null) controller.clearGps()
+        else controller.setGps({ "lat": p.gpsLat, "lon": p.gpsLon,
                                  "alt": _ev(p, "gpsAlt", null), "src": _ev(p, "gpsSrc", "") })
         win.applySkyEdits(p, fastMasks === true)   // 마스킹 복원 — fast 는 undo/redo 한정
     }
@@ -1305,7 +1312,12 @@ ApplicationWindow {
         controller.setAutoExposure(true)
         curveEditor.resetAll()
         win.resetGeometry()
-        controller.clearGps()        // 위치도 사진별 값 — Reset 은 비운다(촬영 EXIF 복귀는 로드 경로의 몫)
+        // ★위치는 **비우는 게 아니라 파일에 적힌 값으로 되돌린다.** 이 함수는 Reset 버튼과
+        //   **사이드카 없는 새 사진의 로드 경로**를 겸하는데, 비우면 카메라가 남긴 좌표가
+        //   로드 직후 사라졌다(실측 재현). Reset 은 '편집한 적 없는 상태'로 돌리는 것이고
+        //   그 상태에는 EXIF 좌표가 있다 — 사이드카를 지우고 다시 열었을 때 보이는 것과도
+        //   이제 같다. 위치를 정말 비우려면 Location 패널의 `Clear`(=`gpsLat: null`, sticky).
+        controller.restoreGpsFromFile()
         win.resetSky()
     }
 

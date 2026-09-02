@@ -94,6 +94,18 @@ Flickable {
             root.draftAlt = null
             root.draftSrc = ""
         }
+        // ★사진이 바뀌면 **시야도 그 사진으로** 옮긴다. 여기서 하는 이유가 둘 있다:
+        //   ① 이 함수가 사진 쪽 값이 바뀌는 **모든 경로**(로드·undo·프리셋·Apply)를 지난다.
+        //   ② ⚠️`centerOn` 에 **방금 세운 원천 값**을 직접 넘긴다 — 별도 핸들러에서
+        //      `recenter()` 를 부르면 지도의 `lat` 바인딩이 아직 갱신 전이라 **시야가 한 장
+        //      뒤처진다**(실측으로 잡은 버그. `LocationMap.centerOn` 주석 참조).
+        // ⚠️**`panelActive` 가드는 필수다.** `mapLoader.active` 는 한 번 켜지면 다시 꺼지지
+        //   않으므로, 이걸 빼면 탭을 떠난 뒤에도 사진을 넘길 때마다 **숨은 지도의 카메라가
+        //   움직인다** — QtLocation 은 보임 여부가 아니라 카메라로 타일을 받으므로 그대로
+        //   타일 요청이 된다(이 파일과 `OsmPlugin.qml` 이 못 박은 '탭을 열 때만 받는다' 정책 위반).
+        //   탭에 없을 때의 시야는 `onPanelActiveChanged`/`onLoaded` 가 들어올 때 맞춘다.
+        if (root.panelActive && root.hasDraft && mapLoader.item)
+            mapLoader.item.centerOn(root.draftLat, root.draftLon)
     }
     // 사진 전환·undo·프리셋 적용 등 **사진 쪽 값이 바뀌는 모든 경로**가 이 시그널을 지난다.
     Connections {
@@ -238,7 +250,8 @@ Flickable {
                         root.searchNote = (n < 0) ? ("Search failed: " + item.searchError)
                                                   : (n === 0 ? "Nothing found." : "")
                     })
-                    item.recenter()
+                    // 바인딩이 방금 걸렸으므로 여기서도 원천 값으로 넘긴다(위와 같은 이유).
+                    if (root.hasDraft) item.centerOn(root.draftLat, root.draftLon)
                 }
             }
             Connections {
@@ -249,14 +262,9 @@ Flickable {
                     if (mapLoader.item) mapLoader.item.recenter()   // 탭에 들어올 때만 시야 이동
                 }
             }
-            // 사진을 넘기면 그 사진의 위치로 시야를 옮긴다(클릭에는 반응하지 않는다).
-            Connections {
-                target: controller
-                function onGpsChanged() {
-                    if (root.panelActive && mapLoader.item && controller.gpsSet)
-                        mapLoader.item.recenter()
-                }
-            }
+            // ⚠️여기에 있던 `onGpsChanged -> recenter()` 블록은 **제거했다.** 그것이 바로
+            //   시야가 한 장 뒤처지던 원인이다(핸들러가 지도의 `lat` 바인딩보다 먼저 돈다).
+            //   시야 이동은 이제 `syncDraftFromPhoto()` 가 원천 값으로 직접 한다.
 
             // ── 시야를 핀으로 되돌리기 ──
             // 지도를 끌어 옮기면 핀이 화면 밖으로 나갈 수 있는데, `recenter()` 는 사진을 열거나
@@ -429,11 +437,9 @@ Flickable {
                 // 되돌릴 차이가 있을 때만. 사진에 위치가 없는데 핀만 찍은 경우도 여기 해당하며,
                 // 그때는 `syncDraftFromPhoto` 가 hasDraft 를 false 로 만들어 핀이 사라진다.
                 enabled: root.enabledForPhoto && root.draftDiffers
-                onClicked: {
-                    root.syncDraftFromPhoto()
-                    // 값만 되돌리고 시야를 두면 핀이 화면 밖에 있을 수 있다 — 같이 따라간다.
-                    if (mapLoader.item && root.hasDraft) mapLoader.item.recenter()
-                }
+                // 값만 되돌리고 시야를 두면 핀이 화면 밖에 있을 수 있다 —
+                // `syncDraftFromPhoto()` 가 원천 값으로 시야까지 같이 옮긴다.
+                onClicked: root.syncDraftFromPhoto()
             }
             DarkButton {
                 Layout.fillWidth: true

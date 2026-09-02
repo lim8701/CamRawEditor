@@ -294,9 +294,18 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   ★**룩이 아니라 사진별 메타데이터**다 — 셰이더 uniform 0개, `_PRESET_KEYS`/`LOOK_DEFAULTS` 에
   안 넣고(`look_hash` 가 걸러 준다) `_copyExclude` 에는 넣는다. 원본 RAF 무수정, **export JPEG 의
   EXIF GPS 로만** 나간다(PNG/TIFF 는 표준 자리가 없어 의도적 제외).
+  ★⚠️**사이드카 위치 키는 3상태다**: **키 없음**=아직 아무도 안 정함 → **파일의 EXIF GPS** /
+  **`null`**=사용자가 지움(sticky) / **값**=사용자가 붙임. QML `_ev` 는 앞 둘을 뭉개므로
+  `applyEdits` 가 `p.gpsLat === undefined` 를 직접 본다 — 뭉갰더니 구(舊) 사이드카에서
+  **카메라 좌표가 로드 직후 지워졌다**(실측). `resetAllEdits` 도 `clearGps` 가 아니라
+  **`restoreGpsFromFile()`**(Reset = '편집한 적 없는 상태' = EXIF 좌표 있음).
   ⚠️사이드카 키는 위치가 없어도 **null 로 남긴다** — 키를 빼면 다음 로드에서 파일의 EXIF GPS 로
   폴백해 지운 위치가 되살아난다. ⚠️`_load` 에서 **`gpsChanged` 를 쏘지 말 것**(스탬프와 같은
   함정 — 디코드 전이라 빠져나온 사진에 새 좌표가 저장된다). 알림은 `_on_render_ready` 에서.
+  ★⚠️**시야 이동은 `LocationMap.centerOn(la, lo)`** 로 하고 `syncDraftFromPhoto()` 안에서
+  부른다 — `recenter()` 는 `root.lat`(= draft 에 걸린 **바인딩**)을 읽어서 `gpsChanged` 핸들러
+  안에서는 갱신 전 값이 나온다(**핀은 맞는데 시야만 한 장 뒤처졌다** — 실측). 신호 경로에서
+  `recenter()` 금지, `Connections{onGpsChanged: recenter()}` 부활 금지.
   ⚠️`import QtLocation` 은 **`ui/LocationMap.qml` 한 파일에 가둔다**(Main.qml 에 두면 모듈이 빠진
   배포본에서 앱이 통째로 안 뜬다). ⚠️패키징은 excludes 해제만으로 부족 — QML 모듈·geoservices
   플러그인을 `datas` 에 명시해야 하고, **경로를 `PySide6/Qt/...` 로 박으면 Windows 에서 조용히

@@ -75,12 +75,21 @@ Item {
         view.map.center = QtPositioning.coordinate(la, lo)
     }
 
-    // 지도를 핀 위치로 옮긴다 — **명시적 호출로만** 한다(사진을 열 때, 탭에 들어올 때).
+    // 지도를 주어진 좌표로 옮긴다 — **명시적 호출로만** 한다(사진을 열 때, 탭에 들어올 때).
     // ★⚠️`map.center` 를 좌표에 **바인딩하지 말 것** — 클릭할 때마다 지도가 핀을 가운데로
     //   끌어와 화면이 튄다(사용자 보고). 핀을 찍는 것과 시야를 옮기는 것은 다른 동작이다.
-    function recenter() {
-        view.map.center = QtPositioning.coordinate(root.lat, root.lon)
+    //
+    // ★⚠️**`gpsChanged` 같은 신호 핸들러 안에서는 `recenter()` 를 쓰면 안 된다.** `root.lat` 은
+    //   호출부의 draft 에 걸린 **바인딩**이라 핸들러가 도는 시점엔 아직 갱신 전이고, 그래서
+    //   **핀은 맞는데 시야만 한 장 뒤처진다**(실측으로 잡았다 — 사진 A 를 열면 지도는 기본
+    //   위치, B 를 열면 A 의 위치). 그런 자리에서는 원천 값을 직접 넘기는 `centerOn` 을 쓴다.
+    //   (CLAUDE.md 'UI 규칙' 의 신호 핸들러 × 파생 프로퍼티 함정과 같은 부류.)
+    function centerOn(la, lo) {
+        view.map.center = QtPositioning.coordinate(la, lo)
     }
+
+    // 지금 핀 좌표로. 신호 핸들러 **바깥**(버튼 클릭 등)에서만 안전하다 — 위 주석 참조.
+    function recenter() { root.centerOn(root.lat, root.lon) }
 
     MapView {
         id: view

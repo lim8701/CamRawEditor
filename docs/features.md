@@ -147,6 +147,19 @@ Captions are stored once as their raw text, so the search and tag rules are deri
   <img src="screenshot5.png" alt="Film Rawstery — Photo tags: frosted-glass tag view of a folder, keyword sizes scaled by how many photos carry each tag, with a live photo preview grid; click a tag to filter the folder" width="100%">
 </p>
 
+## Location (geotagging)
+Cameras lose their Bluetooth link too easily for reliable in-camera geotagging, so the coordinates
+go on **at develop time** and are written only into **exported JPEGs** as standard EXIF GPS — the
+RAW file is never touched.
+The **Location panel** (`Ctrl+6`) is a map picker with place search, plus coordinate fields as
+the offline fallback. Double-clicking the map only moves a **draft** pin; `Apply` is what attaches it,
+to this photo or to every photo you checked in the explorer. **GPX track matching** tags a whole
+roll against each photo's capture time (you tell it the camera clock's UTC offset, because EXIF
+has no time zone; anything further than two minutes from the track is left alone rather than
+guessed).
+
+Map data © OpenStreetMap contributors.
+
 ## Film Simulations
 Fujifilm looks as 3D LUTs: Provia, Velvia, Astia, Classic Chrome, Classic Negative, Nostalgic Neg, PRO Neg. Hi/Std, Eterna, Reala Ace, Bleach Bypass — with adjustable strength. The list is driven by the `.cube` files present in `luts/`, so any known LUT you drop in (e.g. B&W ACROS / Monochrome / Sepia) appears automatically, and missing ones are hidden. See [`../luts/README.md`](../luts/README.md) for the key filenames and where to get the B&W LUTs.
 
