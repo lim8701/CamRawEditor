@@ -26,7 +26,9 @@ QML = ["Main.qml", "Splash.qml", "PreviewWindow.qml", "CurveEditor.qml", "FilmSt
        "EditedBadge.qml", "DarkButton.qml", "DarkTextField.qml",
        "DarkComboBox.qml", "DarkSpinBox.qml",
        "ShortcutHelp.qml", "RawPeekWindow.qml",
-       "LocationPanel.qml", "LocationMap.qml"]
+       "LocationPanel.qml", "LocationMap.qml",
+       # Photo map(M): 오버레이 껍데기 + QtLocation 지도 + 공유 타일 정책
+       "PhotoMapOverlay.qml", "FolderMap.qml", "OsmPlugin.qml"]
 datas = [(os.path.join("ui", q), "ui") for q in QML]
 datas += [
     ("shaders", "shaders"),   # .frag + 미리 컴파일된 .qsb (frozen 은 런타임 재컴파일 안 함)

@@ -31,6 +31,7 @@ Korean (🇰🇷) — they carry the numbers, the rejected alternatives and the 
 | [Sky masking](sky_masking.md) 🇰🇷 | Scene segmentation → soft mask → per-mask develop |
 | [Depth masking](depth_masking.md) 🇰🇷 | Selecting by distance: monocular depth, log-z, and the per-photo seed |
 | [Geotagging](geotagging.md) 🇰🇷 | Putting a location on a photo after the fact: the EXIF GPS writer, GPX-to-capture-time matching, and why JPEG only |
+| [Photo map](photo_map.md) 🇰🇷 *(personal, flag-gated)* | Reading a folder's coordinates back: thumbnail stacks on a map, why one coordinate usually holds dozens of photos, and the tile budget of a full-screen map |
 | [Folder indexing & search](folder_index_search.md) 🇰🇷 | On-device captions turned into a searchable folder index |
 | [Tone pipeline](tone_pipeline.md) 🇰🇷 | Where the base render sits: auto exposure, the film-simulation LUTs' own tone curve, and the highlight desaturation gate |
 | [Preview vs export (resolved)](KNOWN_ISSUE_preview_vs_export.md) 🇰🇷 | A colour mismatch traced to wide-gamut monitor profiles |

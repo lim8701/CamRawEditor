@@ -50,6 +50,7 @@ KEYS = [
         ("L",      ("L",),                "Show liked photos only"),
         ("P",      ("P",),                "Expand or collapse paired JPEGs"),
         ("H",      ("H",),                "Photo tags for this folder"),
+        ("M",      ("M",),                "Photo map - where this folder was shot (when enabled)"),
     ]),
     ("Editing", [
         ("Ctrl+Z",       ("StandardKey.Undo",),                  "Undo"),
@@ -71,6 +72,9 @@ KEYS = [
         ("← →",   ("Keys.onLeftPressed", "Keys.onRightPressed"),
          "On the Develop tab, step to the previous or next stage"),
         ("Esc",   ("Keys.onEscapePressed",), "Close RAW Peek"),
+    ]),
+    ("Photo map", [
+        ("Esc", ("Keys.onEscapePressed",), "Close the photo map (when enabled)"),
     ]),
     ("Help", [
         ("? / F1", ("?", "F1"), "This list"),
@@ -94,6 +98,12 @@ MOUSE = [
     ("Explorer · contact sheet", [
         ("Double-click", "Open a photo"),
         ("Click",        "In the contact sheet, select without opening"),
+    ]),
+    ("Photo map", [
+        ("Click a marker",     "Show that spot's photos in the strip below"),
+        ("Click a thumbnail",  "Select it in the explorer"),
+        ("Double-click",       "Open that photo"),
+        ("Drag / Wheel",       "Move the map / zoom (zoom in to separate nearby spots)"),
     ]),
     ("Location map", [
         ("Double-click", "Put the pin here (press Apply to attach it to the photo)"),
@@ -139,7 +149,7 @@ def declared_tokens():
         out.update(re.findall(r"StandardKey\.\w+", body))
     # 전체화면 오버레이들은 Shortcut{} 이 아니라 Keys.on*Pressed 로 키를 받는다.
     # ⚠️새 오버레이 .qml 을 만들면 여기에 추가할 것 — 안 넣으면 그 파일의 키는 검사에서 빠진다.
-    for fn in ("PreviewWindow.qml", "RawPeekWindow.qml"):
+    for fn in ("PreviewWindow.qml", "RawPeekWindow.qml", "PhotoMapOverlay.qml"):
         with open(os.path.join(_root(), "ui", fn), encoding="utf-8") as f:
             out.update(re.findall(r"Keys\.on\w+Pressed", f.read()))
     return out
@@ -150,7 +160,7 @@ def declared_tokens():
 #   `Enter` 로 프리뷰가 열리는 사고가 났다(그리고 `Alt+Up` 도 같이 새고 있었다).
 #   예외는 **토글**인 둘뿐 — `R`(RAW Peek)과 `?`/F1(단축키 도움말)은 자기 오버레이가 떠 있을
 #   때도 살아 있어야 닫힌다(`_keysBlocked` 가 그 둘의 visible 을 포함한다).
-GUARD_EXEMPT = {'"R"', '["?", "F1"]'}
+GUARD_EXEMPT = {'"R"', '["?", "F1"]', '"M"'}
 
 
 def guard_report(root=None):

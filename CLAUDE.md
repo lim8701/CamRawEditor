@@ -180,6 +180,7 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
 | `pipeline.py` | **풀해상도 export** (numpy, 셰이더와 동일 파이프라인 재현) |
 | `ui/Main.qml` | 전체 UI (좌: 이미지 / 우: 스크롤 패널) |
 | `ui/CurveEditor.qml` | 톤 커브 위젯(드래그/추가/삭제, Catmull-Rom) |
+| `ui/PhotoMapOverlay.qml`<br>`ui/FolderMap.qml`<br>`ui/OsmPlugin.qml` | **Photo map**(`M`) — 폴더 좌표를 지도 위 썸네일 스택으로. 오버레이 껍데기(QtLocation 없음) / 지도·마커·줌별 병합·히트테스트(**QtLocation 을 가둔 파일**) / **타일 정책 단일 진실원**(Location 패널과 공유). 파이썬 쪽은 `main.scanFolderGps`+`_regroup_map_points`. 읽기 전용이라 ★렌더 경로 계약 무관. `docs/photo_map.md` |
 | `shaders/adjust.frag` | 메인 파이프라인 프래그먼트 셰이더 |
 | `shaders/blur.frag` | 분리형 가우시안 블러(로컬대비용) |
 | `luts/*.cube` | 필름 시뮬레이션 LUT (abpy/FujifilmCameraProfiles sRGB, N=32) |
@@ -304,6 +305,29 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   Thunderforest 로 넘겨 "API Key Required" 워터마크가 뜬다. 리디렉트를 끄고 OSM 본 서버를
   `Custom URL Map` 으로 직접 지정하며, **앱 전용 타일 캐시**를 쓴다(Qt 기본 캐시에 워터마크
   타일이 남아 고쳐도 계속 보인다). 상세는 `docs/geotagging.md`
+- **Photo map**(`M`, 탐색기 🗺) — ★**개인용**(`.env` `PHOTO_MAP=1`, Wallpaper 와 같은 기계.
+  릴리즈는 자동 숨김): 폴더의 좌표를 **지도 위 썸네일 스택**으로 되짚어 본다.
+  ⚠️숨긴 이유는 미완이 아니라 **HiDPI 에서 OSM 타일이 흐려서**다(250%에서 256px 타일이
+  2.5배 확대, osm.org 는 `@2x` 없음=HTTP 400). 제공자 교체는 한 줄이 아니다 — Qt 의
+  `custom.host` 템플릿이 `%z/%x/%y.png` 고정이라 키·`@2x` 를 못 싣는다. **재개는 측정부터**
+  (`docs/photo_map.md` 의 '왜 숨겨 두는가').
+  Photo tags(`H`)와 같은 급의 **폴더 단위 읽기 전용 오버레이**다 — 셰이더 uniform 0개, 사이드카
+  무변경, ★렌더 경로 계약 무관. 좌표를 **붙이는** 일은 Location 탭이 계속 단독 담당.
+  ★**한 좌표에 수십~수백 장이 정상**이다(일괄 적용/GPX — 실측 폴더: 420컷이 좌표 **4개**에
+  모인다) → 마커 설계의 출발점이 **스택**이고, 낮은 줌에서 겹치는 것은 화면좌표로 한 번 더
+  병합한다. ⚠️**짝 JPEG(`paired`)은 세지 않는다** — 한 컷을 두 번 세면 커버리지가 거짓이 된다
+  (배치 인덱서의 '항상 폴더 전체'와 규칙이 다른 것이 의도다).
+  ★좌표 우선순위 규칙은 `main._gps_for_file` **하나**이고 `_load` 와 공유한다(복사 금지).
+  ⚠️`gpsChanged` 에서 **디스크를 다시 읽지 말 것** — `setGps` 는 메모리만 바꿔 사이드카가 아직
+  옛 값이다(`_regroup_map_points()` 만 다시 돌린다). ⚠️`ToolTip` 첨부 프로퍼티는
+  `import QtQuick.Controls` 가 있어야 붙는다 — `.Basic as B` 만 두면 컴포넌트가 안 뜨고
+  **앱 전체가 안 뜬다**(실제로 났다). ⚠️타일 정책은 `ui/OsmPlugin.qml` 하나에 있다(두 지도 공유).
+  ⚠️전체화면 지도라 뷰포트당 타일이 패널의 ~6배 — 상세는 `docs/photo_map.md`
+  ★⚠️**새 전체화면 오버레이는 `_keysBlocked` 에 넣을 것**(창 단위 `Shortcut{}` 은 포커스와
+  무관하게 발화한다 — 안 넣으면 지도 위에서 `D`·`Ctrl+Z`·`Enter` 가 뒤의 사진을 바꿈).
+  단 자기를 닫아야 하는 토글은 예외 — `M` 도 `R`·`?` 와 함께 `shortcuts.GUARD_EXEMPT` 에 있다.
+  ⚠️Location 패널 시야 이동의 `panelActive` 가드를 빼면 **숨은 지도가 사진마다 타일을
+  받는다**(카메라 이동 = 타일 요청).
 - **컨택트 시트**(빈 캔버스의 폴더 격자): **클릭=선택 / 더블클릭=열기**(탐색기와 같은 규칙),
   선택 상태는 탐색기 `currentIndex` 에서 **파생**한다(진실원 하나). 뜨는 규칙은 **두 줄뿐** —
   `G`(또는 경로 표시줄 ▦)로 켜고 끄며, 아직 사진을 안 열었으면 켜져 있다. ⚠️**조건을 늘리지

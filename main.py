@@ -93,6 +93,13 @@ def _flag_on(flags: dict, key: str) -> bool:
 FEATURE_FLAGS = _feature_flags()
 # Wallpaper 패널(3분할 트립틱 합성): 개인용 — 릴리즈에선 .env 부재로 자동 숨김
 WALLPAPER_PANEL = _flag_on(FEATURE_FLAGS, "WALLPAPER_PANEL")
+# Photo map(`M`, 폴더 좌표를 지도 위 썸네일로): 개인용 — 같은 이유로 릴리즈에서 자동 숨김.
+# ★숨긴 이유는 기능이 미완이라서가 아니라 **타일이 HiDPI 에서 흐리기 때문**이다(실측: 250%
+#   배율에서 256px 타일이 640 device px 로 2.5배 확대. osm.org 표준 레이어에는 @2x 판이 없어
+#   `@2x.png` 는 HTTP 400). 키를 쓰는 제공자로 갈아 끼우는 것이 답인데 Qt OSM 플러그인의
+#   `custom.host` 템플릿이 `%z/%x/%y.png` 로 **고정**이라 키(쿼리스트링)도 `@2x` 도 실을 수
+#   없다 — 우회로와 재개 조건은 `docs/photo_map.md` 의 '왜 숨겨 두는가'.
+PHOTO_MAP = _flag_on(FEATURE_FLAGS, "PHOTO_MAP")
 
 # ---------- 시스템 슬립 방지 (Windows SetThreadExecutionState / macOS IOKit 어서션) ----------
 _ES_CONTINUOUS = 0x80000000
@@ -390,6 +397,29 @@ RAW_EXTS = {
 # jpeg/tiff 도 받는다 — 사용자가 이름을 직접 타이핑하는 경우가 있고 Qt·save_image 가
 # 둘 다 처리한다(JPEG_EXTS 참조). 대화상자 필터는 png/jpg/tif 3종만 노출.
 _EXPORT_EXTS = ("png", "jpg", "jpeg", "tif", "tiff")
+
+
+def _gps_for_file(path: str, edits: dict):
+    """사진 한 장의 위치 -> `(lat, lon, alt|None)` 또는 None.
+
+    ★**좌표 우선순위 규칙의 단일 진실원**이다 — `Controller._load`(사진을 열 때)와
+    `_map_scan_worker`(Photo map 이 폴더를 훑을 때)가 **둘 다 이것을 부른다.** 규칙을 두 곳에
+    복사해 두면 반드시 갈라진다(지도가 패널과 다른 좌표를 보여주는 형태로 드러난다).
+
+    ⚠️**사이드카에 `gpsLat` 키가 있으면(값이 `null` 이어도) 그것이 답이다.** 키를 빼는 것과
+      `null` 은 다른 뜻이다 — `null` 은 "사용자가 일부러 지웠다"이므로 파일의 EXIF GPS 로
+      폴백하면 지운 위치가 되살아난다(지우기가 안 먹는 것으로 보인다).
+    """
+    if "gpsLat" in (edits or {}):
+        # ★파싱·검증(범위 ±90/±180, alt 처리)은 `Controller._gps_tuple` 이 유일하게 안다 —
+        #   여기서 다시 구현하면 손상된 사이드카에서 `_load` 와 지도가 다르게 판단한다.
+        return Controller._gps_tuple({"lat": edits.get("gpsLat"),
+                                      "lon": edits.get("gpsLon"),
+                                      "alt": edits.get("gpsAlt")})
+    try:
+        return exif_info.read_gps(path)      # 카메라가 남긴 좌표(대개 없다)
+    except Exception:
+        return None
 
 
 def _pair_flags(folder: str, names: list) -> list:
@@ -1174,6 +1204,7 @@ class Controller(QObject):
     exportProgressChanged = Signal()   # CPU export 진행률(0..1) 갱신 알림(필름 카운터 오버레이용)
     exifChanged = Signal()      # 촬영정보(EXIF) 갱신 알림
     gpsChanged = Signal()       # 사진에 붙은 위치(지오태그) 변경 알림
+    folderMapChanged = Signal()  # Photo map: 폴더 좌표 스캔 결과/진행 갱신 알림
     stampChanged = Signal()     # 날짜 스탬프 **편집값**(텍스트/폰트/크기/색/글로우/영역/회전…) 변경
     stampSpriteChanged = Signal()  # 스프라이트(url·wr·hr·bleed) 갱신 — ⚠️**편집이 아니다**
     #   ⚠️둘을 합치지 말 것. QML `editSaveWatch` 가 스탬프 편집값들을 보고 자동저장을 예약하는데,
@@ -1252,6 +1283,7 @@ class Controller(QObject):
     _updateSig = Signal(object)      # (내부) 업데이트 확인 워커 -> 메인 (새 버전 태그, 릴리스 URL)
     _folderScanSig = Signal(object)  # (내부) 폴더 스캔 워커 -> 메인 (seq, folder, items, likes, edited, force)
     _indexProgressSig = Signal(object)  # (내부) 폴더 배치 인덱싱 워커 -> 메인 (seq, done, total, status)
+    _mapScanSig = Signal(object)     # (내부) Photo map 좌표 스캔 워커 -> 메인 (seq, folder, raw, total)
 
     def __init__(self, provider: RawProvider, curve_provider: "CurveProvider",
                  stamp_provider: "StampProvider" = None,
@@ -1438,6 +1470,19 @@ class Controller(QObject):
         # 안 실린다. 원본 RAW 는 절대 건드리지 않고, 사이드카에 저장돼 export JPEG 로만 나간다.
         self._gps = None
         self._gps_src = ""          # "map" / "gpx" / "exif" — 어디서 온 좌표인지(표시용)
+        # ---- Photo map(`M`): 폴더 전체의 좌표 — 읽기 전용이고 아무것도 안 쓴다 ----
+        self._map_raw = {}          # {abs_path: (lat, lon)} — 워커가 디스크에서 읽은 생값
+        self._map_groups = []       # 좌표별 스택(QML 이 보는 면)
+        self._map_folder = ""       # 이 결과가 어느 폴더의 것인가(다른 폴더로 옮겼을 때 어긋남 방지)
+        self._map_total = 0         # 그 폴더의 사진 수(커버리지 분모)
+        # ★'지금 훑고 있는 폴더'를 따로 든다. 예전엔 스캔 중임을 `_map_folder=""` 로 표현했는데,
+        #   그러면 같은 폴더의 감시 재스캔이 '폴더가 바뀌었다'로 읽혀 **진행 중인 스캔을 죽였다**
+        #   (지도가 "위치 없음"으로 굳는다). 연타 중복 실행·스캔 중 쓰기 유실도 같은 뿌리였다.
+        self._map_scanning = ""
+        self._map_paths = set()     # 이번 스캔의 대상(normcase) — 짝 JPEG 은 여기 없다
+        self._map_pending = {}      # 스캔 중 들어온 좌표 쓰기 {path: (lat,lon)|None} → 결과에 합침
+        self._map_busy = False
+        self._map_seq = 0
         self._stamp_text = ""       # 날짜 스탬프 텍스트 ('YY MM DD)
         self._stamp_url = "image://stamp/s?v=0"
         self._stamp_counter = 0
@@ -1530,6 +1575,7 @@ class Controller(QObject):
         self._updateSig.connect(self._on_update_found)
         self._folderScanSig.connect(self._on_folder_scanned)
         self._indexProgressSig.connect(self._on_index_progress)
+        self._mapScanSig.connect(self._on_map_scanned)
         self._scan_seq = 0            # 폴더 스캔 순번(빠른 탐색 시 오래된 결과 폐기)
         self._skip_rescan_once = False  # 우리 자신의 사이드카 저장으로 인한 watcher 재스캔 1회 무시
         # 현재 폴더 자동 감시: 디렉터리 변화 -> 디바운스 -> 재스캔(변경분 있을 때만 갱신)
@@ -3441,8 +3487,13 @@ class Controller(QObject):
     def _get_wallpaper_enabled(self) -> bool:
         return WALLPAPER_PANEL
 
+    def _get_photo_map_enabled(self) -> bool:
+        """Photo map(`M`) 노출 여부 — 개인용 플래그(.env `PHOTO_MAP`). 시작 시 고정."""
+        return PHOTO_MAP
+
     # 개인용 Wallpaper 패널 노출 여부(.env 플래그, 시작 시 고정) — 릴리즈 기본 숨김
     wallpaperEnabled = Property(bool, _get_wallpaper_enabled, constant=True)
+    photoMapEnabled = Property(bool, _get_photo_map_enabled, constant=True)
 
     def _get_curve_url(self) -> str:
         return self._curve_url
@@ -3530,6 +3581,9 @@ class Controller(QObject):
             return
         self._gps, self._gps_src = gps, src
         self._refresh_gps_field()
+        # Photo map: 디스크를 다시 읽지 않고 그룹만 다시 만든다 — 사이드카는 아직 안
+        #   써졌을 수 있다(그 함수 주석의 '열린 사진 덮어쓰기').
+        self._regroup_map_points()
         self.gpsChanged.emit()
 
     def _refresh_gps_field(self) -> None:
@@ -3612,6 +3666,7 @@ class Controller(QObject):
         if matched:
             self._edit_rev += 1
             self.editsChanged.emit()
+            self._regroup_map_points()   # Photo map: 루프 뒤 한 번만
         return {"matched": matched, "unmatched": unmatched, "error": ""}
 
     def _write_gps_sidecar(self, path: str, gps, src: str) -> bool:
@@ -3632,6 +3687,23 @@ class Controller(QObject):
             d = self._edits_dir(str(p.parent))
             d.mkdir(parents=True, exist_ok=True)
             _atomic_write_json(d / f"{p.name}.json", data)
+            # Photo map: 이 폴더를 이미 훑어 뒀으면(또는 훑는 중이면) 방금 쓴 값으로 맞춘다.
+            #   ⚠️`_regroup_map_points()` 는 여기서 부르지 않는다 — 일괄 적용이 N번 돌므로
+            #     호출부가 루프 뒤에 **한 번만** 부른다.
+            #   ⚠️**스캔 중이면 `_map_pending` 에 모은다** — 워커가 이미 지나간 파일이면 결과가
+            #     쓰기 이전 스냅샷이라 그냥 `_map_raw` 에 넣어 봐야 곧 덮인다.
+            #   ⚠️`_map_paths` 에 있는 경로만 — 짝 JPEG 은 세지 않으므로(한 컷을 두 번 세면
+            #     커버리지가 거짓이 된다) 여기서 끼워 넣어도 안 된다.
+            target = self._map_folder or self._map_scanning
+            if (target and os.path.normcase(str(p.parent)) == os.path.normcase(target)
+                    and os.path.normcase(path) in self._map_paths):
+                val = (gps[0], gps[1]) if gps else None
+                if self._map_busy:
+                    self._map_pending[path] = val
+                elif val is None:
+                    self._map_raw.pop(path, None)
+                else:
+                    self._map_raw[path] = val
             # 썸네일 '편집됨' 배지 — 위치도 편집이므로 켜지는 게 맞다(사이드카가 생겼다).
             if str(p.parent) == self._edited_folder and p.name not in self._edited:
                 self._edited.add(p.name)
@@ -3675,7 +3747,156 @@ class Controller(QObject):
         if n:
             self._edit_rev += 1
             self.editsChanged.emit()
+            self._regroup_map_points()   # Photo map: 루프 뒤 한 번만(위 주석)
         return n
+
+    # ---------- Photo map (`M`) — 폴더의 좌표를 지도 위 썸네일로 보기 ----------
+    #
+    # ★**읽기 전용이다.** 셰이더 uniform 0개 · `_PRESET_KEYS`/`LOOK_DEFAULTS`/`editParams()`/
+    #   export dict 무변경 → CLAUDE.md 의 ★렌더 경로 4중 계약에 **들어가지 않는다**.
+    #   좌표를 **붙이는** 일은 Location 패널(`Ctrl+6`)이 계속 단독으로 담당한다.
+    #
+    # ★사진 한 장의 좌표를 결정하는 규칙은 모듈 레벨 `_gps_for_file` **하나**다(`_load` 와 공유).
+    #   여기에 그 규칙을 다시 적지 말 것 — 복사본은 반드시 갈라진다.
+
+    @Slot()
+    def scanFolderGps(self) -> None:  # noqa: N802 (QML 슬롯)
+        """현재 폴더의 사진 좌표를 백그라운드로 읽어 `folderMapPoints` 를 채운다.
+
+        ⚠️**디스크 읽기를 메인 스레드에서 하지 않는다** — 실측(840장 폴더): 사이드카 420개가
+          cold **1.85s** / warm 119ms 이고, 사이드카가 없는 파일은 EXIF 를 읽는다(**1.2ms/장**,
+          840장 ≈ 1.0s). `_scan_worker` 와 같은 이유다(자는 외장 HDD 스핀업이 GUI 를 멈춘다).
+        같은 폴더를 이미 읽어 뒀으면 그대로 알리고 끝낸다(오버레이를 여닫을 때마다 재스캔 X).
+        """
+        folder = self._folder
+        if not folder:
+            return
+        if folder == self._map_scanning:
+            return                                # 같은 폴더를 이미 훑는 중 — 연타로 중복 실행 금지
+        if folder == self._map_folder and not self._map_busy:
+            self.folderMapChanged.emit()          # 이미 가지고 있다(캐시)
+            return
+        # ★**짝 JPEG(`paired`)은 세지 않는다.** 카메라 RAW+JPEG 동시기록은 **한 컷**이고
+        #   사이드카는 RAW 쪽에만 붙는다 — 둘 다 세면 실측 폴더가 "840장 중 420장 위치"로
+        #   읽히는데 사실은 **420컷 전부 위치가 있다**(커버리지가 거짓이 된다). 탐색기도
+        #   기본으로 접는 항목이라(`P` 토글) 눈에 보이는 것과도 이쪽이 맞는다.
+        #   ⚠️배치 인덱서('항상 폴더 전체')와 규칙이 다르다 — 그쪽은 캡션을 **생성**하므로
+        #     빠짐이 손해지만, 여기는 **세는 일**이라 중복이 손해다.
+        paths = [it["path"] for it in self._files
+                 if not it.get("isDir") and not it.get("paired")]
+        self._map_seq += 1
+        self._map_busy = True
+        self._map_scanning = folder
+        self._map_total = len(paths)
+        self._map_paths = {os.path.normcase(p) for p in paths}
+        self._map_pending = {}
+        self._map_raw = {}                        # ⚠️생값도 비운다 — 안 비우면 스캔 중에
+        self._map_groups = []                     #   `setGps` 가 들어올 때 이전 폴더의
+        self._map_folder = ""                     #   경로들이 다시 묶인다.
+        self.folderMapChanged.emit()
+        threading.Thread(target=self._map_scan_worker,
+                         args=(self._map_seq, folder, paths), daemon=True).start()
+
+    def _map_scan_worker(self, seq: int, folder: str, paths: list) -> None:
+        """사진마다 사이드카/EXIF 를 읽어 `{path: (lat, lon)}` 을 만들어 메인에 넘긴다.
+
+        대상은 **항상 폴더 전체**다(배치 인덱서와 같은 규칙 — 검색/좋아요 필터로 좁히지 않고
+        짝 JPEG 접기도 보지 않는다. 그래서 카운트는 폴더 기준이다).
+        ⚠️`decode_lock` 은 거치지 않는다 — Qt 이미지 디코드를 하지 않고 `exifread` 는 순수
+          파이썬이다(그 락이 지키는 이미지 플러그인 뮤텍스가 여기엔 없다).
+        """
+        raw = {}
+        for path in paths:
+            if seq != self._map_seq:
+                return                            # 폴더를 오가며 더 새 스캔이 시작됨 → 폐기
+            try:
+                gps = _gps_for_file(path, self._read_edits(path))
+            except Exception as exc:
+                print(f"[map] {path}: {exc}")
+                continue
+            if gps:
+                raw[path] = (gps[0], gps[1])
+        self._mapScanSig.emit((seq, folder, raw, len(paths)))
+
+    @Slot(object)
+    def _on_map_scanned(self, payload) -> None:
+        seq, folder, raw, total = payload
+        if seq != self._map_seq:
+            return                                # 더 최신 스캔 진행 중 → 폐기
+        # ★스캔이 도는 동안 일괄 적용·GPX 로 쓴 좌표를 결과에 **덮어씌운다.** 워커가 그 파일을
+        #   이미 읽고 지나갔으면 결과는 쓰기 이전 스냅샷이라, 그대로 두면 방금 붙인 위치가
+        #   지도에서 사라진다(재스캔 전까지).
+        for path, val in self._map_pending.items():
+            if val is None:
+                raw.pop(path, None)
+            else:
+                raw[path] = val
+        self._map_pending = {}
+        self._map_raw = raw
+        self._map_folder = folder
+        self._map_scanning = ""
+        self._map_total = total
+        self._map_busy = False
+        self._regroup_map_points()
+
+    def _regroup_map_points(self) -> None:
+        """`_map_raw` → 좌표별 스택. 그룹핑은 **메인 스레드**에서 한다.
+
+        ★⚠️**지금 열린 사진은 디스크 값을 덮어쓴다.** `setGps` 는 메모리만 바꾸고 사이드카는
+          QML 의 `saveEdits` 가 나중에 쓴다 — 그냥 재스캔하면 **옛 값**을 읽어 지도가 패널과
+          다른 자리를 가리킨다. 그래서 `gpsChanged` 에서는 디스크를 다시 읽지 않고 이 함수만
+          다시 돌린다(지도가 열린 채 `Ctrl+Z` 를 눌러도 맞는다).
+
+        키 = 소수점 6자리 ≈ 0.1m (`exif_info.format_gps` 와 같은 정밀도). 일괄 적용된 좌표는
+        어차피 비트 동일하다 — 실측 폴더(840장)에서 420장이 겹친 좌표 **4개**에 모인다.
+        """
+        pts = dict(self._map_raw)
+        # 열린 사진 덮어쓰기(위 주석). 그 사진이 이 폴더에 있을 때만.
+        # ⚠️`_map_paths` 안의 사진만 — 짝 JPEG 을 끼워 넣으면 한 컷이 두 번 세어져
+        #   "420장 중 421장 위치" 같은 카운트가 나온다(스캔 대상에서 뺀 이유와 같다).
+        cur = self._ui_path or self._path
+        if cur and self._map_folder and os.path.normcase(cur) in self._map_paths and (
+                os.path.normcase(str(Path(cur).parent))
+                == os.path.normcase(self._map_folder)):
+            if self._gps:
+                pts[cur] = (self._gps[0], self._gps[1])
+            else:
+                pts.pop(cur, None)
+        groups = {}
+        for path, (lat, lon) in pts.items():
+            groups.setdefault((round(lat, 6), round(lon, 6)), []).append(path)
+        liked = self._likes if self._likes_folder == self._map_folder else set()
+        out = []
+        for (lat, lon), paths in groups.items():
+            paths.sort(key=lambda p: os.path.basename(p).lower())
+            # 대표 썸네일 = 그룹 안 **좋아요된 첫 사진**, 없으면 파일명 첫 사진. 장소를 대표하는
+            #   그림이 내가 고른 한 장이면 지도가 훨씬 읽힌다(`self._likes` 재사용, 새 I/O 0).
+            rep = next((p for p in paths if os.path.basename(p) in liked), paths[0])
+            out.append({"lat": lat, "lon": lon, "count": len(paths),
+                        "rep": rep, "paths": paths})
+        # count 내림순 — 큰 스택이 위에 그려지고 화면좌표 병합에서 대표로 살아남는다.
+        out.sort(key=lambda g: (-g["count"], g["lat"], g["lon"]))
+        self._map_groups = out
+        self.folderMapChanged.emit()
+
+    def _get_map_points(self) -> list:
+        return self._map_groups
+
+    def _get_map_busy(self) -> bool:
+        return self._map_busy
+
+    def _get_map_folder(self) -> str:
+        return self._map_folder
+
+    def _get_map_stats(self) -> dict:
+        located = sum(g["count"] for g in self._map_groups)
+        return {"photos": self._map_total, "located": located,
+                "places": len(self._map_groups)}
+
+    folderMapPoints = Property("QVariantList", _get_map_points, notify=folderMapChanged)
+    folderMapStats = Property("QVariantMap", _get_map_stats, notify=folderMapChanged)
+    folderMapBusy = Property(bool, _get_map_busy, notify=folderMapChanged)
+    folderMapFolder = Property(str, _get_map_folder, notify=folderMapChanged)
 
     def _exif_field(self, label: str) -> str:
         """캐시된 촬영정보에서 라벨 하나 — 없으면 빈 문자열.
@@ -4629,15 +4850,11 @@ class Controller(QObject):
         # 지오태그 — **사이드카 우선, 없으면 파일에 적힌 EXIF GPS**.
         # ⚠️사이드카에 `gpsLat` 키가 **있으면**(값이 null 이어도) 그것이 답이다 — 사용자가
         #   일부러 지운 위치가 다음 로드에서 EXIF 로 되살아나면 지우기가 안 먹는 것이 된다.
+        # ★규칙 자체는 `_gps_for_file` 하나에만 있다(Photo map 워커와 공유 — 그 함수 주석).
+        self._gps = _gps_for_file(path, e)
         if "gpsLat" in e:
-            self._gps = self._gps_tuple({"lat": e.get("gpsLat"), "lon": e.get("gpsLon"),
-                                         "alt": e.get("gpsAlt")})
             self._gps_src = str(e.get("gpsSrc") or "") if self._gps else ""
         else:
-            try:
-                self._gps = exif_info.read_gps(path)      # 카메라가 남긴 좌표(대개 없다)
-            except Exception:
-                self._gps = None
             self._gps_src = "exif" if self._gps else ""
         # ⚠️`_refresh_gps_field` 는 exifChanged 만 쏜다 — **여기서 gpsChanged 를 쏘면 안 된다.**
         #   아래 stampChanged 주석과 같은 함정이다: 아직 디코드 전이라 QML `_ui_path` 는 이전
@@ -4703,6 +4920,24 @@ class Controller(QObject):
             return                               # 더 최신 스캔 진행 중 → 폐기
         if not force and folder == self._folder and items == self._files:
             return                               # 변화 없음(우리 .json 저장 등) → UI 갱신 생략
+        # Photo map: **폴더가 바뀌면** 캐시를 버린다(다음 `M` 이 새로 훑는다). 같은 폴더의
+        #   감시 재스캔(파일 추가/사이드카 저장)에서는 버리지 않는다 — 좌표는 우리가 이미
+        #   `_write_gps_sidecar`/`_set_gps` 에서 따라가고 있고, 여기서 버리면 지도가 열린 채
+        #   자동저장 한 번에 통째로 비었다가 다시 차서 깜빡인다.
+        # ★비교 대상에 **훑는 중인 폴더**도 넣는다 — 안 그러면 같은 폴더의 감시 재스캔
+        #   (파일 추가·사이드카 저장)이 '폴더가 바뀌었다'로 읽혀 **진행 중인 스캔을 죽이고**
+        #   지도가 "위치 없음"으로 굳는다(닫았다 다시 열기 전까지).
+        if folder != (self._map_folder or self._map_scanning):
+            self._map_raw = {}
+            self._map_groups = []
+            self._map_folder = ""
+            self._map_scanning = ""
+            self._map_paths = set()
+            self._map_pending = {}
+            self._map_total = 0
+            self._map_seq += 1          # 진행 중이던 이전 폴더 스캔 결과를 폐기
+            self._map_busy = False
+            self.folderMapChanged.emit()
         self._folder = folder
         self._files = items
         self._update_watcher(folder)             # QFileSystemWatcher — 메인 스레드에서만

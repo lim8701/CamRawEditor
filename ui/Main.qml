@@ -29,7 +29,7 @@ ApplicationWindow {
     // ⚠️전체화면 오버레이를 새로 만들면 **여기에 추가**할 것 — `?`/F1 도움말이 빠져 있어
     //   도움말 위에서 D(각인 토글 + 내 기본값 갱신)·Ctrl+Z 가 뒤의 편집을 바꿨다.
     readonly property bool _keysBlocked: win._typing || rawPeekWin.visible
-                                         || shortcutHelp.visible
+                                         || shortcutHelp.visible || win.showPhotoMap
 
                     // 아이콘 버튼(우측 패널 공용) — ♥/☑/태그/위로가기와 같은 커스텀 패턴.
     // ⚠️네이티브 Button 을 쓰지 않는다: macOS 스타일이 **베젤을 아이템 안에서 치우쳐** 그린다
@@ -2208,6 +2208,31 @@ ApplicationWindow {
             else if (controller.currentFolder !== "") win.openTagCloud()
         }
     }
+    // ─── Photo map (`M`) — 이 폴더의 사진이 어디서 찍혔는지 ───
+    // Photo tags(`H`)와 같은 급의 **폴더 단위 읽기 전용 둘러보기**라 형태·단축키 모양을 맞춘다.
+    // ⚠️좌표를 붙이는 일은 Location 패널(`Ctrl+6`)이 단독 담당 — 여기서는 아무것도 안 쓴다.
+    property bool showPhotoMap: false
+    // M = Photo map 토글. 폴더가 있어야 열림(H 와 같은 형태).
+    // ⚠️개인용 플래그가 꺼져 있으면 단축키 자체를 비활성(Ctrl+5 / Wallpaper 와 같은 방식).
+    // ⚠️여기는 `_keysBlocked` 를 그대로 쓰지 않는다 — M 은 **토글**이라 오버레이가 떠 있을 때도
+    //   살아 있어야 닫힌다(`_keysBlocked` 가 `showPhotoMap` 을 포함한다). R·? 와 같은 예외이고
+    //   `python shortcuts.py` 의 가드 검사가 이 셋을 예외로 안다. 나머지 항(타이핑 중·다른
+    //   전체화면 오버레이 위)은 그대로 지킨다.
+    Shortcut {
+        sequence: "M"
+        enabled: controller.photoMapEnabled && !win._typing
+                 && !rawPeekWin.visible && !shortcutHelp.visible
+        onActivated: {
+            if (win.showPhotoMap) win.showPhotoMap = false
+            else if (controller.currentFolder !== "") win.openPhotoMap()
+        }
+    }
+    function openPhotoMap() {
+        if (!controller.photoMapEnabled) return  // 개인용 — 릴리즈에서는 열리지 않는다
+        win.peekHide()                          // 호버 피크가 떠 있으면 닫고 진입
+        win.showPhotoMap = true
+        controller.scanFolderGps()              // 같은 폴더면 캐시 — 재스캔 안 한다
+    }
     // 카메라 RAW+JPEG 동시기록에서 짝 JPEG 을 별도 행으로 볼지(기본 꺼짐 = 접어서 중복 제거).
     // 라이트룸의 'Treat JPEG files next to raw files as separate photos' 와 같은 의미.
     property bool showPairedImages: false
@@ -3106,6 +3131,21 @@ ApplicationWindow {
         }
         if (list.length > 0)
             previewWin.open(list, start)
+    }
+
+    // ─── Photo map (몰입형 풀블리드 — 지도 위 썸네일 스택) ───
+    // ⚠️QtLocation 은 `PhotoMapOverlay` 안의 `Loader`(-> `FolderMap.qml`)에만 있다 — 여기에
+    //   import 를 올리면 모듈이 빠진 배포본에서 앱이 통째로 안 뜬다.
+    PhotoMapOverlay {
+        anchors.fill: parent
+        z: 1000
+        visible: win.showPhotoMap && controller.photoMapEnabled
+        bgSource: mainContent
+        onCloseRequested: win.showPhotoMap = false
+        onOpenRequested: function (path) {
+            win.showPhotoMap = false
+            controller.loadPath(path)
+        }
     }
 
     // ─── 폴더 태그 워드 클라우드 (몰입형 풀블리드 — 경계 없는 반투명 전면, 단어 클릭 = 검색 필터) ───
@@ -4534,6 +4574,30 @@ ApplicationWindow {
                         MouseArea {
                             anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                             onClicked: win.openTagCloud()
+                        }
+                    }
+                    // 🗺 Photo map (좌표 → 지도 위 썸네일). 단축키 M.
+                    // ⚠️개인용 — 플래그가 꺼지면 버튼째 사라진다(RowLayout 은 보이지 않는
+                    //   항목의 자리를 잡지 않으므로 여백도 안 남는다).
+                    Rectangle {
+                        visible: controller.photoMapEnabled
+                        Layout.preferredWidth: 20; Layout.preferredHeight: 20
+                        radius: 4
+                        color: mapHover.hovered ? "#33373f" : "transparent"
+                        border.color: "#555"; border.width: 1
+                        // ⚠️이모지(🗺)를 쓰지 않는다 — 🏷 에서 겪은 것과 같은 이유로 macOS 에서는
+                        //   컬러 이모지로만 그려져 색 지정이 무시된다(위 태그 버튼 주석). SVG 고정.
+                        Image { anchors.centerIn: parent
+                                source: "../assets/icons/map_pin.svg"
+                                width: 14; height: 14
+                                sourceSize.width: 28; sourceSize.height: 28   // HiDPI 선명도
+                                smooth: true }
+                        HoverHandler { id: mapHover }
+                        ToolTip.visible: mapHover.hovered
+                        ToolTip.text: "Photo map (M) — where this folder was shot"
+                        MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                            onClicked: win.openPhotoMap()
                         }
                     }
                 }
