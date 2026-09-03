@@ -6996,15 +6996,27 @@ ApplicationWindow {
                                 readonly property bool offerDownload:
                                     !controller.captionBusy && controller.caption === ""
                                     && !controller.captionModelReady
+                                // 생성 실패 — 사유는 캡션이 없을 때만 라벨에 실린다(아래 text).
+                                readonly property bool failed:
+                                    controller.captionStatus.indexOf("Failed") === 0
                                 text: controller.captionBusy
                                       ? (controller.captionStatus || "Generating…")
                                       : (offerDownload
                                          ? "AI captions are off — click to download the model (~1.1 GB, one-time)"
                                          : (controller.caption || controller.captionStatus))
-                                color: controller.captionStatus.indexOf("Failed") === 0
-                                       ? "#ff6b6b"
+                                // ⚠️빨간색은 **라벨이 실제로 사유를 보여줄 때만**. 색을 상태로만
+                                //   판정하던 시절엔 캡션이 있는 사진에서 그 **정상 캡션이 빨갛게**
+                                //   나왔다(사용자 보고). 캡션이 있으면 사유는 툴팁으로 보낸다.
+                                color: (failed && controller.caption === "") ? "#ff6b6b"
                                        : (offerDownload ? "#8ab4f8"
                                           : (controller.captionBusy ? "#9a9a9a" : "#e6e6e6"))
+                                ToolTip.visible: capFailHover.hovered
+                                ToolTip.delay: 500
+                                ToolTip.text: controller.captionStatus
+                                HoverHandler {
+                                    id: capFailHover
+                                    enabled: captionText.failed && controller.caption !== ""
+                                }
                                 font.pixelSize: 12
                                 font.italic: controller.captionBusy
                                 font.underline: offerDownload && capDlHover.hovered

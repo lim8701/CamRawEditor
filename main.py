@@ -2240,7 +2240,12 @@ class Controller(QObject):
             ok = True
         except Exception as exc:
             traceback.print_exc()
-            self._caption_status = f"Failed: {exc}"
+            # 사유는 **그 사진이 아직 화면에 있을 때만** 표시한다 — 생성 중에 다른 사진으로
+            # 넘어갔으면 남의 실패를 그 사진의 캡션 바에 붙이는 셈이다(위 `_caption_status = ""`
+            # 주석과 같은 결함의 다른 경로). 로그(traceback)에는 항상 남는다.
+            shown = (os.path.normcase(os.path.abspath(self._ui_path)) if self._ui_path else "")
+            same = shown == os.path.normcase(os.path.abspath(path))
+            self._caption_status = f"Failed: {exc}" if same else ""
             ok = False
         finally:
             self._caption_busy = False
@@ -6893,6 +6898,10 @@ class Controller(QObject):
             self.stampChanged.emit()
             self.gpsChanged.emit()   # 지오태그도 같은 이유로 여기서(위 ①② 그대로 적용된다)
             self.editsReady.emit()
+            # ⚠️직전 사진의 실패 사유(`Failed: …`)를 물고 가지 않는다 — 이 상태가 캡션 라벨의
+            #   **색**을 정하는데 라벨 텍스트는 캡션이 있으면 캡션이라, 지우지 않으면
+            #   **정상 캡션이 빨간색**으로 나온다(사용자 보고 → 재현, 2026-09-03).
+            self._caption_status = ""
             self.captionChanged.emit()   # _ui_path 확정 후 캡션 재평가(사이드카 저장분 표시)
             self._maybe_auto_caption()   # 저장된 캡션 없으면 자동 생성(하단 캡션 패널)
 
