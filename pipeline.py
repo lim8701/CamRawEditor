@@ -496,7 +496,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         _auto_gain = 1.0                 # display-referred: 자동노출 없음(센서 클립도 없음)
     else:
         with rawpy.imread(path) as raw:
-            cam = np.array(raw.rgb_xyz_matrix)[:3, :3]
+            cam = wb.cam_xyz_from_raw(raw)   # 프록시(raw_loader)와 동일 — 미등재 기종은 color_matrix 로 복원
             ref = np.array(raw.daylight_whitebalance, dtype=float)[:3]
             ref = ref / ref[1] if (ref[1] > 0 and np.all(np.isfinite(ref))) else np.ones(3)  # 빈/0 WB → 중성 폴백(NaN/블랙 방지)
             as_shot, as_shot_tint = wb.estimate_wb(cam, ref, raw.camera_whitebalance)  # as-shot WB(K,tint)

@@ -83,6 +83,33 @@ def cam_to_srgb_matrix(cam_xyz):
     return inv if np.all(np.isfinite(inv)) else np.eye(3)
 
 
+def cam_xyz_from_raw(raw) -> np.ndarray:
+    """rawpy RAW -> cam_xyz(XYZ->카메라RGB, 3x3). rgb_xyz_matrix 가 비었을 때 복원한다.
+
+    LibRaw `rgb_xyz_matrix`(=color.cam_xyz)는 **adobe_coeff 테이블에 등재된 기종만** 채워진다.
+    테이블에 없는 신기종/폰 DNG(실측: Lightroom mobile 의 iPhone 17 = "iPhone18,3 back camera")는
+    0 행렬이 되고, 그러면
+      · compute_user_wb 의 planck 응답이 전부 1e-6 로 클립 → 모든 Kelvin 의 배수가 동일
+        → **Temp 슬라이더가 완전 무동작**(tint 만 먹는다),
+      · cam_to_srgb_matrix 는 항등 폴백 → 카메라공간을 sRGB 로 오해한 색.
+    다행히 LibRaw 는 DNG 의 ColorMatrix1/2 로 `color_matrix`(cam->선형sRGB, 행합=1)는 채워 두므로
+    그걸 역산해 cam_xyz 를 되살린다: cam_rgb=inv(color_matrix) 가 sRGB->cam 이고
+    cam_xyz = cam_rgb @ inv(sRGB->XYZ). 행별 스케일은 소실되지만 rel_gain(TREF 대비 비율에서 상쇄)
+    과 cam_to_srgb_matrix(행합 정규화)에는 영향이 없다 — DNG ColorMatrix2 직접 파싱과 수치 동일(실측).
+    둘 다 없으면 기존과 같은 축퇴 행렬(0)을 그대로 반환한다(중성 폴백 유지).
+    """
+    cam = np.asarray(raw.rgb_xyz_matrix, float)[:3, :3]
+    if np.all(np.isfinite(cam)) and abs(np.linalg.det(cam)) > 1e-8:
+        return cam
+    cm = np.asarray(getattr(raw, "color_matrix", np.zeros((3, 4))), float)[:3, :3]
+    if np.all(np.isfinite(cm)) and abs(np.linalg.det(cm)) > 1e-8:
+        try:
+            return np.linalg.inv(cm) @ np.linalg.inv(_XYZ_RGB_D65)
+        except np.linalg.LinAlgError:
+            pass
+    return cam
+
+
 def baked_wb(cam_xyz, daylight_ref):
     """프록시 디코딩에 베이크할 TREF(daylight) 기준 WB 배수."""
     return compute_user_wb(cam_xyz, daylight_ref, TREF, 0.0)

@@ -11,8 +11,8 @@ from scipy.ndimage import zoom
 from PySide6.QtGui import QImage
 
 import lens
-from wb import (auto_exposure_gain, baked_wb, cam_to_srgb_matrix, estimate_wb,
-                linear_to_srgb, srgb_to_linear)
+from wb import (auto_exposure_gain, baked_wb, cam_to_srgb_matrix, cam_xyz_from_raw,
+                estimate_wb, linear_to_srgb, srgb_to_linear)
 
 # 프리뷰 프록시 헤드룸: scene-linear 를 8bit 에 담을 때 code=oetf(L/H), 셰이더가 ×H 로 복원.
 # H 만큼(여기 4× ≈ 2스톱) 하이라이트 헤드룸 확보 → filmic 톤커브가 누를 여지 보존.
@@ -117,7 +117,7 @@ def _decode_native(path: str, export_quality: bool = False):
     반환: (rgb16, cam_xyz(3x3), ref(3), as_shot, as_shot_tint, target_median)
     """
     with rawpy.imread(path) as raw:
-        cam_xyz = np.array(raw.rgb_xyz_matrix)[:3, :3]
+        cam_xyz = cam_xyz_from_raw(raw)     # 미등재 기종(폰 DNG 등)은 color_matrix 로 복원
         ref = np.array(raw.daylight_whitebalance, dtype=float)[:3]
         # daylight_whitebalance 가 비어있음/0/비유한(제네릭·폰·드론 DNG 등)이면 ref/ref[1] 가 NaN →
         # user_wb NaN → 블랙 프레임. 중성 [1,1,1] 로 폴백(최소한 정상 밝기로 현상). estimate_wb 도 방어.
