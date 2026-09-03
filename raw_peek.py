@@ -426,8 +426,13 @@ def mosaic(st: RawPeek, mode: int, cx: float, cy: float, zoom: int,
         st.last_scale = 1.0 / f
         if _cache_hit(st, key):
             return st._full_img[1]           # (QImage, 캡션줄) 튜플을 그대로 캐시한다
-        out = _render(st, _box_down(st.norm_vis(), f), _colors_down(st, f), mode, 1,
-                      note=f"whole frame, box/{f}", gain=gain)
+        note = f"whole frame, box/{f}"
+        if mode == MODE_GRAY:
+            out = _render(st, _box_down(st.norm_vis(), f), None, mode, 1, note=note, gain=gain)
+        else:
+            # 색을 쓰는 모드만 색 인식 축소(최근접이면 위상 하나만 남는다 — `_cfa_down` 주석).
+            vb, means, fracs = _cfa_down(st, f)
+            out = _render(st, vb, None, mode, 1, note=note, gain=gain, cdown=(means, fracs))
         st._full_img = (key, out)
         return out
 
@@ -521,6 +526,8 @@ def is_heavy(st: RawPeek, mode: int, zoom: int, out_w: int, out_h: int,
     ⚠️그래서 `gain` 도 받아야 한다. 호출부가 안 넘기면 기본값 True 가 잡히므로, 게인을 끈
       상태에서 다시 키가 어긋난다.
     실측(X100V 26MP): 디모자이크 비교 1.13s / 전체보기 0.25~0.38s / 그 외 22~100ms.
+    ⚠️전체보기는 색 인식 축소(`_cfa_down`) 뒤로 Gray 0.27s / CFA 0.86s(f=5, 마스크 경로)
+      / Planes 0.36s(f=12, 빠른 경로) 다 — 워커로 가고 창 크기마다 캐시되는 값이다.
     """
     if mode == MODE_DEMOSAIC:
         # 캐시가 비었거나 **팬으로 창을 벗어난** 렌더는 무겁다(LibRaw 전체 디코드 1.3~3.7s).
@@ -540,10 +547,67 @@ def is_heavy(st: RawPeek, mode: int, zoom: int, out_w: int, out_h: int,
     return not _cache_hit(st, _full_key(st, mode, out_w, out_h, gain))
 
 
-def _colors_down(st, f):
-    """축소 뷰용 색 인덱스 — 축소하면 색 구분이 의미 없으므로 최근접 샘플만."""
-    return st.colors[::f, ::f][:max(1, st.colors.shape[0] // f),
-                               :max(1, st.colors.shape[1] // f)]
+def _cfa_down(st, f, v=None):
+    """축소 뷰용 **색 인식** 축소 — f×f 블록마다 (박스 평균값, 색별 평균, 색별 면적비).
+
+    v: 이미 계산해 둔 `st.norm_vis()` 가 있으면 넘긴다(Develop 은 같은 배열을 쓴다).
+
+    ⚠️예전엔 값만 박스 평균하고 색 인덱스는 `colors[::f, ::f]`(최근접)로 잡았다. f 가 패턴
+      주기의 배수면 **한 위상만** 뽑혀 그 블록의 나머지 색이 통째로 사라진다 — 실측(iPhone
+      Bayer DNG, raw_pattern [[B,G2],[G,R]], 뷰포트 1700x950 → f=4): `colors[::4,::4]` 의
+      unique 가 `[2]`(=B) 하나라 **CFA 전체 보기가 파랗고**(mean RGB 66/80/118, 1:1 은
+      122/142/107 로 녹색), **Planes 는 B 패널만 나오고 R·G·G2 가 검정**이었다(사용자 보고).
+      X-Trans(주기 6)는 f=4 에서 위상이 섞이고 녹색이 55% 라 눈에 안 띄었을 뿐 같은 버그다.
+    → 블록 안 **색별로** 평균을 내고 면적비를 함께 돌려준다. CFA 축소 뷰는 이 둘을 곱해
+      더하므로 1:1 CFA 렌더의 **면적 평균**과 같아지고(위상 의존이 사라진다), Planes 는 색별
+      평균 평면을 그린다. 반환: (v_box, {ci: 평균}, {ci: 면적비}).
+    """
+    v = st.norm_vis() if v is None else v
+    c = st.colors[:v.shape[0], :v.shape[1]]
+    if f <= 1:
+        ones = np.ones_like(v)
+        return v, {ci: v for ci in st.present}, {ci: (c == ci).astype(np.float32) * ones
+                                                 for ci in st.present}
+    hb, wb = max(1, v.shape[0] // f), max(1, v.shape[1] // f)
+    h, w = hb * f, wb * f
+    vb = v[:h, :w].reshape(hb, f, wb, f)
+    v_box = vb.mean(axis=(1, 3), dtype=np.float32)
+    p = st.period
+
+    if st.pattern is not None and f % p == 0:
+        # ★빠른 경로 — f 가 패턴 주기의 배수면 위상 격자 `v[oy::p, ox::p]` 가 **색이 하나로
+        #   고정된** 표본 격자다. 그러면 색별 합이 그 격자의 정수 박스합(m=f/p)의 합이라
+        #   전체 프레임 마스크(26MP × 색 수)를 만들 필요가 없다 — 실측(12MP Bayer f=4 /
+        #   26MP X-Trans f=6): 마스크 경로 500ms/703ms → 이 경로 179ms/320ms(`_box_down`
+        #   단독이 113ms/249ms 이므로 색 분해 값이 거의 공짜다). 두 경로의 결과는 float
+        #   반올림(≤2.4e-7) 말고는 같다(실측 비교).
+        #   ⚠️f 가 주기의 배수가 아니면(X-Trans f=4·5 등) 마스크 경로라 0.76~0.88s 다 —
+        #     전체 보기는 워커에서 돌고 창 크기마다 캐시되므로 그대로 둔다.
+        #   ⚠️버그가 보이던 크기가 바로 이 경우다(f=4, 주기 2) — 여기가 정확해야 한다.
+        m = f // p
+        sums = {ci: np.zeros((hb, wb), np.float32) for ci in st.present}
+        cnts = {ci: 0 for ci in st.present}
+        for oy in range(p):
+            for ox in range(p):
+                ci = int(st.pattern[oy, ox])
+                grid = v[oy:h:p, ox:w:p]                       # (hb*m, wb*m) 이 위상의 표본
+                sums[ci] += grid.reshape(hb, m, wb, m).sum(axis=(1, 3), dtype=np.float32)
+                cnts[ci] += m * m
+        means = {ci: sums[ci] / float(max(cnts[ci], 1)) for ci in st.present}
+        fracs = {ci: np.full((hb, wb), cnts[ci] / float(f * f), np.float32)
+                 for ci in st.present}
+        return v_box, means, fracs
+
+    # 일반 경로 — 블록이 패턴 주기와 안 맞으면 색별 점유율이 블록마다 다르므로 마스크로 센다.
+    cb = c[:h, :w].reshape(hb, f, wb, f)
+    means, fracs = {}, {}
+    for ci in st.present:
+        m = (cb == ci)
+        n = m.sum(axis=(1, 3))
+        s = np.where(m, vb, np.float32(0.0)).sum(axis=(1, 3), dtype=np.float32)
+        means[ci] = s / np.maximum(n, 1).astype(np.float32)
+        fracs[ci] = n.astype(np.float32) / float(f * f)
+    return v_box, means, fracs
 
 
 def _gain_note(on: bool, g: float) -> str:
@@ -555,17 +619,20 @@ def _gain_note(on: bool, g: float) -> str:
     return f"display gain x{g:.1f}" if on else "display gain off (as recorded)"
 
 
-def _render(st, v, c, mode, zoom, note="", grid=False, gain=True):
+def _render(st, v, c, mode, zoom, note="", grid=False, gain=True, cdown=None):
+    """cdown: 축소 뷰의 색별 평균/면적비 (`_cfa_down` 의 뒤 두 값). 주면 CFA·Planes 가
+    최근접 색 인덱스(`c`) 대신 이걸 쓴다 — 위상 하나만 남는 버그 방지(`_cfa_down` 주석)."""
     g = _auto_gain(v) if gain else 1.0
     lin = np.clip(v * g, 0.0, 1.0)
     h, w = lin.shape
     # 색 배열이 값 배열과 어긋나면(축소 경로) 잘라 맞춘다
-    c = c[:h, :w]
-    if c.shape != lin.shape:
-        ch, cw = c.shape
-        pad = np.zeros_like(lin, np.uint8)
-        pad[:ch, :cw] = c
-        c = pad
+    if c is not None:
+        c = c[:h, :w]
+        if c.shape != lin.shape:
+            ch, cw = c.shape
+            pad = np.zeros_like(lin, np.uint8)
+            pad[:ch, :cw] = c
+            c = pad
 
     if mode == MODE_GRAY:
         a = _gamma8(lin)                       # ★확대 전(크롭 크기)에서 3채널로 만든다
@@ -573,13 +640,21 @@ def _render(st, v, c, mode, zoom, note="", grid=False, gain=True):
         texts = [f"Gray — sensor mosaic, no demosaic",
                  f"{note}   {_gain_note(gain, g)}"]
     elif mode == MODE_PLANES:
-        return _render_planes(st, lin, c, zoom, g, note, gain)
+        return _render_planes(st, lin, c, zoom, g, note, gain, cdown)
     else:                                   # MODE_CFA
         col = np.zeros((h, w, 3), np.float32)
-        for ci in st.present:
-            m = (c == ci)
-            for k in range(3):
-                col[..., k] += m * lin * CFA_RGB[ci][k]
+        if cdown is not None:
+            # 축소 뷰 — 색별 평균 × 면적비의 합 = 1:1 CFA 렌더의 면적 평균(`_cfa_down` 주석)
+            means, fracs = cdown
+            for ci in st.present:
+                lc = np.clip(means[ci][:h, :w] * g, 0.0, 1.0) * fracs[ci][:h, :w]
+                for k in range(3):
+                    col[..., k] += lc * CFA_RGB[ci][k]
+        else:
+            for ci in st.present:
+                m = (c == ci)
+                for k in range(3):
+                    col[..., k] += m * lin * CFA_RGB[ci][k]
         rgb = _gamma8(col)                     # ★확대는 아래에서 Qt 가 한다(_up_qimage)
         kind = "X-Trans" if st.is_xtrans else "Bayer" if st.period == 2 else "CFA"
         texts = [f"CFA — every pixel in its own filter colour   {kind} "
@@ -602,18 +677,31 @@ def _render(st, v, c, mode, zoom, note="", grid=False, gain=True):
     return img, texts
 
 
-def _render_planes(st, lin, c, zoom, g, note, gain=True):
-    """색별 평면 3(4)장을 가로로 — 표본 밀도 비교("나머지는 진짜로 없는 데이터")."""
+def _render_planes(st, lin, c, zoom, g, note, gain=True, cdown=None):
+    """색별 평면 3(4)장을 가로로 — 표본 밀도 비교("나머지는 진짜로 없는 데이터").
+
+    축소 뷰(cdown)에서는 블록마다 그 색의 **평균**을 채운다 — 출력 화소 하나에 그 색 표본이
+    여러 개 들어오므로 빈칸이 남을 수 없다. 비율(%)은 패턴상의 실제 점유율이다.
+    """
     h, w = lin.shape
     gap = 10
     panels, titles = [], []
     for ci in st.present:
-        m = (c == ci)
+        if cdown is not None:
+            means, fracs = cdown
+            fr = fracs[ci][:h, :w]
+            # 표본이 하나도 없는 블록은 검정으로 남긴다(f=1 이면 원래 마스크와 같아진다).
+            plane = np.clip(means[ci][:h, :w] * g, 0.0, 1.0) * (fr > 0)
+            share = float(fracs[ci].mean())
+        else:
+            m = (c == ci)
+            plane = m * lin
+            share = float(m.mean())
         col = np.zeros((h, w, 3), np.float32)
         for k in range(3):
-            col[..., k] = m * lin * CFA_RGB[ci][k]
+            col[..., k] = plane * CFA_RGB[ci][k]
         panels.append(_up_qimage(_gamma8(col), zoom))   # 확대는 Qt(_up_qimage 주석)
-        titles.append(f"{CFA_NAME[ci]}  {100.0 * m.mean():.1f}%")
+        titles.append(f"{CFA_NAME[ci]}  {100.0 * share:.1f}%")
     ph, pw = panels[0].height(), panels[0].width()
     top = 22
     canvas = _bg_canvas(ph + top, pw * len(panels) + gap * (len(panels) - 1))
@@ -1000,36 +1088,38 @@ def _develop_render(st: RawPeek, out_w: int, out_h: int, gray: bool = False,
     ny, nx = max(1, vh // f), max(1, vw // f)
 
     norm = st.norm_vis()
-    base = _box_down(norm, f)[:ny, :nx]          # 두 그림 공통
+    # ★★CFA 그림은 **모자이크 탭 1x 와 같은 산수**로 만든다(`_cfa_down`: 블록별 색별 평균 ×
+    #   면적비). 같은 배율의 같은 데이터를 두 탭이 다르게 그리면 안 된다.
+    #   ⚠️예전엔 블록에서 **표본 하나를 뽑아** 그 필터색으로 칠했다(위상은 공간 해시). 그 길은
+    #     두 번 틀렸다:
+    #       1) 해시를 바로 `% f` 해서 f 가 2의 거듭제곱이면 저비트만 보게 되고, 저비트는 좌표의
+    #          선형함수라 위상이 f 주기로 완전히 반복된다 — 초록 표본 자기상관(가로·세로·대각
+    #          × lag 1..7 최악) 실측 Bayer f=8 **0.824**(그 시절 주석이 0.494 를 "대각선 줄이
+    #          남는다"고 기각해 뒀는데 그보다 나빴다). X-Trans f=13 은 0.006 이라 안 걸려서
+    #          X-Trans 로만 재고 통과시킨 것이었다. → murmur3 믹서로 0.013 까지 내려갔지만,
+    #       2) 비트를 제대로 섞으면 이번엔 **너무 불규칙**해진다 — 화소마다 채널 하나를 WB 없이
+    #          그대로 칠하므로 R·B 표본이 어두워 색 점무늬(노이즈)가 되고, 같은 배율의 CFA 탭
+    #          1x(면적 평균) 와 전혀 다른 그림이 된다(사용자 보고, 2026-09-03).
+    #     f=8 이면 출력 화소 하나에 패턴 유닛이 4x4 개 들어가므로 **패턴을 보여줄 방법은 애초에
+    #     없다**(그건 CFA 탭 1:1 확대의 몫이다). 그러면 남는 정직한 그림은 면적 평균이다.
+    #   실측 거칠기(가로 인접 화소차 평균, 900x520 머리, Bayer 12MP): 1단계 Gray **4.91** /
+    #     표본1개+해시 27.69 / 표본1개+비트믹싱 33.30 / **면적 평균 5.07**. 즉 면적 평균만
+    #     1단계와 이어진다(X-Trans 26MP: 7.57 / 15.93 / 15.94 / **7.67**).
+    base, _means, _fracs = _cfa_down(st, f, v=norm)      # base = 두 그림 공통(박스 평균)
+    base = base[:ny, :nx]
     # 표시 게인 — 기본은 1.0(적힌 그대로). ⚠️켜면 머리가 밝아지는 대신 셰이더 렌더로 넘어가는
     #   이음새가 벌어진다(실측 DSCF2354: 2.7코드 -> 48.8코드). 그게 이 토글의 의미다.
     g = _auto_gain(base) if gain else 1.0
 
-    # ★★블록 안에서 어느 픽셀을 뽑느냐가 곧 어느 색을 뽑느냐다. stride 를 그냥 f 로 쓰면
-    #   X-Trans(주기 6)에서 **모든 표본이 같은 위상**에 떨어져 화면이 전부 초록이 됐다
-    #   (실측: G 가 55.6% 인데 stride==period 면 사실상 100% G).
-    #   ★위상은 **정수 해시**로 뽑는다. 후보를 재서 골랐다 — 초록 표본 여부의 공간 자기상관
-    #     (가로·세로·대각 두 방향 × lag 1..7 중 최악):
-    #       행/열 1차 램프    **1.000**  ← 완전 주기적. 이게 "조악한 격자 무늬"였다(사용자 보고)
-    #       2D 선형 혼합       0.494     ← 평면이라 대각선 줄이 남는다
-    #       XOR 해시           **0.011**  ← 채택 (잡음 수준)
-    #     결정론적이라 프레임마다 깜빡이지 않고, 뽑힌 색 분포는 실제 CFA 비율과 같다.
-    ii = np.arange(ny, dtype=np.int64)[:, None]
-    jj = np.arange(nx, dtype=np.int64)[None, :]
-    hsh = (ii * 73856093) ^ (jj * 19349663)          # 공간 해시 상용 소수
-    ys = np.clip(ii * f + hsh % f, 0, vh - 1)
-    xs = np.clip(jj * f + (hsh >> 8) % f, 0, vw - 1)
     def _gray():
         return np.repeat(np.clip(base * g, 0.0, 1.0)[..., None], 3, axis=2)
 
     def _cfa():
-        lin = np.clip(norm[ys, xs] * g, 0.0, 1.0)
-        col = st.colors[ys, xs]
-        out = np.zeros(lin.shape + (3,), np.float32)
+        out = np.zeros((ny, nx, 3), np.float32)
         for ci in st.present:
-            m = (col == ci)
+            lc = np.clip(_means[ci][:ny, :nx] * g, 0.0, 1.0) * _fracs[ci][:ny, :nx]
             for ch in range(3):
-                out[..., ch] += m * lin * CFA_RGB[ci][ch]
+                out[..., ch] += lc * CFA_RGB[ci][ch]
         return out
 
     if both:
