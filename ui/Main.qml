@@ -2478,7 +2478,11 @@ ApplicationWindow {
     FolderDialog {
         id: batchDestDialog
         title: "Select Export Destination"
-        onAccepted: win.batchStart(selectedFolder.toString(), batchFmtCombo.currentText)
+        onAccepted: {
+            // 다음 배치가 같은 목적지에서 열리게 기억한다(Export·Wallpaper 와 **별도** 캐시).
+            controller.rememberDialogFolder("batch", selectedFolder)
+            win.batchStart(selectedFolder.toString(), batchFmtCombo.currentText)
+        }
     }
 
     // AI 디노이즈 CPU 폴백 선택: GPU EP(DirectML) 없을 때 느린 CPU 계산 진행 여부.
@@ -4133,7 +4137,11 @@ ApplicationWindow {
         fileMode: FileDialog.SaveFile
         nameFilters: ["JPEG (*.jpg)", "PNG (*.png)"]
         defaultSuffix: "jpg"
-        onAccepted: win.wallStart(selectedFile)
+        onAccepted: {
+            // 배경화면은 모아 두는 폴더가 따로 있는 게 보통 — Export 캐시와 섞지 않는다.
+            controller.rememberDialogFolder("wallpaper", selectedFile)
+            win.wallStart(selectedFile)
+        }
     }
 
     // ---------- 썸네일 호버 피크 ----------
@@ -5033,8 +5041,10 @@ ApplicationWindow {
                                     text: "Choose folder && start"
                                     onClicked: {
                                         batchFmtPopup.close()
-                                        if (controller.currentFolderUrl !== "")
-                                            batchDestDialog.currentFolder = controller.currentFolderUrl
+                                        // 지난 배치 목적지 → 없으면 현재 사진 폴더(예전 동작)
+                                        var d = controller.dialogFolderUrl("batch")
+                                        if (d === "") d = controller.currentFolderUrl
+                                        if (d !== "") batchDestDialog.currentFolder = d
                                         batchDestDialog.open()
                                     }
                                 }

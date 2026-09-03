@@ -1603,8 +1603,17 @@ class Controller(QObject):
         # ⚠️사용자가 Location 탭에서 **직접 붙인** 좌표는 이 설정과 무관하게 항상 나간다
         #   (붙이는 행위 자체가 의사표시다 — `exif_pass.build_app1` 의 우선순위).
         self._export_keep_gps = str(pref_get("export", "keepGps", True)).lower() != "false"
-        # 마지막으로 저장한 폴더(없거나 사라졌으면 원본 폴더로 폴백)
-        self._export_folder = str(pref_get("export", "lastFolder", "") or "")
+        # 대화상자별 마지막 폴더 — **목적마다 따로** 기억한다(`_DIALOG_FOLDER_KEYS`).
+        # export·배경화면·배치 목적지는 서로 다른 곳에 모으는 게 보통이라, 한 캐시를 공유하면
+        # 매번 남의 트리에서 열린다(사용자 요청, 2026-09-03).
+        # ⚠️export 는 예전 키(`export/lastFolder`)에 이미 값이 있다 → 1회 승계한다.
+        self._dlg_folders = {k: str(pref_get("dialogs", k, "") or "")
+                             for k in self._DIALOG_FOLDER_KEYS}
+        if not self._dlg_folders["export"]:
+            legacy = str(pref_get("export", "lastFolder", "") or "")
+            if legacy:
+                self._dlg_folders["export"] = legacy
+                pref_set("dialogs", "export", legacy)
         # 배경화면 설정은 레지스트리가 아니라 사용자 데이터 폴더의 JSON(_wall_prefs).
         self._wall_prefs_cache = None
         self._wall_prefs_timer = QTimer(self)
@@ -2675,12 +2684,9 @@ class Controller(QObject):
         name = f"{p.stem}_exported.{self._export_ext}"
         # 마지막으로 저장한 폴더에서 열되, 없거나 사라졌으면 원본 폴더로 폴백한다
         # (외장 드라이브를 뽑은 뒤에도 대화상자가 정상적으로 열려야 한다).
-        try:
-            last = Path(self._export_folder) if self._export_folder else None
-            if last is not None and last.is_dir():
-                return QUrl.fromLocalFile(str(last / name))
-        except Exception:
-            pass
+        last = self._dlg_folder("export")
+        if last:
+            return QUrl.fromLocalFile(str(Path(last) / name))
         return QUrl.fromLocalFile(str(p.with_name(name)))
 
     # ---------- export 옵션 기억(해상도·렌더·16bit·폴더) ----------
@@ -2744,21 +2750,54 @@ class Controller(QObject):
         if changed:
             self.exportOptsChanged.emit()
 
+    # ---------- 대화상자별 경로 캐시(목적마다 따로) ----------
+    # export=Export(파일) · wallpaper=Export Wallpaper(파일) · batch=배치 목적지(폴더).
+    # ⚠️Select Folder(사진 폴더)는 여기 없다 — 고르는 순간 탐색기 폴더가 되므로 `currentFolderUrl`
+    #   이 곧 그 대화상자의 기억이다(사용자 결정: 현행 유지).
+    _DIALOG_FOLDER_KEYS = ("export", "wallpaper", "batch")
+
+    def _dlg_folder(self, key: str) -> str:
+        """기억된 폴더(없거나 사라졌으면 "") — 호출부가 각자의 폴백을 쓴다.
+        ⚠️존재 검사를 여기서 한다: 외장 드라이브를 뽑은 뒤에도 대화상자는 열려야 한다."""
+        d = self._dlg_folders.get(str(key), "")
+        try:
+            return d if d and Path(d).is_dir() else ""
+        except OSError:
+            return ""
+
+    @Slot(str, result=str)
+    def dialogFolderUrl(self, key: str) -> str:  # noqa: N802 (QML 슬롯)
+        """QML 이 `currentFolder` 에 바로 넣을 QUrl 문자열. 기억이 없으면 ""."""
+        d = self._dlg_folder(key)
+        return QUrl.fromLocalFile(d).toString() if d else ""
+
+    @Slot(str, QUrl)
+    def rememberDialogFolder(self, key: str, url: QUrl) -> None:  # noqa: N802 (QML 슬롯)
+        """방금 쓴 경로의 **폴더**를 그 대화상자 몫으로 기억한다(파일명은 기억하지 않는다).
+
+        url 은 파일(Export/Wallpaper)일 수도, 폴더(배치 목적지)일 수도 있다 — 폴더면 그대로,
+        파일이면 부모를 쓴다. ⚠️저장 직전이라 파일이 아직 없을 수 있어 `is_dir()` 로 가른다."""
+        k = str(key)
+        if k not in self._DIALOG_FOLDER_KEYS:
+            return
+        try:
+            p = Path(url.toLocalFile())
+            d = p if p.is_dir() else p.parent
+            if not d.is_dir():
+                return
+        except OSError:
+            return
+        folder = str(d)
+        if folder == self._dlg_folders.get(k):
+            return
+        self._dlg_folders[k] = folder
+        pref_set("dialogs", k, folder)
+
     @Slot(QUrl)
     def rememberExportFolder(self, file_url: QUrl) -> None:  # noqa: N802 (QML 슬롯)
         """방금 저장에 쓴 파일의 **폴더**를 기억한다 — 다음 export 대화상자가 그 폴더에서
         열린다(export 전용 폴더에 모으는 흔한 작업 방식). 파일명은 기억하지 않는다."""
-        try:
-            d = Path(file_url.toLocalFile()).parent
-        except Exception:
-            return
-        if not d.is_dir():
-            return
-        folder = str(d)
-        if folder == self._export_folder:
-            return
-        self._export_folder = folder
-        pref_set("export", "lastFolder", folder)
+        self.rememberDialogFolder("export", file_url)
 
     # ---------- 마지막 사용 export 형식(확장자) — 이름/필터/defaultSuffix 의 단일 출처 ----------
     def _get_export_ext(self) -> str:
@@ -3178,8 +3217,13 @@ class Controller(QObject):
 
     @Slot(int, int, result=QUrl)
     def suggestedWallpaperUrl(self, w: int, h: int) -> QUrl:  # noqa: N802 (QML 슬롯)
-        """배경화면 기본 파일명: <현재 탐색기 폴더>/wallpaper_{w}x{h}.jpg"""
-        folder = self._folder or (str(Path(self._path).parent) if self._path else "")
+        """배경화면 기본 파일명: <마지막 배경화면 저장 폴더>/wallpaper_{w}x{h}.jpg.
+
+        ⚠️배경화면은 사진 폴더가 아니라 **모아 두는 폴더**에 저장하는 게 보통이라 export 와도,
+        탐색기 폴더와도 따로 기억한다(`_DIALOG_FOLDER_KEYS`). 기억이 없거나 그 폴더가
+        사라졌으면 예전 동작대로 현재 탐색기 폴더(없으면 원본 폴더)로 폴백한다."""
+        folder = (self._dlg_folder("wallpaper") or self._folder
+                  or (str(Path(self._path).parent) if self._path else ""))
         if not folder:
             return QUrl()
         return QUrl.fromLocalFile(str(Path(folder) / f"wallpaper_{w}x{h}.jpg"))
