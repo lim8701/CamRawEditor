@@ -207,7 +207,7 @@ Save the look you built and put it on another photo.
 
 ## Workflow
 - **Before / After compare** — toggle the unedited original (button or `\` key)
-- **Zone System overlay** (`Z`) — paints the frame by Ansel Adams zone, so you can see where the
+- **Zone System overlay** (Edit panel checkbox) — paints the frame by Ansel Adams zone, so you can see where the
   tones actually land instead of guessing from the histogram (preview only; never exported)
 - **Undo / redo** — snapshot history of all adjustments (`Ctrl+Z` / `Ctrl+Shift+Z`)
 - **Develop credit** — exported files record `Software: Film Rawstery v<version>`

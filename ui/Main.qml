@@ -215,9 +215,10 @@ ApplicationWindow {
     property bool clipWarn: false
     Shortcut { sequence: "J"; enabled: !win._keysBlocked; onActivated: win.clipWarn = !win.clipWarn }
     // 존 시스템 오버레이(프리뷰): 휘도를 안셀 아담스 존 0..X(1존=1스톱, V=18% 그레이)로
-    // 양자화 표시. Z 키 토글. export 불변(진단 전용).
+    // 양자화 표시. export 불변(진단 전용).
+    // ★**단축키가 없다** — Edit 패널 체크박스로만 켠다(한 글자 전역키를 줄이는 중이다.
+    //   가끔 켜보는 진단 오버레이라 빈도가 그 자리를 못 산다. `M`·`P` 와 같은 결정).
     property bool zoneOverlay: false
-    Shortcut { sequence: "Z"; enabled: !win._keysBlocked; onActivated: win.zoneOverlay = !win.zoneOverlay }
     // Undo / Redo (편집 스냅샷)
     Shortcut { sequences: [StandardKey.Undo]; enabled: !win._keysBlocked; onActivated: win.undo() }                    // Ctrl+Z
     Shortcut { sequences: [StandardKey.Redo, "Ctrl+Shift+Z"]; enabled: !win._keysBlocked; onActivated: win.redo() }    // Ctrl+Y / Ctrl+Shift+Z
@@ -2201,16 +2202,16 @@ ApplicationWindow {
             Qt.callLater(function() { win.selectInExplorer(sel) })   // 목록 바인딩 갱신 뒤 스크롤
     }
     Shortcut { sequence: "L"; enabled: !win._keysBlocked; onActivated: win.toggleLikedOnly() }
-    // 짝 JPEG 펼치기/접기 — 선택 항목이 사라져 인덱스가 다른 파일을 가리키는 것 방지(L 과 동일 규율)
-    Shortcut {
-        sequence: "P"; enabled: !win._keysBlocked
-        onActivated: {
-            var sel = ""
-            if (fileListView.currentIndex >= 0 && win.explorerFiles[fileListView.currentIndex])
-                sel = win.explorerFiles[fileListView.currentIndex].path
-            win.showPairedImages = !win.showPairedImages
-            if (sel !== "") Qt.callLater(function () { win.selectInExplorer(sel) })
-        }
+    // 짝 JPEG 펼치기/접기 — 선택 항목이 사라져 인덱스가 다른 파일을 가리키는 것 방지(L 과 동일 규율).
+    // ★단축키(`P`)를 없애고 **탐색기 ⧉ 버튼 하나만** 남겼다. 그때 이 선택 유지 로직이 단축키
+    //   쪽에만 있었으므로 함수로 옮긴다 — 버튼은 `showPairedImages` 를 직접 뒤집고 있어서
+    //   그대로 두면 토글할 때마다 선택이 다른 파일로 튀었다.
+    function togglePairedImages() {
+        var sel = ""
+        if (fileListView.currentIndex >= 0 && win.explorerFiles[fileListView.currentIndex])
+            sel = win.explorerFiles[fileListView.currentIndex].path
+        win.showPairedImages = !win.showPairedImages
+        if (sel !== "") Qt.callLater(function () { win.selectInExplorer(sel) })
     }
     // H = 폴더 태그 워드 클라우드 토글(열기/닫기). 폴더가 있어야 열림.
     Shortcut {
@@ -2220,25 +2221,14 @@ ApplicationWindow {
             else if (controller.currentFolder !== "") win.openTagCloud()
         }
     }
-    // ─── Photo map (`M`) — 이 폴더의 사진이 어디서 찍혔는지 ───
-    // Photo tags(`H`)와 같은 급의 **폴더 단위 읽기 전용 둘러보기**라 형태·단축키 모양을 맞춘다.
+    // ─── Photo map — 이 폴더의 사진이 어디서 찍혔는지 ───
+    // Photo tags(`H`)와 같은 급의 **폴더 단위 읽기 전용 둘러보기**다.
     // ⚠️좌표를 붙이는 일은 Location 패널(`Ctrl+6`)이 단독 담당 — 여기서는 아무것도 안 쓴다.
+    // ★**단축키가 없다** — 탐색기의 🗺 버튼으로만 연다. 닫는 것은 `Esc`(오버레이의
+    //   `Keys.onEscapePressed`)·✕·빈 곳 클릭이다. 그래서 `showPhotoMap` 은 `_keysBlocked` 에
+    //   **계속 들어 있어야 한다** — 여는 키가 없어졌을 뿐 오버레이는 그대로 떠 있고, 빼면
+    //   지도 위에서 `D`·`Ctrl+Z`·`Enter` 가 뒤의 사진을 바꾼다.
     property bool showPhotoMap: false
-    // M = Photo map 토글. 폴더가 있어야 열림(H 와 같은 형태).
-    // ⚠️개인용 플래그가 꺼져 있으면 단축키 자체를 비활성(Ctrl+5 / Wallpaper 와 같은 방식).
-    // ⚠️여기는 `_keysBlocked` 를 그대로 쓰지 않는다 — M 은 **토글**이라 오버레이가 떠 있을 때도
-    //   살아 있어야 닫힌다(`_keysBlocked` 가 `showPhotoMap` 을 포함한다). R·? 와 같은 예외이고
-    //   `python shortcuts.py` 의 가드 검사가 이 셋을 예외로 안다. 나머지 항(타이핑 중·다른
-    //   전체화면 오버레이 위)은 그대로 지킨다.
-    Shortcut {
-        sequence: "M"
-        enabled: controller.photoMapEnabled && !win._typing
-                 && !rawPeekWin.visible && !shortcutHelp.visible
-        onActivated: {
-            if (win.showPhotoMap) win.showPhotoMap = false
-            else if (controller.currentFolder !== "") win.openPhotoMap()
-        }
-    }
     function openPhotoMap() {
         if (!controller.photoMapEnabled) return  // 개인용 — 릴리즈에서는 열리지 않는다
         win.peekHide()                          // 호버 피크가 떠 있으면 닫고 진입
@@ -4377,8 +4367,8 @@ ApplicationWindow {
                         border.width: 1
                         ToolTip.visible: pbHover.hovered
                         ToolTip.text: win.showPairedImages
-                            ? "Paired JPEGs shown as separate photos (P)"
-                            : "Paired JPEGs folded into their RAW (P)"
+                            ? "Paired JPEGs shown as separate photos"
+                            : "Paired JPEGs folded into their RAW"
                         Text {
                             anchors.centerIn: parent
                             text: "⧉"
@@ -4389,7 +4379,7 @@ ApplicationWindow {
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: win.showPairedImages = !win.showPairedImages
+                            onClicked: win.togglePairedImages()
                         }
                     }
                     // 배치 export 선택(체크박스) 모드 토글 — 켜면 파일 클릭=체크, 하단에 Export 바.
@@ -4596,7 +4586,7 @@ ApplicationWindow {
                             onClicked: win.openTagCloud()
                         }
                     }
-                    // 🗺 Photo map (좌표 → 지도 위 썸네일). 단축키 M.
+                    // 🗺 Photo map (좌표 → 지도 위 썸네일). ★여는 길은 이 버튼뿐이다(단축키 없음).
                     // ⚠️개인용 — 플래그가 꺼지면 버튼째 사라진다(RowLayout 은 보이지 않는
                     //   항목의 자리를 잡지 않으므로 여백도 안 남는다).
                     Rectangle {
@@ -4614,7 +4604,7 @@ ApplicationWindow {
                                 smooth: true }
                         HoverHandler { id: mapHover }
                         ToolTip.visible: mapHover.hovered
-                        ToolTip.text: "Photo map (M) — where this folder was shot"
+                        ToolTip.text: "Photo map — where this folder was shot"
                         MouseArea {
                             anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                             onClicked: win.openPhotoMap()
@@ -7079,7 +7069,7 @@ ApplicationWindow {
                         }
                     }
 
-                    // 존 시스템 범례 (Z 키 토글 시) — 하단 중앙, 존 0..X 스와치.
+                    // 존 시스템 범례 — 하단 중앙, 존 0..X 스와치.
                     // 셰이더 zoneShow 표시색과 동일(0=파랑, X=빨강, 나머지 존/10 그레이).
                     Rectangle {
                         visible: win.zoneOverlay && cropClip.visible && !contactSheet.visible
@@ -7096,7 +7086,7 @@ ApplicationWindow {
                             anchors.centerIn: parent
                             spacing: 4
                             Label {
-                                text: "Zone System  (Z) — 1 zone = 1 stop, V = mid gray"
+                                text: "Zone System — 1 zone = 1 stop, V = mid gray"
                                 color: "#8ab4f8"; font.pixelSize: 11; font.bold: true
                             }
                             Row {
@@ -8549,7 +8539,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                     Binding { target: zoneOverlayCheck; property: "checked"; value: win.zoneOverlay }
                     Label {
                         Layout.fillWidth: true
-                        text: "Zone System overlay  (Z)"
+                        text: "Zone System overlay"
                         color: "white"; font.pixelSize: 12
                         elide: Text.ElideRight    // 라벨은 한 줄 유지, 상세 설명은 툴팁
                         verticalAlignment: Text.AlignVCenter

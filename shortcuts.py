@@ -23,7 +23,6 @@ KEYS = [
     ("View", [
         ("I",  ("I",),   "Shooting info overlay"),
         ("C",  ("C",),   "Caption overlay"),
-        ("Z",  ("Z",),   "Zone system overlay"),
         ("J",  ("J",),   "Clipping warning"),
         ("\\", ("\\\\",), "Compare with the original"),
         ("B",  ("B",),   "Show or hide the file explorer"),
@@ -48,9 +47,7 @@ KEYS = [
         ("Alt+↑",  ("Alt+Up",),           "Go to the parent folder"),
         ("Enter",  ("Return", "Enter"),   "Open the selected photo, or enter the folder"),
         ("L",      ("L",),                "Show liked photos only"),
-        ("P",      ("P",),                "Expand or collapse paired JPEGs"),
         ("H",      ("H",),                "Photo tags for this folder"),
-        ("M",      ("M",),                "Photo map - where this folder was shot (when enabled)"),
     ]),
     ("Editing", [
         ("Ctrl+Z",       ("StandardKey.Undo",),                  "Undo"),
@@ -73,6 +70,7 @@ KEYS = [
          "On the Develop tab, step to the previous or next stage"),
         ("Esc",   ("Keys.onEscapePressed",), "Close RAW Peek"),
     ]),
+    # 여는 키는 없다(탐색기 🗺 버튼 전용) — 닫는 키만 있다.
     ("Photo map", [
         ("Esc", ("Keys.onEscapePressed",), "Close the photo map (when enabled)"),
     ]),
@@ -160,7 +158,7 @@ def declared_tokens():
 #   `Enter` 로 프리뷰가 열리는 사고가 났다(그리고 `Alt+Up` 도 같이 새고 있었다).
 #   예외는 **토글**인 둘뿐 — `R`(RAW Peek)과 `?`/F1(단축키 도움말)은 자기 오버레이가 떠 있을
 #   때도 살아 있어야 닫힌다(`_keysBlocked` 가 그 둘의 visible 을 포함한다).
-GUARD_EXEMPT = {'"R"', '["?", "F1"]', '"M"'}
+GUARD_EXEMPT = {'"R"', '["?", "F1"]'}
 
 
 def guard_report(root=None):

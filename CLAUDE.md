@@ -180,7 +180,7 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
 | `pipeline.py` | **풀해상도 export** (numpy, 셰이더와 동일 파이프라인 재현) |
 | `ui/Main.qml` | 전체 UI (좌: 이미지 / 우: 스크롤 패널) |
 | `ui/CurveEditor.qml` | 톤 커브 위젯(드래그/추가/삭제, Catmull-Rom) |
-| `ui/PhotoMapOverlay.qml`<br>`ui/FolderMap.qml`<br>`ui/OsmPlugin.qml` | **Photo map**(`M`) — 폴더 좌표를 지도 위 썸네일 스택으로. 오버레이 껍데기(QtLocation 없음) / 지도·마커·줌별 병합·히트테스트(**QtLocation 을 가둔 파일**) / **타일 정책 단일 진실원**(Location 패널과 공유). 파이썬 쪽은 `main.scanFolderGps`+`_regroup_map_points`. 읽기 전용이라 ★렌더 경로 계약 무관. `docs/photo_map.md` |
+| `ui/PhotoMapOverlay.qml`<br>`ui/FolderMap.qml`<br>`ui/OsmPlugin.qml` | **Photo map**(탐색기 🗺, 단축키 없음) — 폴더 좌표를 지도 위 썸네일 스택으로. 오버레이 껍데기(QtLocation 없음) / 지도·마커·줌별 병합·히트테스트(**QtLocation 을 가둔 파일**) / **타일 정책 단일 진실원**(Location 패널과 공유). 파이썬 쪽은 `main.scanFolderGps`+`_regroup_map_points`. 읽기 전용이라 ★렌더 경로 계약 무관. `docs/photo_map.md` |
 | `shaders/adjust.frag` | 메인 파이프라인 프래그먼트 셰이더 |
 | `shaders/blur.frag` | 분리형 가우시안 블러(로컬대비용) |
 | `luts/*.cube` | 필름 시뮬레이션 LUT (abpy/FujifilmCameraProfiles sRGB, N=32) |
@@ -314,7 +314,7 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   Thunderforest 로 넘겨 "API Key Required" 워터마크가 뜬다. 리디렉트를 끄고 OSM 본 서버를
   `Custom URL Map` 으로 직접 지정하며, **앱 전용 타일 캐시**를 쓴다(Qt 기본 캐시에 워터마크
   타일이 남아 고쳐도 계속 보인다). 상세는 `docs/geotagging.md`
-- **Photo map**(`M`, 탐색기 🗺) — ★**개인용**(`.env` `PHOTO_MAP=1`, Wallpaper 와 같은 기계.
+- **Photo map**(탐색기 🗺 버튼 — ★**단축키 없음**) — ★**개인용**(`.env` `PHOTO_MAP=1`, Wallpaper 와 같은 기계.
   릴리즈는 자동 숨김): 폴더의 좌표를 **지도 위 썸네일 스택**으로 되짚어 본다.
   ⚠️숨긴 이유는 미완이 아니라 **HiDPI 에서 OSM 타일이 흐려서**다(250%에서 256px 타일이
   2.5배 확대, osm.org 는 `@2x` 없음=HTTP 400). 제공자 교체는 한 줄이 아니다 — Qt 의
@@ -334,7 +334,8 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   ⚠️전체화면 지도라 뷰포트당 타일이 패널의 ~6배 — 상세는 `docs/photo_map.md`
   ★⚠️**새 전체화면 오버레이는 `_keysBlocked` 에 넣을 것**(창 단위 `Shortcut{}` 은 포커스와
   무관하게 발화한다 — 안 넣으면 지도 위에서 `D`·`Ctrl+Z`·`Enter` 가 뒤의 사진을 바꿈).
-  단 자기를 닫아야 하는 토글은 예외 — `M` 도 `R`·`?` 와 함께 `shortcuts.GUARD_EXEMPT` 에 있다.
+  ⚠️**여는 단축키가 없어도 `_keysBlocked` 항은 남겨야 한다** — 오버레이는 그대로 뜨기 때문이다
+  (여는 키가 없으니 `GUARD_EXEMPT` 예외는 필요 없다. 예외는 자기를 닫아야 하는 `R`·`?` 둘뿐).
   ⚠️Location 패널 시야 이동의 `panelActive` 가드를 빼면 **숨은 지도가 사진마다 타일을
   받는다**(카메라 이동 = 타일 요청).
 - **컨택트 시트**(빈 캔버스의 폴더 격자): **클릭=선택 / 더블클릭=열기**(탐색기와 같은 규칙),

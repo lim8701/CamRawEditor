@@ -93,7 +93,7 @@ def _flag_on(flags: dict, key: str) -> bool:
 FEATURE_FLAGS = _feature_flags()
 # Wallpaper 패널(3분할 트립틱 합성): 개인용 — 릴리즈에선 .env 부재로 자동 숨김
 WALLPAPER_PANEL = _flag_on(FEATURE_FLAGS, "WALLPAPER_PANEL")
-# Photo map(`M`, 폴더 좌표를 지도 위 썸네일로): 개인용 — 같은 이유로 릴리즈에서 자동 숨김.
+# Photo map(탐색기 🗺, 폴더 좌표를 지도 위 썸네일로): 개인용 — 같은 이유로 릴리즈에서 자동 숨김.
 # ★숨긴 이유는 기능이 미완이라서가 아니라 **타일이 HiDPI 에서 흐리기 때문**이다(실측: 250%
 #   배율에서 256px 타일이 640 device px 로 2.5배 확대. osm.org 표준 레이어에는 @2x 판이 없어
 #   `@2x.png` 는 HTTP 400). 키를 쓰는 제공자로 갈아 끼우는 것이 답인데 Qt OSM 플러그인의
@@ -429,7 +429,7 @@ def _pair_flags(folder: str, names: list) -> list:
     RAF 503 / JPG 497 이 **stem 기준 497쌍 정확히 일치**, JPEG 단독 0장). 같은 폴더·같은 stem 에
     RAW 가 있는 일반 이미지에 `paired` 를 달아 기본으로 접고, 짝을 가진 RAW 행에는 배지용
     `pair`("JPG")를 단다.
-    ⚠️목록에서 **빼지 않고 플래그만** 단다 — QML 토글(P)이 재스캔 없이 즉시 펼칠 수 있게.
+    ⚠️목록에서 **빼지 않고 플래그만** 단다 — QML 토글(탐색기 ⧉)이 재스캔 없이 즉시 펼칠 수 있게.
     ⚠️'RAW 만 보기' 같은 포맷 필터가 아니라 **중복 필터**다. 그래서 이미지 전용 폴더(필름 스캔·
       export 결과 등, 이 라이브러리의 절반 이상)는 접을 짝이 없어 자동으로 무영향이고,
       RAW 단독 사진도 그대로 남는다.
@@ -1470,7 +1470,7 @@ class Controller(QObject):
         # 안 실린다. 원본 RAW 는 절대 건드리지 않고, 사이드카에 저장돼 export JPEG 로만 나간다.
         self._gps = None
         self._gps_src = ""          # "map" / "gpx" / "exif" — 어디서 온 좌표인지(표시용)
-        # ---- Photo map(`M`): 폴더 전체의 좌표 — 읽기 전용이고 아무것도 안 쓴다 ----
+        # ---- Photo map: 폴더 전체의 좌표 — 읽기 전용이고 아무것도 안 쓴다 ----
         self._map_raw = {}          # {abs_path: (lat, lon)} — 워커가 디스크에서 읽은 생값
         self._map_groups = []       # 좌표별 스택(QML 이 보는 면)
         self._map_folder = ""       # 이 결과가 어느 폴더의 것인가(다른 폴더로 옮겼을 때 어긋남 방지)
@@ -3537,7 +3537,7 @@ class Controller(QObject):
         return WALLPAPER_PANEL
 
     def _get_photo_map_enabled(self) -> bool:
-        """Photo map(`M`) 노출 여부 — 개인용 플래그(.env `PHOTO_MAP`). 시작 시 고정."""
+        """Photo map(탐색기 🗺) 노출 여부 — 개인용 플래그(.env `PHOTO_MAP`). 시작 시 고정."""
         return PHOTO_MAP
 
     # 개인용 Wallpaper 패널 노출 여부(.env 플래그, 시작 시 고정) — 릴리즈 기본 숨김
@@ -3816,7 +3816,7 @@ class Controller(QObject):
             self._regroup_map_points()   # Photo map: 루프 뒤 한 번만(위 주석)
         return n
 
-    # ---------- Photo map (`M`) — 폴더의 좌표를 지도 위 썸네일로 보기 ----------
+    # ---------- Photo map — 폴더의 좌표를 지도 위 썸네일로 보기 ----------
     #
     # ★**읽기 전용이다.** 셰이더 uniform 0개 · `_PRESET_KEYS`/`LOOK_DEFAULTS`/`editParams()`/
     #   export dict 무변경 → CLAUDE.md 의 ★렌더 경로 4중 계약에 **들어가지 않는다**.
@@ -3845,7 +3845,7 @@ class Controller(QObject):
         # ★**짝 JPEG(`paired`)은 세지 않는다.** 카메라 RAW+JPEG 동시기록은 **한 컷**이고
         #   사이드카는 RAW 쪽에만 붙는다 — 둘 다 세면 실측 폴더가 "840장 중 420장 위치"로
         #   읽히는데 사실은 **420컷 전부 위치가 있다**(커버리지가 거짓이 된다). 탐색기도
-        #   기본으로 접는 항목이라(`P` 토글) 눈에 보이는 것과도 이쪽이 맞는다.
+        #   기본으로 접는 항목이라(탐색기 ⧉ 토글) 눈에 보이는 것과도 이쪽이 맞는다.
         #   ⚠️배치 인덱서('항상 폴더 전체')와 규칙이 다르다 — 그쪽은 캡션을 **생성**하므로
         #     빠짐이 손해지만, 여기는 **세는 일**이라 중복이 손해다.
         paths = [it["path"] for it in self._files
@@ -4986,7 +4986,7 @@ class Controller(QObject):
             return                               # 더 최신 스캔 진행 중 → 폐기
         if not force and folder == self._folder and items == self._files:
             return                               # 변화 없음(우리 .json 저장 등) → UI 갱신 생략
-        # Photo map: **폴더가 바뀌면** 캐시를 버린다(다음 `M` 이 새로 훑는다). 같은 폴더의
+        # Photo map: **폴더가 바뀌면** 캐시를 버린다(다음에 열 때 새로 훑는다). 같은 폴더의
         #   감시 재스캔(파일 추가/사이드카 저장)에서는 버리지 않는다 — 좌표는 우리가 이미
         #   `_write_gps_sidecar`/`_set_gps` 에서 따라가고 있고, 여기서 버리면 지도가 열린 채
         #   자동저장 한 번에 통째로 비었다가 다시 차서 깜빡인다.

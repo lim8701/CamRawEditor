@@ -1,4 +1,4 @@
-// Photo map (`M`) — 이 폴더의 사진이 어디서 찍혔는지 한 화면에서 본다.
+// Photo map (탐색기 🗺 버튼) — 이 폴더의 사진이 어디서 찍혔는지 한 화면에서 본다.
 //
 // Photo tags(`H`) 오버레이와 **같은 성격**이다: 폴더 단위 읽기 전용 둘러보기. 그래서 몰입형
 // 풀블리드 + 배경 프로스티드 글래스라는 같은 형태를 쓴다(`Main.qml` 의 `tagCloudOverlay`).
@@ -251,7 +251,7 @@ Rectangle {
         return t
     }
 
-    // 닫기 — 우상단. `Esc`/`M`/빈 곳 클릭과 같은 동작(발견 가능하게 눈에 보이는 것도 둔다).
+    // 닫기 — 우상단. `Esc`/빈 곳 클릭과 같은 동작(발견 가능하게 눈에 보이는 것도 둔다).
     Rectangle {
         anchors.right: parent.right; anchors.top: parent.top
         anchors.margins: 26
