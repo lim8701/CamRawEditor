@@ -30,9 +30,14 @@ _PIXEL_X = 0xA002
 _PIXEL_Y = 0xA003
 _MAKERNOTE = 0x927C
 
-# IFD0 에서 버릴 태그 — 전부 **원본 파일 안의 위치**를 가리켜 새 파일에선 무의미하다.
-# (썸네일 포인터/길이, 스트립·타일 오프셋, 서브 IFD 포인터)
-_DROP_IFD0 = {0x0111, 0x0117, 0x0144, 0x0145, 0x014A, 0x0201, 0x0202}
+# IFD0 에서 버릴 태그 — **원본 파일에만 유효한 값**이라 새 파일에선 틀리거나 무의미하다.
+# ① 위치를 가리키는 것: 썸네일 포인터/길이, 스트립·타일 오프셋, 서브 IFD 포인터.
+# ② ⚠️**치수**(`ImageWidth`/`ImageLength`) — 우리는 크롭·리사이즈한 그림을 내보내므로 소스의
+#    치수는 거짓이다. ExifIFD 쪽 짝(`0xA002/0xA003`)은 export 치수로 **갈아 끼우는데**
+#    (`build_app1`) 여기만 두면 한 파일 안에서 두 치수가 어긋난다. IFD0 의 이 둘은 JPEG APP1
+#    에서 선택 항목이고 리더는 SOF 의 실제 치수를 쓰므로, 맞추기보다 **버리는 쪽이 안전하다**.
+#    (실측 X100V RAF 프리뷰에는 없었다 — 넣는 소스가 있을 때를 대비한 가드다.)
+_DROP_IFD0 = {0x0100, 0x0101, 0x0111, 0x0117, 0x0144, 0x0145, 0x014A, 0x0201, 0x0202}
 # ExifIFD 에서 버릴 태그 — Interop IFD 는 값어치 대비 복잡도가 커서 뺀다(문서 '태그 정책').
 _DROP_EXIF = {_INTEROP_IFD}
 
@@ -52,12 +57,19 @@ def find_app1(jpeg: bytes):
     """JPEG 바이트열에서 EXIF APP1 의 `(오프셋, 세그먼트 전체 길이)`. 없으면 `(None, None)`.
 
     ⚠️APP1 은 XMP 도 쓴다 — `"Exif\\x00\\x00"` 로 시작하는 것만 EXIF 다.
+    ⚠️마커 앞에는 **`0xFF` 패딩(fill byte)이 몇 개든 올 수 있다**(JPEG 스펙 B.1.1.3). 안 건너뛰면
+      두 번째 `0xFF` 를 마커 번호로 읽고 그 뒤 2바이트를 길이로 떼어 **엉뚱한 곳으로 점프**한다
+      — 폴백이 있어 피해는 없지만 그 파일만 조용히 EXIF 가 안 실린다.
     """
     if not jpeg or not jpeg.startswith(b"\xFF\xD8"):
         return None, None
     i = 2
     while i + 4 <= len(jpeg):
         if jpeg[i] != 0xFF:
+            return None, None
+        while i + 4 <= len(jpeg) and jpeg[i + 1] == 0xFF:   # 패딩 — 마커는 마지막 0xFF 다음
+            i += 1
+        if i + 4 > len(jpeg):
             return None, None
         marker = jpeg[i + 1]
         if marker in (0xD8, 0xD9, 0xDA):      # SOI/EOI/SOS — 여기부터는 메타데이터가 없다
