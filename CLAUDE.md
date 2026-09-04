@@ -462,6 +462,10 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   63/63, APP1 **3122 B**(소스 65450 B 의 4.8% — 나머지는 썸네일·패딩), 픽셀 비트 동일.
   ⚠️**소스 경로는 요청 시점 스냅샷**이어야 한다 — CPU 는 `src[0]`, **GPU 는 `_gpu_params["srcPath"]`**
   (워커가 `self._path` 를 읽으면 export 중 사진을 바꿨을 때 남의 EXIF 가 박힌다).
+  ⚠️**GPS 는 `gpsSrc` 로 가른다** — 사용자가 Location 탭에서 붙인 좌표는 `keep_gps` 와 무관하게
+  나가고, 카메라가 남긴 좌표(`gpsSrc == "exif"`)는 `keep_gps` 가 결정한다. 판정은
+  `pipeline.gps_from_params` **한 곳**(CPU/GPU 공용). 안 가르면 `build_app1` 의 `if gps:` 가
+  `keep_gps` 를 이겨 **체크를 꺼도 촬영 위치가 실린다**(`docs/exif_passthrough.md` GPS 우선순위).
   ⚠️Orientation 은 **1 로 고정**(회전을 픽셀에 이미 구웠다 — 안 하면 뷰어가 이중 회전),
   `0xA002/0xA003` 은 export 치수로, 원본 `Software` 는 `0x000B ProcessingSoftware` 로 옮긴다.
   ⚠️배경화면 합성은 소스가 3장이라 **통과시키지 않는다**(크레딧만).

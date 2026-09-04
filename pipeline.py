@@ -1178,8 +1178,18 @@ def gps_from_params(p) -> tuple:
 
     ★CPU export(`main._do_export`)와 GPU export(`main._finish_gpu_export`)는 서로 다른
     코드인데 **같은 판정을 써야** 하므로 여기 한 곳에 둔다.
+
+    ⚠️**`gpsSrc == "exif"` 는 좌표가 없는 것으로 친다.** 그건 사용자가 찍은 핀이 아니라
+      카메라가 파일에 남긴 좌표이고(`Controller._load` 가 그렇게 표시한다), 여기서 걸러야
+      export 옵션 "Keep original GPS (JPEG)" 가 실제로 먹는다 — `exif_pass.build_app1` 은
+      `gps` 가 들어오면 `keep_gps` 를 **무조건 이기기** 때문에, 안 걸러 두면 체크를 꺼도
+      아이폰/드론 DNG 의 촬영 위치가 그대로 export 된다(툴팁이 약속한 바로 그 경우).
+      걸러 두면 keep 이 켜졌을 때는 원본 GPS IFD 가 통째로 통과해 좌표뿐 아니라
+      GPSTimeStamp/GPSDateStamp/방위각까지 살아남는다(그 통과 분기가 원래 의도다).
     """
     try:
+        if str(p.get("gpsSrc") or "") == "exif":
+            return None
         lat, lon = p.get("gpsLat"), p.get("gpsLon")
         if lat is None or lon is None:
             return None

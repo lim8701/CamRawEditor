@@ -2141,9 +2141,14 @@ ApplicationWindow {
             "geoV": geoVSlider.value, "geoH": geoHSlider.value, "geoScalePct": geoScaleSlider.value,
             // 지오태그(픽셀 무관) — `pipeline.save_image` 가 JPEG EXIF 로만 남긴다.
             // ★여기가 CPU/GPU export 공용 단일 출처라 한 곳이면 두 경로가 다 덮인다.
+            // ⚠️`gpsSrc` 도 **반드시** 같이 넘긴다. `gpsSet` 만으로는 사용자가 찍은 핀과
+            //   카메라가 파일에 남긴 EXIF 좌표를 구분하지 못하는데, 구분이 없으면 export 옵션
+            //   "Keep original GPS (JPEG)" 를 꺼도 카메라 좌표가 그대로 실린다(판정은
+            //   `pipeline.gps_from_params` 한 곳 — 그 독스트링 참조).
             "gpsLat": controller.gpsSet ? controller.gpsLat : null,
             "gpsLon": controller.gpsSet ? controller.gpsLon : null,
-            "gpsAlt": controller.gpsSet ? win.gpsAltOrNull() : null
+            "gpsAlt": controller.gpsSet ? win.gpsAltOrNull() : null,
+            "gpsSrc": controller.gpsSrc
         }
         // 하늘(로컬) 조정 병합 — CPU render_full 이 보관된 마스크(controller._sky_mask)와 함께 적용.
         var sk = win.skyEditParams()

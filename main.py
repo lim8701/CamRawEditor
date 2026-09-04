@@ -53,7 +53,7 @@ SHADERS_DIR = BASE / "shaders"
 SHADER_NAMES = ["adjust.frag", "blur.frag", "convert.frag", "displaycm.frag", "mistfield.frag",
                 "stamp.frag"]
 LUTS_DIR = BASE / "luts"
-APP_VERSION = "1.11.1"   # SemVer(MAJOR.MINOR.PATCH). 올릴 때 packaging/version_info.txt(exe 버전 리소스)도 수동으로 맞출 것
+APP_VERSION = "1.11.2"   # SemVer(MAJOR.MINOR.PATCH). 올릴 때 packaging/version_info.txt(exe 버전 리소스)도 수동으로 맞출 것
 # export 파일에 남기는 현상 크레딧(JPEG=EXIF Software 태그 / PNG=tEXt).
 # ⚠️`pipeline` 이 `main.APP_VERSION` 을 직접 읽으면 순환 임포트라 **호출측이 넘긴다** —
 #   export 경로를 새로 만들면 이 값을 함께 넘길 것(빠뜨리면 그 파일만 크레딧이 없다).
@@ -3798,6 +3798,13 @@ class Controller(QObject):
             src = str(g.get("src") or "")
         except Exception:
             pass
+        # ⚠️`"exif"` 는 **그 파일에 카메라가 직접 남긴 좌표**라는 뜻이고, `pipeline.gps_from_params`
+        #   가 그 의미에 기대어 export 에서 걸러 낸다("Keep original GPS" 가 판정하도록). 일괄
+        #   적용은 사람이 남의 사진에 위치를 붙이는 행위라 출처가 다르다 — 열린 사진의 EXIF
+        #   좌표를 퍼뜨릴 때 라벨까지 따라가면(패널 초안이 `controller.gpsSrc` 를 물고 있다)
+        #   받은 사진들이 '카메라가 남긴 좌표'로 위장돼 export 에서 조용히 빠진다.
+        if src == "exif":
+            src = "manual"
         cur = os.path.normcase(os.path.abspath(self._ui_path)) if self._ui_path else ""
         n = 0
         for raw in paths:
