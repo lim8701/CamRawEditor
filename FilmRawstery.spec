@@ -90,6 +90,8 @@ hiddenimports = [
     "image_loader",      # main._load_heavy_modules 의 지연 import(일반 이미지 JPG/PNG/TIFF 어댑터)
     "exif_pass",         # pipeline.save_image 안의 지연 import(원본 EXIF 통과) — 빠지면 배포본만
                          # 조용히 크레딧 2태그로 폴백한다(에러가 안 난다 = 알아채기 어렵다)
+    "gpx",               # Controller.applyGpxToPaths 안의 지연 import(GPX 트랙 → 촬영시각 매칭)
+                         # — 빠지면 Location 패널의 'Load GPX' 가 배포본에서만 실패한다
     "raw_peek", "develop_anim", "brush", "shortcuts",  # RAW Peek(R)·현상 애니메이션(5번 탭)·브러시 마스킹·단축키 목록 — 전부 함수 안 import
                                           # (v1.11.0 에서 처음 번들. PyInstaller 가 바이트코드로 잡아내긴 하지만
                                           #  이 파일의 기존 관습대로 명시한다 — 빌드 후 .toc 로 실제 포함을 확인)
