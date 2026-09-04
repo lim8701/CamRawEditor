@@ -5,8 +5,11 @@
 Florence-2 세그(폴리곤, 거침)를 대체 — SAM 은 단일 forward pass 라 빠르고 경계가 깔끔하다.
 결과 마스크는 하늘 마스크와 동일 파이프라인(binding9 로컬 조정)으로 흐른다.
 
-numpy + scipy + onnxruntime 만 사용(Qt 독립). caption.py/sky_seg.py 계약 미러:
-  is_ready() / ensure_model(progress) / provider_label() / encode(rgb) / decode(enc, points, labels).
+numpy + scipy + onnxruntime 만 사용(Qt 독립). 공개 계약은 두 묶음이다:
+  · 모델 다운로드 3종 is_ready() / ensure_model(progress) / provider_label() — caption.py 와 동형.
+    ⚠️sky_seg.py 와 같다고 읽지 말 것: 그쪽은 ensure_model 만 같고 is_ready 대신 model_available
+    이며 provider_label 이 없다(되살릴 때 없는 함수를 찾게 된다).
+  · 세그 2단 encode(rgb) / decode(enc, points, labels) — SAM 고유(아래 인코더 주석).
 모델(~40MB, 2파일)은 app_dirs.MODELS_DIR 에 런타임 다운로드(번들 금지). onnx 는 SHA-256 검증.
 
 인코더는 이미지당 1회(비쌈) → encode() 결과를 호출측이 캐시하고, 클릭마다 decode() 만 재실행
