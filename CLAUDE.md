@@ -167,6 +167,7 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
 | `haze.py` | 디헤이즈 물리(DCP): 이미지당 투과율 t-맵/대기광 A/신뢰도 conf 추정(numpy 독립) |
 | `mist.py` | 미스트(디퓨전) 산란 모델 `out=(1−k)L+k(P⊗(L·E))` — **프론트엔드 맨 앞**(카메라네이티브 scene-linear = 유저 WB·매트릭스·노출보다 앞이라 산란 필드가 슬라이더와 무관해진다). 프리뷰는 **3단**: CPU 필드 3장 → `mistfield.frag` 합성 → `adjust.frag` 가 그 한 장만 섞는다. ⚠️**미측정 모델**(글레어 문헌의 1/θ² prior — 그레인·디헤이즈와 지위가 다르다). ★⚠️`adjust.frag` 에 **샘플러를 늘리지 말 것** — D3D11 은 스테이지당 16개뿐인데 이미 다 쓴다(늘렸다가 파이프라인 생성 실패로 죽었고 **qsb 컴파일은 통과한다**). 계수·실측·기각 기록은 `docs/mist_filter.md` |
 | `depth.py` | 거리 범위 마스킹(Depth Anything V3 Small ONNX, log-depth 정규화, DirectML 우선) — 상대 거리 맵 → near/far 밴드 마스크. 셰이더/pipeline 무변경(기존 마스크 경로 재사용). `docs/depth_masking.md` |
+| `sam_seg.py` | ⚠️**휴면 — 호출자가 없다.** 클릭 선택 마스킹(SlimSAM-77 ONNX). 배선은 `afef809` 에서 철회하고(Masking 패널 v1.5.0 복원) **파일만 남겼다** — 실수로 남은 잔해가 아니다. spec 에도 없어 배포본에 안 들어간다. `caption.py`/`sky_seg.py` 와 같은 계약(`is_ready`/`ensure_model`/`provider_label`/`encode`/`decode`)을 지키고 있어 되살릴 때 그대로 쓴다. `face_seg.py` 의 "sam_seg 패턴"(다운로드 진행률 = 2파일 합산 바이트)이 가리키는 것이 이 파일이다 |
 | `ai_denoise.py` | AI 디노이즈(NAFNet ONNX, 고정 512 타일, DirectML 우선) — nrBase 대체용 luma(numpy 독립) |
 | `lens.py` | RAF 내장 샷별 렌즈 보정(FujiIFD 0xf00b/0f/10 파싱 — 후지 전 기종, 기종 등록 불필요) |
 | `date_stamp.py` | 필름 데이트백: DSEG7 날짜+글로우 렌더, 프리뷰/export 합성. 색·글로우·영역은 **사진별 슬라이더**이고 색은 한 색에서 3색 램프를 파생한다. ⚠️**프리뷰와 export 의 합성식이 다르다**(export 는 screen 70%+source-over 30%) — 산출물이 정확한 쪽. ⚠️파라미터를 늘리면 **호출부 3곳**(CPU export·GPU export·프리뷰)과 **export dict** 를 함께 볼 것. 상세는 `docs/date_stamp.md` |
