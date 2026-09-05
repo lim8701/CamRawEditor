@@ -109,6 +109,15 @@ layout(std140, binding = 0) uniform buf {
     float dehazeKResid;  // 물리 복원 위 잔여 톤모델 비율(라이트룸 체감 보정)
     float nrOn;          // 1=nrBase(디노이즈드 중성 luma) 준비됨. 0이면 휘도 NR 무동작(로드 직후 잠깐)
     float nrChroma;      // 1=nrBase 가 AI RGB 베이스(크로마 유효) → 컬러 NR 이 AI 크로마 사용
+    // ★nrBase 의 **의미 전환** 스위치. 0(프리뷰/애니메이션) = 예전 그대로 '디노이즈드 베이스'라
+    //   노이즈를 `dispSrc − nrBase` 로 셰이더가 만든다. 1(GPU export) = nrBase 가 **노이즈 항
+    //   t 를 직접** 담는다(부호 인코딩 t·0.5+0.5). 왜 필요한가: `pipeFull` 은 `src` 만 풀해상도이고
+    //   `dispSrc` 는 프록시라, 예전 수식은 **프록시 스케일의 노이즈**를 풀해상도에서 빼게 돼
+    //   실제 픽셀 노이즈가 거의 안 줄었다(실측 −3% vs CPU −95%, CLAUDE.md NR 표). t 를 CPU 가
+    //   `pipeline.nr_terms` 로 **출력 해상도에서** 구워 오면 dispSrc 없이 NR 이 성립한다.
+    //   ⚠️샘플러를 늘리지 않으려고 고른 방식이다(아래 D3D11 16슬롯 주석) — t 는 자유도가 3
+    //     (luma 1 + chroma 2, chromaDetail 은 정의상 dot(·,LUMA)=0)이라 RGB 한 장에 정확히 담긴다.
+    float nrNoise;
     float zoneShow;      // [프리뷰 전용] 1=존 시스템 오버레이(휘도를 존 0..X 로 양자화 표시). export=0.
     float hlDesat;       // 하이라이트 디새추 강도: 1=RAW(센서클립 색끼 제거), 0=일반 이미지 입력
     float clipLevel;     // 센서 포화 레벨(카메라네이티브 scene-linear). hlDesat 게이트 기준(raw_loader.clip_level)
@@ -150,7 +159,7 @@ layout(binding = 8) uniform sampler2D sharpBlur; // dispSrc 가우시안 블러(
 layout(binding = 9) uniform sampler2D skyMask0;  // 로컬 마스크 레이어0(단일채널 R, 프록시 해상도). 없으면 1x1 검정
 layout(binding = 10) uniform sampler2D cmLut;    // 디스플레이 색관리 LUT 아틀라스(sRGB→모니터). 프리뷰 전용
 layout(binding = 11) uniform sampler2D hazeT;    // 디헤이즈 투과율 맵(단일채널 R, 소형 — bilinear 업샘플). 없으면 1x1 흰색(t=1)
-layout(binding = 12) uniform sampler2D nrBase;   // 디노이즈드 중성 베이스(프록시, RGBA64). 가이디드=luma 복제 그레이, AI=RGB(크로마 포함, nrChroma=1)
+layout(binding = 12) uniform sampler2D nrBase;   // nrNoise=0: 디노이즈드 중성 베이스(프록시, RGBA64. 가이디드=luma 복제 그레이, AI=RGB(크로마 포함, nrChroma=1)) / nrNoise=1: 노이즈 항 t(출력 해상도, t·0.5+0.5 인코딩)
 layout(binding = 13) uniform sampler2D skyMask1; // 로컬 마스크 레이어1(단일채널 R). 없으면 1x1 검정
 layout(binding = 14) uniform sampler2D skyMask2; // 로컬 마스크 레이어2(단일채널 R). 없으면 1x1 검정
 layout(binding = 15) uniform sampler2D skyMask3; // 로컬 마스크 레이어3(단일채널 R). 없으면 1x1 검정
@@ -529,24 +538,37 @@ void main() {
 
     // 3.5) 노이즈 리덕션 (텍스처/샤프닝 앞 — 노이즈를 먼저 줄이고 디테일 강조). 중성 베이스 기반.
     if (ubuf.lumaNR > 0.0 || ubuf.colorNR > 0.0) {
-        // 휘도 NR: 노이즈 성분 = 중성 luma − 디노이즈드 베이스 luma(nrBase, CPU/AI 1회 계산).
-        // 가이디드 베이스는 luma 복제 그레이라 dot(nb,LUMA)==luma — 두 베이스 공용 수식.
         vec3 nb = texture(nrBase, uv).rgb;
-        if (ubuf.lumaNR > 0.0 && ubuf.nrOn > 0.5) {
-            float noiseL = dot(s0, LUMA) - dot(nb, LUMA);
-            rgb -= vec3(noiseL * ubuf.lumaNR);
-        }
-        // 컬러 NR: chroma 노이즈(색얼룩) 제거. AI 베이스(nrChroma=1)면 중성 chroma −
-        // AI 디노이즈드 chroma(디테일 보존형), 아니면 기존 큰반경(claBlur) 기준.
-        if (ubuf.colorNR > 0.0) {
-            vec3 chromaDetail;
-            if (ubuf.nrChroma > 0.5 && ubuf.nrOn > 0.5) {
-                chromaDetail = (s0 - dot(s0, LUMA)) - (nb - dot(nb, LUMA));
-            } else {
-                vec3 bl = texture(claBlur, uv).rgb;
-                chromaDetail = (s0 - dot(s0, LUMA)) - (bl - dot(bl, LUMA));
+        if (ubuf.nrNoise > 0.5) {
+            // GPU export: nrBase 가 **노이즈 항 t**(출력 해상도, CPU 가 pipeline.nr_terms 로 구움).
+            // t = chromaDetail + vec3(noiseL) 이고 dot(chromaDetail,LUMA)==0, dot(LUMA,1)==1 이라
+            // 아래 두 줄이 원래의 두 항을 **정확히** 되꺼낸다(dispSrc/claBlur 불필요 — nrNoise 주석).
+            vec3 d = nb * 2.0 - 1.0;                 // 부호 디코드
+            float noiseL = dot(d, LUMA);
+            if (ubuf.lumaNR > 0.0 && ubuf.nrOn > 0.5)
+                rgb -= vec3(noiseL * ubuf.lumaNR);
+            if (ubuf.colorNR > 0.0 && ubuf.nrOn > 0.5)
+                rgb -= (d - vec3(noiseL)) * ubuf.colorNR;
+        } else {
+            // 프리뷰/애니메이션: 예전 그대로 — 소스와 베이스가 같은 해상도라 성립한다.
+            // 휘도 NR: 노이즈 성분 = 중성 luma − 디노이즈드 베이스 luma(nrBase, CPU/AI 1회 계산).
+            // 가이디드 베이스는 luma 복제 그레이라 dot(nb,LUMA)==luma — 두 베이스 공용 수식.
+            if (ubuf.lumaNR > 0.0 && ubuf.nrOn > 0.5) {
+                float noiseL = dot(s0, LUMA) - dot(nb, LUMA);
+                rgb -= vec3(noiseL * ubuf.lumaNR);
             }
-            rgb -= chromaDetail * ubuf.colorNR;
+            // 컬러 NR: chroma 노이즈(색얼룩) 제거. AI 베이스(nrChroma=1)면 중성 chroma −
+            // AI 디노이즈드 chroma(디테일 보존형), 아니면 기존 큰반경(claBlur) 기준.
+            if (ubuf.colorNR > 0.0) {
+                vec3 chromaDetail;
+                if (ubuf.nrChroma > 0.5 && ubuf.nrOn > 0.5) {
+                    chromaDetail = (s0 - dot(s0, LUMA)) - (nb - dot(nb, LUMA));
+                } else {
+                    vec3 bl = texture(claBlur, uv).rgb;
+                    chromaDetail = (s0 - dot(s0, LUMA)) - (bl - dot(bl, LUMA));
+                }
+                rgb -= chromaDetail * ubuf.colorNR;
+            }
         }
         rgb = clamp(rgb, 0.0, 1.0);
     }

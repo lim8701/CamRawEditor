@@ -118,7 +118,7 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
 | 경로 | 코드 | 무엇을 읽나 |
 |------|------|------------|
 | 프리뷰 | `ui/Main.qml` `pipe` → `shaders/adjust.frag` | QML 프로퍼티(=셰이더 uniform) |
-| GPU export | `ui/Main.qml` `pipeFull` → 같은 셰이더 | **`pipe` 와 같은 바인딩을 따로 적어 둔 것** |
+| GPU export | `ui/Main.qml` `pipeFull` → 같은 셰이더 | **`pipe` 와 같은 바인딩을 따로 적어 둔 것**. ⚠️`src` 만 풀해상도이고 보조 텍스처(`dispSrc`/블러/마스크)는 **프록시 그대로**다 — 대역이 커서 성격이 유지되는 로컬대비류는 의도된 것이지만, 픽셀 스케일을 노리는 **NR 만은 성립하지 않아** `nrBase` 를 유일하게 다르게 문다(`nrNoise=1` + `NrFullProvider`, 아래 NR 항목) |
 | CPU export | `pipeline.render_full` | `params` dict |
 | 비교창(`\`) | `comparePipe` → `shaders/displaycm.frag` | 무편집 렌더용 일부 uniform |
 
@@ -238,8 +238,53 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
 | Dehaze | 톤: 로컬대비 **0.4** / 대비 **0.25** / 흰베일 **0.22** / 채도 **0.3** · 물리: TMIN **0.15** / RESID **0.35** | +=DCP 물리(t-맵·대기광, conf 게이팅) / −=흰 베일 톤모델. haze.py + 셰이더 6단계 == pipeline._dehaze |
 | Vignette | **0.8** | 방사형, − 가장자리 어둡게 |
 | 미스트 | k **0.42**(Amount=1) / σ **(0.25%, 1%, 4%)** 긴변비 / 무게 블랙 (0.68,0.27,0.05,0)·화이트 (0.30,0.22,0.30,0.18) / 보상 무릎 **0.90~2.20** | `MIST_*` == `mist.py`. 실측(outEdge 1600): 블랙 0.7 에서 섀도 +2.6코드 vs 화이트 +20.5 — Character 가 '블랙 유지 vs 안개'를 8배로 가른다. 점광원 꼬리 화이트 r^-2.1(=목표 1/θ²) / 블랙 r^-3.3. 고주파 유지율 ≈ (1−k) 는 정상(산란된 비율만큼 전 주파수 대비가 준다) |
-| 휘도 NR | 가이디드 필터 반경 **4**(프록시px) / eps **0.0015** | 노이즈=중성 luma−디노이즈드. 프리뷰=nrBase 텍스처(main.py NR 워커, binding 12) / export=pipeline 이 반경 스케일해 동일 필터. 셰이더 uniform 아님(텍스처 베이크) |
-| AI 디노이즈 | NAFNet-SIDD w32, 512 타일 / OVERLAP **64** / DRIFT_SIGMA **16**(프록시px, export ×scale — 모델이 바꾼 저주파 색/밝기 복원, 없으면 colorNR 이 색감을 옮김) | aiNr 체크 시 nrBase(RGBA64) 를 NAFNet RGB 결과로 교체(온디맨드, 완료까지 가이디드 폴백) — **luma=Luminance 슬라이더, chroma=Color 슬라이더**(nrChroma 게이트; 색얼룩 제거가 체감 핵심). GPU EP(DirectML 최속 디바이스 프로빙/CoreML) 우선 — CPU 폴백이면 QML 이 진행 여부를 물음(aiCpuDialog, 세션 기억). export 는 풀해상도 타일 추론. 모델은 런타임 다운로드(models/, 번들 금지). ⚠️SCUNet 은 DML 가속 불능으로 기각(models/README.md 참조 — 재조사 금지) |
+| 휘도 NR | 가이디드 필터 반경 **4**(프록시px) / eps **0.0015** | 노이즈=중성 luma−디노이즈드. 프리뷰=nrBase 텍스처(main.py NR 워커, binding 12) / export=pipeline 이 반경 스케일해 동일 필터. 셰이더 uniform 아님(텍스처 베이크). ★GPU export 는 CPU 가 미리 구운 노이즈 항을 받는다(아래 `nrNoise`) |
+| AI 디노이즈 | NAFNet-SIDD w32, 512 타일 / OVERLAP **64** / DRIFT_SIGMA **7**(프록시px, export ×scale — 모델이 바꾼 저주파 색/밝기 복원, 없으면 colorNR 이 색감을 옮김. 기존 컬러 NR 의 `claBlur` σ 와 같은 값으로 맞춘 것 — 16 이었을 때 색감이 미세하게 이동했음) | aiNr 체크 시 nrBase(RGBA64) 를 NAFNet RGB 결과로 교체(온디맨드, 완료까지 가이디드 폴백) — **luma=Luminance 슬라이더, chroma=Color 슬라이더**(nrChroma 게이트; 색얼룩 제거가 체감 핵심). GPU EP(DirectML 최속 디바이스 프로빙/CoreML) 우선 — CPU 폴백이면 QML 이 진행 여부를 물음(aiCpuDialog, 세션 기억). export 는 풀해상도 타일 추론(**CPU export 경로에서만** — 아래). 모델은 런타임 다운로드(models/, 번들 금지). ⚠️SCUNet 은 DML 가속 불능으로 기각(models/README.md 참조 — 재조사 금지) |
+
+★**NR 은 GPU export 에서 `nrBase` 의 의미가 바뀐다**(`adjust.frag` 의 `nrNoise` 스위치).
+
+- `nrNoise=0` — 프리뷰(`pipe`)·Develop 애니메이션(`pipeAnim`). `nrBase` = 디노이즈드 중성
+  베이스(프록시), 노이즈는 셰이더가 `dispSrc − nrBase` 로 만든다. **예전 그대로**.
+- `nrNoise=1` — GPU export(`pipeFull`). `nrBase` = CPU 가 **출력 해상도**에서 구운 **노이즈 항
+  t**(`NrFullProvider`, RGBA64, 화소 = t·0.5+0.5). 셰이더는 `dot(t,LUMA)`(휘도)와
+  `t − dot(t,LUMA)`(크로마)로 두 항을 되꺼낸다 — `dispSrc`/`claBlur` 를 안 쓴다.
+
+왜: `pipeFull` 은 `src` 만 풀해상도이고 `dispSrc` 는 프록시(2560)다. 예전 수식은 **프록시
+스케일의 노이즈**를 풀해상도에서 빼는 꼴이라 실제 픽셀 노이즈가 거의 안 줄었다(2026-09 실측,
+DSCF2278 ISO6400 26MP, 평탄 타일 191개, lumaNR=colorNR=1.0 — 고주파 σ 3.177%→3.068%(−3%) vs
+CPU 0.143%(−95%); 빼는 항끼리의 상관 0.52 = 다른 신호. AI/가이디드 무관).
+
+- **한 장에 담기는 이유**: `chromaDetail` 은 정의상 `dot(·,LUMA)=0` 이라 자유도가 2, 휘도 1 →
+  합 3 = RGB 한 장. `t = chromaDetail + vec3(noiseL)` 이고 `dot(LUMA,1)==1` 이라 되꺼내기가
+  **정확**하다. ⚠️샘플러를 늘리지 않으려고 고른 방식이다(D3D11 16/16 — 아래 주석).
+- **항 계산은 `pipeline.nr_terms` 한 곳**이다 — CPU export(`render_full`)와 GPU export
+  (`main._build_nr_full`)가 같은 함수를 부른다. 수식을 인라인으로 되돌리면 두 경로가 갈린다.
+- ⚠️**출력 해상도**에서 굽고 셰이더와 1:1 로 대응시킨다. QML `nrFullImage` 에
+  **smooth/mipmap 을 켜지 말 것** — 보간은 노이즈 항을 평균해 NR 을 약하게 만든다.
+- ★**해상도 프리셋 + NR 은 CPU 로 넘긴다**(`win.nrForcesCpu`). `pipeFull` 은 `srcFull` 을
+  **밉맵 트라이리니어**로 줄여 그리는데 노이즈 항은 CPU 가 `_downscale_to_edge`(가우시안+
+  바이리니어)로 줄인 이미지에서 뽑아, 축소 필터가 달라 뺄셈이 반만 맞는다.
+- 비용: NR 계산 자체(가이디드 ~26s / AI ~47s @26MP)는 CPU export 도 똑같이 낸다. 텍스처는
+  26MP 기준 208MB — 모든 종료 경로에서 `_clear_nr_full()` 로 해제한다. 단계별 실측(26MP,
+  AI NR): 디코드 15.2s → NR 굽기 46.8s → **QML 텍스처 로드+셰이더 렌더+grab 0.3s** → 저장
+  25.6s. 텍스처 경로는 공짜다. 전체는 **GPU 62.8s vs CPU 108.9s**(전형적 편집값, Original).
+  ⚠️룩 요소를 전부 끄면 CPU 렌더가 거의 공짜라 두 엔진이 비슷해진다 — GPU 의 이득은
+  LUT/그레인/샤프닝/로컬대비에서 나온다. 벤치마크할 때 룩을 끄고 재면 결론이 뒤집힌다.
+
+실측(DSCF2278 ISO6400, 룩 요소 전부 off, lumaNR=colorNR=1.0 AI, 평탄 타일):
+
+| 출력 | 엔진 | 고주파 σ | 크로마 σ | CPU 대비 픽셀차 |
+|---|---|---|---|---|
+| Original 6246px | CPU | 3.179 → 0.235% (−93%) | 4.006 → 0.193% (−95%) | — |
+| Original 6246px | GPU | 3.197 → 0.437% (−86%) | 4.025 → 0.435% (−89%) | mean 0.87코드 (NR off 기준선 0.72) |
+| 2048px 프리셋 | CPU | 1.593 → 0.290% (−82%) | 1.877 → 0.240% (−87%) | — |
+| 2048px 프리셋 | GPU | 1.735 → 1.221% (**−30%**) | 2.011 → 1.169% (−42%) | mean 2.97코드 (기준선 4.03) |
+
+⚠️프리셋 행의 **기준선 4.03코드**(NR off 인데도 CPU 와 다르다)가 축소 필터 차이의 크기다 —
+이건 NR 이전부터 있던 별건이고, 고치려면 `srcFull` 을 `_downscale_to_edge` 와 같은 필터로
+줄이는 전용 패스가 필요하다. ⚠️노이즈 항을 풀해상도에서 굽고 셰이더가 같이 줄이게 하는 안은
+수학적으로는 맞지만(축소는 선형) 프리셋마다 풀해상도 AI 추론(47s)을 내 CPU(36.7s)보다 느려져
+**기각**했다 — 축소 출력에서는 CPU 렌더가 이미 싸다.
 | Grain ⚠️**현상론적 모델**(물리 시뮬 아님) | 강도 **0.24** / 셀수 `gridN=mix(4500,1300,size)` / 노출의존 `GRAIN_TONE=1.29`·γ **0.86**·바닥값 **0.20** / 왜도 `GRAIN_SKEW=0.92` / 원판 `GRAIN_DISK_R=0.55` · 사진별 슬라이더 **Roughness**(.1)·**Color**(.3)·`Round grains`(기본 꺼짐) | 흑백 휘도 **셀 노이즈(보간 없음)**, 톤커브 뒤·비네팅 앞. 셀 크기는 **긴 변 기준**. 실측 피팅(Noritsu 4롤·151프레임)·기각 기록·**재시도 금지** 항목 전체는 **`docs/film_grain.md`**. ⚠️`GRAIN` 을 바꾸면 `date_stamp.STAMP_GRAIN_K` 도 같은 비율로 재환산할 것. ⚠️그레인 통계(σ·첨도)를 **JPEG 저장본에서 재지 말 것**(블로킹이 첨도를 부풀려 판정을 뒤집는다). ⚠️보간(smoothstep/선형) 재도입 금지 |
 | Temp/Tint | Planckian, TREF=5500 | 절대 Kelvin, 디코딩 단계 |
 
@@ -498,7 +543,8 @@ QML ShaderEffect 파이프라인 (프록시 해상도 FBO에 렌더 → 화면�
   `.tif` 로 저장 후 되읽어 **비트 동일**(8bit 강등 아님) — `image_loader` 도 16bit 소스를
   그대로 받아 헤드룸 상한이 3.834 로 올라간다. ⚠️**JPEG 은 Qt 가 8bit 로 자동 강등**하고,
   **TIFF 에는 현상 크레딧이 안 남는다**(Qt TIFF 핸들러가 `setText` 를 조용히 버린다).
-  ⚠️16bit 는 **CPU export 전용**이다(GPU export 는 8bit grab).
+  ⚠️16bit 는 **CPU export 전용**이다(GPU export 는 8bit grab). NR 은 두 엔진 모두 지원하지만
+  GPU 쪽은 `nrBase` 를 다르게 문다(위 `nrNoise` 항목 — 프록시 텍스처로는 성립하지 않는다).
 
 ## macOS 패키징 (.app + DMG)
 

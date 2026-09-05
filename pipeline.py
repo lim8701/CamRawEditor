@@ -469,6 +469,63 @@ def _sky_adjust(c, m, sp, nd_texhi=None, nd_lc=None):
     return np.clip(out, 0.0, 1.0).astype(np.float32)
 
 
+def nr_terms(neutral_disp, nlum, ln, cn, ai_nr, scale, get_lb=None, progress=None):
+    """NR 두 항 `(noise_l, chroma_detail)` — **CPU export 와 GPU export 의 단일 출처**.
+
+    셰이더 `adjust.frag` 3.5 단계와 같은 정의:
+      noise_l      = 중성 luma − 디노이즈드 luma            (휘도 NR, lumaNR 배)
+      chroma_detail= 중성 chroma − 디노이즈드/블러 chroma    (컬러 NR, colorNR 배)
+    베이스는 `ai_nr` 면 NAFNet(RGB 1회 추론, luma/chroma 공유), 아니면 기존
+    가이디드 필터(휘도) + 큰반경 블러(컬러 — 셰이더 claBlur 대응).
+
+    ⚠️**중성 베이스**(편집 전)에서 뽑는다 — 편집본 기준으로 계산하면 노출을 올린 사진에서
+      NR 이 프리뷰보다 강해진다(과거 버그).
+    `ln`/`cn` 이 0인 항은 계산하지 않고 None 을 준다(무거운 블러/추론 회피).
+    `get_lb`: 큰반경 luma 블러를 이미 계산해 뒀으면 그 게터(비-AI 컬러 NR 이 재사용). 없으면 여기서 계산.
+    `scale`: 프록시 텍셀 반경 → 이 배열의 px. AI 드리프트 반경과 가이디드 반경이 같이 스케일된다.
+    ⚠️AI 실패 시 예외를 삼키고 가이디드/블러로 폴백한다(프리뷰 폴백과 동일 동작).
+
+    `main.Controller._do_full_decode` 는 이 결과를 `t = chroma_detail + noise_l` 로 합쳐
+    셰이더 `nrNoise=1` 텍스처로 굽는다 — 자유도가 3이라 RGB 한 장에 정확히 들어간다
+    (`dot(chroma_detail, LUMA) == 0`, `dot(LUMA, 1) == 1`).
+    """
+    sigma_cla = _TAP_SIGMA * 6.0 * scale     # 프리뷰 claBlur(6px/탭) 대응
+    den_rgb = den_l = None
+    if ai_nr and (ln > 0.0 or cn > 0.0):
+        try:
+            import ai_denoise
+            den_rgb = ai_denoise.denoise_rgb(
+                neutral_disp, progress=progress,
+                drift_sigma=ai_denoise.DRIFT_SIGMA * scale,  # 드리프트 반경도 해상도 스케일
+                pace=ai_denoise.UI_PACE)   # 앱 내 백그라운드 — UI 양보(140타일 +4s)
+            den_l = (den_rgb @ LUMA).astype(np.float32)
+        except Exception as exc:
+            print(f"[export] AI 디노이즈 실패(가이디드/블러 폴백): {exc}")
+            den_rgb = den_l = None
+    noise_l = chroma_detail = None
+    if ln > 0.0:
+        if den_l is not None:
+            nlum_dn = den_l
+        else:
+            from sky_seg import _guided_filter
+            r = max(1, int(round(coeffs.NR_RADIUS * scale)))   # 프록시 px → 이 해상도 px
+            nlum_dn = _guided_filter(nlum, nlum, r, coeffs.NR_EPS)
+        noise_l = (nlum - nlum_dn).astype(np.float32)
+    if cn > 0.0:
+        if den_rgb is not None:
+            # AI 크로마: 중성 chroma − AI 디노이즈드 chroma(디테일 보존형 — 셰이더 nrChroma 분기)
+            chroma_detail = ((neutral_disp - nlum[..., None])
+                             - (den_rgb - den_l[..., None])).astype(np.float32)
+        else:
+            bl_ = _blur_rgb(neutral_disp, sigma_cla)           # 셰이더: claBlur(중성 RGB)
+            # luma(blur_rgb) == blur(luma) (선형 연산) → 호출측이 이미 계산한 lb 를 재사용하고,
+            # 없으면 **다시 블러하지 말고** 방금 만든 bl_ 에서 뽑는다(26MP 에서 5.3초 절약, 값 동일).
+            lb = get_lb() if get_lb is not None else (bl_ @ LUMA).astype(np.float32)
+            chroma_detail = ((neutral_disp - nlum[..., None])
+                             - (bl_ - lb[..., None])).astype(np.float32)
+    return noise_l, chroma_detail
+
+
 def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
                 proxy_edge=2560, strip=256, bitdepth=8, sky_masks=None, progress=None,
                 haze=None):
@@ -717,39 +774,15 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     # 고주파/크로마를 뽑아 편집본 c 에서 뺀다. ⚠️편집본 기반으로 계산하면 노출을 올린 사진에서
     # export 의 NR 이 프리뷰보다 강해짐(과거 버그 — 밝기 스케일만큼 고주파가 커지므로).
     ln = float(p.get("lumaNR", 0)); cn = float(p.get("colorNR", 0))
-    # AI 디노이즈 베이스(NAFNet, 풀해상도 타일 추론 — 프리뷰 nrBase 텍스처와 동일 모델):
-    # RGB 전체를 1회 계산해 휘도/컬러 NR 이 공유(셰이더 nrBase RGBA + nrChroma 게이트 대응).
-    # 해상도가 달라 프록시 프리뷰와 노이즈 통계가 약간 다른 건 AI NR 의 본질적 근사.
-    # 실패 시 None → 기존 가이디드/블러 폴백(프리뷰 폴백과 동일 동작).
-    den_rgb = den_l = None
-    if bool(p.get("aiNr", False)) and (ln > 0.0 or cn > 0.0):
-        try:
-            import ai_denoise
-            den_rgb = ai_denoise.denoise_rgb(
-                neutral_disp, progress=lambda f: _prog(0.31 + 0.21 * f),  # 타일 → 필름 카운터
-                drift_sigma=ai_denoise.DRIFT_SIGMA * scale,  # 드리프트 반경도 해상도 스케일
-                pace=ai_denoise.UI_PACE)   # export 도 앱 내 백그라운드 — UI 양보(140타일 +4s)
-            den_l = (den_rgb @ LUMA).astype(np.float32)
-        except Exception as exc:
-            print(f"[export] AI 디노이즈 실패(가이디드/블러 폴백): {exc}")
-    if ln > 0.0:
-        # 휘도 NR: 노이즈 성분 = 중성 luma − 디노이즈드 베이스 luma(AI 또는 가이디드 필터).
-        if den_l is not None:
-            nlum_dn = den_l
-        else:
-            from sky_seg import _guided_filter
-            r = max(1, int(round(coeffs.NR_RADIUS * scale)))   # 프록시 px → 풀해상도 px
-            nlum_dn = _guided_filter(nlum, nlum, r, coeffs.NR_EPS)
-        noise_l = nlum - nlum_dn
+    # ⚠️두 항의 계산은 `nr_terms` 한 곳이다 — GPU export 가 같은 함수로 노이즈 텍스처를 굽는다
+    #   (`main._do_full_decode`). 수식을 여기서 인라인으로 되돌리면 두 경로가 다시 갈린다.
+    #   AI 베이스(NAFNet)는 해상도가 달라 프록시 프리뷰와 노이즈 통계가 약간 다른 건 본질적 근사.
+    noise_l, chroma_detail = nr_terms(
+        neutral_disp, nlum, ln, cn, bool(p.get("aiNr", False)), scale, get_lb,
+        progress=lambda f: _prog(0.31 + 0.21 * f))   # AI 타일 → 필름 카운터
+    if noise_l is not None:
         c = np.clip(c - (noise_l * ln)[..., None], 0.0, 1.0)
-    if cn > 0.0:
-        if den_rgb is not None:
-            # AI 크로마: 중성 chroma − AI 디노이즈드 chroma(디테일 보존형 — 셰이더 nrChroma 분기)
-            chroma_detail = (neutral_disp - nlum[..., None]) - (den_rgb - den_l[..., None])
-        else:
-            bl_ = _blur_rgb(neutral_disp, sigma_cla)           # 셰이더: claBlur(중성 RGB)
-            # luma(blur_rgb) == blur(luma) (선형 연산) → lb 재사용
-            chroma_detail = (neutral_disp - nlum[..., None]) - (bl_ - get_lb()[..., None])
+    if chroma_detail is not None:
         c = np.clip(c - chroma_detail * cn, 0.0, 1.0)
     # 중성 하이패스(셰이더 texBlur/claBlur/dispSrc 대응) — 전역과 마스크(sky) 경로가 공유.
     # ⚠️편집본(c/disp) 기준으로 뽑으면 노출 편집 시 export 효과가 프리뷰보다 강해짐(상단 주석).

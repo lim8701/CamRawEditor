@@ -656,6 +656,28 @@ class RawFullProvider(QQuickImageProvider):
         return self._img
 
 
+class NrFullProvider(QQuickImageProvider):
+    """GPU export 용 **노이즈 항 텍스처**(출력 해상도 RGBA64)를 'image://nrfull/...' 로 제공.
+
+    셰이더 `nrNoise=1` 분기가 읽는다: 화소값 = t·0.5+0.5, t = chromaDetail + noiseL
+    (`pipeline.nr_terms` — CPU export 와 같은 함수). 프록시 `nrbase` 와 **다른 텍스처**이고
+    (프록시를 풀해상도 소스에 쓰면 NR 이 성립하지 않는다 — 셰이더 nrNoise 주석) export 시에만
+    채워지고 끝나면 clear() 로 해제한다(26MP 기준 208MB)."""
+
+    def __init__(self):
+        super().__init__(QQuickImageProvider.ImageType.Image)
+        self._img = QImage()
+
+    def set_image(self, img: QImage) -> None:
+        self._img = img
+
+    def clear(self) -> None:
+        self._img = QImage()
+
+    def requestImage(self, image_id, size, requested_size):  # noqa: N802 (Qt API)
+        return self._img
+
+
 class LutProvider(QQuickImageProvider):
     """필름 시뮬레이션 LUT 아틀라스를 'image://lut/<key>' 로 제공.
 
@@ -1231,6 +1253,7 @@ class Controller(QObject):
     fullChanged = Signal()       # GPU export: 풀해상도 src URL 갱신(QML Image 재로드용)
     fullReady = Signal()         # GPU export: 풀해상도 디코드 완료(QML 이 grab 준비)
     fullAborted = Signal()       # GPU export: 파이썬 측 디코드 실패 → QML 로더 해제(active=false)
+    nrFullChanged = Signal()     # GPU export: 노이즈 항 텍스처 URL/준비상태 갱신(QML Image 재로드용)
     skyMaskChanged = Signal()    # 하늘 마스크 텍스처 갱신 알림(생성/클리어 모두)
     skySelected = Signal()       # 하늘 마스크 '생성 완료'만(클리어 제외) → QML 이 오버레이 자동 표시
     skyBusyChanged = Signal()    # 하늘 세그멘테이션(추론) 진행 중 표시
@@ -1259,6 +1282,8 @@ class Controller(QObject):
     _rawPeekSig = Signal(object)  # (내부) RAW Peek 워커 -> 메인 (seq, kind, payload)
     _renderReady = Signal(object)  # (내부) 워커 스레드 -> 메인 스레드 결과 전달
     _fullDecoded = Signal(bool)  # (내부) 풀해상도 디코드 워커 -> 메인 스레드
+    _exportStatusSig = Signal(str)  # (내부) export 워커 -> 메인 스레드 상태 문구
+    _nrFullSig = Signal()        # (내부) NR 노이즈 항 텍스처 굽기 완료 -> 메인 스레드
     _skyReady = Signal(object)   # (내부) 마스크 워커 -> 메인 스레드 (img_gen, layer, lseq, mask, strokes)
     _segStatusSig = Signal(str)  # (내부) 세그 워커 -> 메인 스레드 상태 문구 전달
     _segDlSig = Signal(object)   # (내부) 세그 워커 -> 메인 스레드 (downloading, 진행률 0..1)
@@ -1294,7 +1319,8 @@ class Controller(QObject):
                  nr_provider: "NrBaseProvider" = None,
                  face_provider: "FaceThumbProvider" = None,
                  mist_provider: "MistProvider" = None,
-                 peek_provider: "RawPeekProvider" = None):
+                 peek_provider: "RawPeekProvider" = None,
+                 nrfull_provider: "NrFullProvider" = None):
         super().__init__()
         # --- RAW Peek(디모자이크 이전 센서 뷰) — 진단 전용, 룩/export 와 무관 ---
         self._peek_provider = peek_provider
@@ -1339,6 +1365,10 @@ class Controller(QObject):
         self._curve_provider = curve_provider
         self._stamp_provider = stamp_provider
         self._full_provider = full_provider     # GPU export 풀해상도 src
+        self._nrfull_provider = nrfull_provider  # GPU export 노이즈 항 텍스처(셰이더 nrNoise=1)
+        self._nrfull_url = "image://nrfull/n?v=0"
+        self._nrfull_counter = 0
+        self._nrfull_ready = False   # 이번 GPU export 에 NR 텍스처가 준비됨(셰이더 nrOn 게이트)
         self._sky_provider = sky_provider        # 하늘 마스크 텍스처
         self._haze_provider = haze_provider      # 디헤이즈 투과율 맵 텍스처(DCP)
         self._haze_url = "image://haze/h?v=0"
@@ -1554,6 +1584,8 @@ class Controller(QObject):
         self._rawPeekSig.connect(self._on_raw_peek)
         self._renderReady.connect(self._on_render_ready)
         self._fullDecoded.connect(self._on_full_decoded)
+        self._nrFullSig.connect(self.nrFullChanged)
+        self._exportStatusSig.connect(self._set_export_status)
         self._skyReady.connect(self._on_sky_ready)
         self._segStatusSig.connect(self._on_seg_status)
         self._segDlSig.connect(self._on_seg_dl)
@@ -3249,7 +3281,9 @@ class Controller(QObject):
         self._gpu_params["srcPath"] = self._path
         self._exporting = True
         self._apply_keep_awake(True)
-        self._export_progress = 0.0   # GPU 는 진행률 콜백 없음 → 0 유지(오버레이는 인디터미닛 표시)
+        # GPU 는 렌더 진행률이 없다 → 0 유지(오버레이는 인디터미닛). 예외로 NR 이 켜져 있으면
+        # `_build_nr_full` 의 AI 타일 진행률이 여기로 들어온다(수십 초라 표시가 있어야 한다).
+        self._export_progress = 0.0
         self.exportProgressChanged.emit()
         self._set_export_status("GPU exporting… (full-resolution decode)")
         # 소스 경로 스냅샷 — 디코드 중 다른 사진을 로드해도 요청 시점 파일을 디코드(CPU export 동일).
@@ -3264,10 +3298,122 @@ class Controller(QObject):
                        if image_loader.is_display_image(src_path)
                        else load_full(src_path, lens_on))
             self._full_provider.set_image(img)
+            # NR 노이즈 항 텍스처(셰이더 nrNoise=1). ⚠️여기가 CPU export 대비 GPU export 의
+            # 유일한 추가 비용이고, 없으면 NR 이 조용히 빠진다(프록시 nrBase 로는 성립 안 함 —
+            # NrFullProvider/셰이더 nrNoise 주석). 실패해도 export 자체는 계속한다.
+            self._build_nr_full(img)
             self._fullDecoded.emit(True)
         except Exception as exc:
             print(f"[export-gpu] 디코드 실패: {exc}")
             self._fullDecoded.emit(False)
+
+    @staticmethod
+    def _qimage_rgb16(qimg):
+        """RGBA64 QImage → (H,W,3) uint16 (자체 소유 복사본). `_qimage_to_rgb` 의 16bit 판 —
+        헤드룸 코드의 하위 8bit 를 버리면 노이즈 항이 양자화 잡음에 묻힌다."""
+        import numpy as np
+        im = qimg.convertToFormat(QImage.Format.Format_RGBA64)
+        w, h = im.width(), im.height()
+        if w == 0 or h == 0:
+            return np.zeros((max(h, 0), max(w, 0), 3), np.uint16)
+        return (np.frombuffer(im.constBits(), np.uint16)
+                .reshape(h, im.bytesPerLine() // 2)[:, :w * 4]
+                .reshape(h, w, 4)[..., :3].copy())
+
+    def _build_nr_full(self, img) -> None:
+        """GPU export 용 노이즈 항 텍스처를 굽는다(워커 스레드). 준비되면 `_nrfull_ready=True`.
+
+        ★**pipeFull 이 렌더하는 출력 해상도**에서 굽는다 — NR 이 노리는 것은 그 해상도의 픽셀
+          노이즈다. 다만 실제로 여기 오는 것은 **Original(축소 없음)뿐**이다: 해상도 프리셋 +
+          NR 조합은 QML `win.nrForcesCpu` 가 CPU 로 넘긴다(축소 필터가 셰이더 밉맵과 달라
+          뺄셈이 반만 맞는다 — 그쪽 주석의 실측). 프리셋이 와도 틀리지 않게 여기서도 같은
+          `_downscale_to_edge` 를 적용해 두지만, 그 경로의 정확도는 보장 대상이 아니다.
+        항 계산은 `pipeline.nr_terms` — CPU export 와 **같은 함수**라 두 경로가 갈리지 않는다.
+        인코딩: 화소 = t·0.5+0.5 (16bit). t 는 [0,1] 값들의 차의 합이라 실측 |t| ≪ 1 이고,
+        16bit 양자화 σ 는 0.0009% 로 NR 후 잔여 노이즈(~0.14%)보다 두 자릿수 작다.
+        NR 이 꺼져 있으면 아무것도 굽지 않는다(추가 비용 0 — GPU 경로의 속도를 그대로 유지)."""
+        import numpy as np
+        self._nrfull_ready = False
+        if self._nrfull_provider is None:
+            return
+        p = self._gpu_params
+        ln = float(p.get("lumaNR", 0) or 0)
+        cn = float(p.get("colorNR", 0) or 0)
+        if ln <= 0.0 and cn <= 0.0:
+            self._nrfull_provider.clear()
+            return
+        import time
+        t_start = time.perf_counter()
+        try:
+            import pipeline
+            u16 = self._qimage_rgb16(img)                  # 헤드룸 코드(= 셰이더가 보는 값)
+            u16 = pipeline._downscale_to_edge(u16, int(p.get("outEdge", 0) or 0))
+            h, w = u16.shape[:2]
+            proxy_edge = max(self._proxy_w, self._proxy_h) or 2560
+            scale = max(h, w) / float(proxy_edge)          # 프록시 텍셀 반경 → 이 해상도 px
+            # 중성 display 베이스 — 셰이더 dispSrc(convert.frag) / pipeline neutral_disp 와 동형.
+            code = u16.astype(np.float32) / 65535.0
+            del u16                                        # 26MP 에서 156MB — 여기서 놓는다
+            neutral = np.clip(wb.filmic(self._native_to_scenelinear(code)),
+                              0.0, 1.0).astype(np.float32)
+            del code
+            nlum = (neutral @ np.array([0.299, 0.587, 0.114], np.float32)).astype(np.float32)
+            ai = bool(p.get("aiNr", False))
+            if ai:
+                import ai_denoise
+                self._exportStatusSig.emit(
+                    f"GPU exporting… (AI denoise, {ai_denoise.provider_label()})")
+            else:
+                self._exportStatusSig.emit("GPU exporting… (noise reduction)")
+            noise_l, chroma = pipeline.nr_terms(
+                neutral, nlum, ln, cn, ai, scale,
+                progress=lambda f: self._exportProgressSig.emit(f))   # AI 타일 진행률
+            del neutral, nlum
+            # t = chroma + noiseL. 26MP 에서 배열 하나가 313MB 라 **제자리로** 합친다
+            # (새로 할당하면 그만큼 피크가 올라간다 — 이 함수가 export 중 메모리 정점이다).
+            if chroma is not None:
+                t = chroma
+                if noise_l is not None:
+                    t += noise_l[..., None]
+            else:
+                t = np.repeat(noise_l[..., None], 3, axis=2)
+            del noise_l, chroma
+            peak = float(np.abs(t).max())
+            if peak > 1.0:      # 인코딩 범위 초과(이론상만 — 실측 ≪1). 잘리면 그만큼 NR 이 약해진다.
+                print(f"[export-gpu] NR 노이즈 항이 인코딩 범위를 넘음(|t|max={peak:.3f}) — 클립됨")
+            rgba = np.empty((h, w, 4), np.uint16)          # 중간 uint16 배열 없이 바로 채운다
+            np.clip(t, -1.0, 1.0, out=t)
+            t *= 0.5
+            t += 0.5
+            rgba[..., :3] = (t * 65535.0 + 0.5).astype(np.uint16)
+            del t
+            rgba[..., 3] = 65535                           # alpha=불투명(RGBA64 포맷)
+            self._nrfull_provider.set_image(
+                QImage(rgba.data, w, h, w * 8, QImage.Format.Format_RGBA64).copy())
+            self._nrfull_ready = True
+            # NR 이 GPU export 의 유일한 추가 비용이라 시간을 남긴다(CPU export 도 같은 값을 낸다).
+            print(f"[export-gpu] NR 텍스처 {w}x{h} "
+                  f"{'AI' if ai else 'guided'} {time.perf_counter() - t_start:.1f}s")
+        except Exception as exc:
+            # NR 없이라도 내보내는 편이 낫다(사용자는 저장을 요청했다) — 대신 조용히 넘어가지
+            # 않도록 상태 문구를 남긴다(그냥 두면 'NR 이 안 걸린 파일'이 말없이 나간다).
+            print(f"[export-gpu] NR 텍스처 생성 실패(NR 없이 진행): {exc}")
+            self._exportStatusSig.emit("Noise reduction skipped (out of memory?) - exporting anyway")
+            self._nrfull_provider.clear()
+        self._nrfull_counter += 1
+        self._nrfull_url = f"image://nrfull/n?v={self._nrfull_counter}"
+        self._nrFullSig.emit()          # 메인 스레드에서 nrFullChanged 발화(QML Image 재로드)
+
+    def _clear_nr_full(self) -> None:
+        """NR 노이즈 항 텍스처 해제(26MP 208MB). GPU export 가 끝나거나 실패하는 모든 경로에서
+        `_full_provider.clear()` 와 짝으로 호출한다 — 안 놓으면 export 사이에 계속 물고 있다."""
+        if self._nrfull_provider is None:
+            return
+        self._nrfull_provider.clear()
+        self._nrfull_ready = False
+        self._nrfull_counter += 1
+        self._nrfull_url = f"image://nrfull/n?v={self._nrfull_counter}"
+        self.nrFullChanged.emit()
 
     @Slot(bool)
     def _on_full_decoded(self, ok: bool) -> None:
@@ -3280,6 +3426,7 @@ class Controller(QObject):
             # 로 남아 pipeFull(모든 슬라이더 바인딩) 파이프라인이 계속 재평가된다.
             if self._full_provider is not None:
                 self._full_provider.clear()
+                self._clear_nr_full()          # NR 노이즈 항 텍스처도 같이 해제(26MP 208MB)
             self.fullAborted.emit()
             return
         self._full_counter += 1
@@ -3297,6 +3444,7 @@ class Controller(QObject):
         self._finish_export("GPU export failed (image load)")
         if self._full_provider is not None:
             self._full_provider.clear()
+            self._clear_nr_full()          # NR 노이즈 항 텍스처도 같이 해제(26MP 208MB)
 
     @Slot("QImage")
     def saveGrab(self, qimg) -> None:  # noqa: N802 (QML 슬롯)
@@ -3319,8 +3467,12 @@ class Controller(QObject):
             long_e = max(w0, h0)
             f = (edge / long_e) if (0 < edge < long_e) else 1.0
             expected = (int(round(h0 * f)), int(round(w0 * f)))      # (H, W)
+            # ⚠️`_clear_nr_full()` 이 `_nrfull_ready` 를 내리므로 **비우기 전에** 스냅샷을 뜬다
+            #   — 저장 문구가 "NR 이 실제로 걸렸는지"를 이 값으로 판정한다(_finish_gpu_export).
+            self._gpu_params["_nrApplied"] = bool(self._nrfull_ready)
             if self._full_provider is not None:
                 self._full_provider.clear()          # 풀해상도 소스 메모리 해제(QML 로더도 곧 해제)
+                self._clear_nr_full()          # NR 노이즈 항 텍스처도 같이 해제(26MP 208MB)
             # ⚠️스레드 생성까지 try 안에 둔다 — 밖에 두면 start() 실패(RuntimeError: can't start
             #   new thread) 시 _exporting 이 True 로 남아 이후 모든 export 가 조용히 무시된다.
             threading.Thread(target=self._finish_gpu_export,
@@ -3330,6 +3482,7 @@ class Controller(QObject):
             self._apply_keep_awake(False)
             if self._full_provider is not None:
                 self._full_provider.clear()
+                self._clear_nr_full()          # NR 노이즈 항 텍스처도 같이 해제(26MP 208MB)
             self._finish_export(f"Failed: {exc}")
             return
 
@@ -3394,6 +3547,11 @@ class Controller(QObject):
                                      src_path=str(params.get("srcPath", "") or ""),
                                      keep_gps=self._export_keep_gps)
             msg = f"Saved: {path}" if ok else f"Save failed: {path}"
+            # NR 이 켜져 있는데 노이즈 텍스처를 못 구웠으면 **결과에 NR 이 없다** — 최종 문구에
+            # 남긴다(조용히 빠지는 것이 이 기능의 원래 버그였다. `_build_nr_full` 참조).
+            if ok and not params.get("_nrApplied") and (float(params.get("lumaNR", 0) or 0) > 0
+                                                        or float(params.get("colorNR", 0) or 0) > 0):
+                msg += "  (noise reduction skipped)"
         except Exception as exc:
             msg = f"Failed: {exc}"
         finally:
@@ -3455,6 +3613,18 @@ class Controller(QObject):
         return self._full_url
 
     fullUrl = Property(str, _get_full_url, notify=fullChanged)
+
+    def _get_nrfull_url(self) -> str:
+        return self._nrfull_url
+
+    def _get_nrfull_ready(self) -> bool:
+        return self._nrfull_ready
+
+    # GPU export 전용 — `pipeFull` 이 `nrBase`(binding 12)를 프록시 대신 이쪽으로 물고
+    # `nrNoise=1` 로 해석한다. `nrFullReady` 가 곧 pipeFull 의 `nrOn` 이다(NR 이 꺼져 있거나
+    # 굽기에 실패하면 False → 셰이더가 NR 을 건너뛴다).
+    nrFullUrl = Property(str, _get_nrfull_url, notify=nrFullChanged)
+    nrFullReady = Property(bool, _get_nrfull_ready, notify=nrFullChanged)
 
     def _finish_export(self, msg: str) -> None:
         """워커 종료 공통 처리 — 상태와 `_exporting` 을 **알림 전에 모두 확정**한 뒤 한 번만 통지.
@@ -7343,6 +7513,9 @@ def main() -> int:
     full_provider = RawFullProvider()
     engine.addImageProvider("rawfull", full_provider)
 
+    nrfull_provider = NrFullProvider()
+    engine.addImageProvider("nrfull", nrfull_provider)
+
     sky_provider = SkyMaskProvider()
     engine.addImageProvider("skymask", sky_provider)
 
@@ -7366,7 +7539,7 @@ def main() -> int:
 
     controller = Controller(provider, curve_provider, stamp_provider, full_provider,
                             sky_provider, cm_provider, haze_provider, nr_provider,
-                            face_provider, mist_provider, peek_provider)
+                            face_provider, mist_provider, peek_provider, nrfull_provider)
     ctx = engine.rootContext()
     ctx.setContextProperty("controller", controller)
     # ⚠️예전엔 여기서 `lutN`(전역 하나)을 넘겼다 — LUT 마다 N 이 다를 수 있으므로

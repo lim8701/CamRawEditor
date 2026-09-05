@@ -1651,11 +1651,11 @@ ApplicationWindow {
                 // 이게 없으면 장당 20초 타임아웃을 그대로 기다린다.
                 var maskPending = win.maskKeys.length > 0 &&
                                   !controller.hasSkyMask && !controller.maskSettled
-                // GPU 엔진은 셰이더가 nrBase 텍스처를 그대로 쓰므로(CPU 처럼 직접 계산 안 함)
-                // 준비 전에 grab 하면 그 장만 휘도 NR 이 조용히 빠진다 → 마스크와 같이 대기.
-                var nrPending = win.useGpuExport && !controller.nrReady
+                // (nrBase 대기 없음 — NR 이 켜져 있으면 `useGpuExport` 가 CPU 로 넘기므로
+                //  GPU 경로가 nrBase 텍스처를 소비하는 경우 자체가 없다. CPU 경로는 pipeline 이
+                //  풀해상도에서 직접 계산한다.)
                 if (!controller.busy && !controller.skyBusy
-                        && ((!maskPending && !nrPending) || waited > 20000)) {
+                        && (!maskPending || waited > 20000)) {
                     var url = controller.batchExportUrl(
                         win.batchDestUrl, win.batchQueue[win.batchIndex], win.batchExt)
                     if (url === "") { win.batchFails++; win.batchIndex++; win.batchLoadNext(); return }
@@ -2167,7 +2167,24 @@ ApplicationWindow {
 
     // 렌더 엔진 = Export 패널의 Render 콤보(0=CPU, 1=GPU). 16bit 는 GPU grab 이 8bit 라 항상 CPU.
     // 단일/배치가 같은 규칙을 쓰도록 여기 한 곳에만 둔다.
-    readonly property bool useGpuExport: renderModeCombo.currentIndex === 1 && !bitDepth16Check.checked
+    // NR(휘도/컬러)은 GPU 에서도 된다 — CPU 가 출력 해상도에서 구운 노이즈 항 텍스처를 쓴다
+    // (`pipeFull` 의 nrBase/nrNoise 주석). 단 **해상도 프리셋과 같이 쓰면 CPU 로 넘긴다**:
+    //   pipeFull 은 풀해상도 `srcFull` 을 **밉맵 트라이리니어**로 줄여 그리는데, 노이즈 항은
+    //   CPU 가 `_downscale_to_edge`(가우시안+바이리니어)로 줄인 이미지에서 뽑는다. 두 축소
+    //   필터가 달라 남는 노이즈의 실현값이 어긋나 뺄셈이 반만 맞는다 — 실측(2048px, NR 1.0 AI):
+    //   GPU 고주파 −30%/크로마 −42% vs CPU −82%/−87%. Original(축소 없음)에서는 −86%/−89% 로
+    //   CPU(−93%/−95%)와 사실상 같다.
+    //   ⚠️노이즈 항을 풀해상도에서 구워 셰이더가 같이 축소하게 하면 수학적으로는 맞지만(축소는
+    //     선형) 프리셋 export 마다 **풀해상도** AI 추론(26MP 47초)을 내야 해 CPU 보다 느려진다
+    //     (2048 실측: CPU 36.7s vs 그 방식 ~66s). 축소된 크기에서는 CPU 렌더가 이미 싸다.
+    //   근본 해결은 `srcFull` 을 `_downscale_to_edge` 와 같은 필터로 줄이는 전용 패스인데,
+    //   그건 프리셋 GPU export 의 **기존** CPU 대비 오차(NR off 기준선 mean|d| 4.03코드 vs
+    //   Original 0.72코드)까지 건드리는 별건이다.
+    readonly property bool nrOnForExport: lumaNrSlider.value > 0 || colorNrSlider.value > 0
+    readonly property bool nrForcesCpu: win.nrOnForExport
+                                        && win.exportEdges[resCombo.currentIndex] > 0
+    readonly property bool useGpuExport: renderModeCombo.currentIndex === 1
+                                         && !bitDepth16Check.checked && !win.nrForcesCpu
     // Export 실행 진입점(단일 저장·배치 공용). 반환값 = 실제로 시작됐는지(슬롯 재진입 가드 결과).
     function startExport(url, p) {
         if (win.useGpuExport) {
@@ -5250,6 +5267,14 @@ ApplicationWindow {
                 active: false
                 sourceComponent: Component { Item {
                     property bool grabPending: false
+                    // grab 전에 **두 텍스처가 모두** 올라와야 한다. srcFull 만 기다리던 시절엔
+                    // NR 텍스처가 늦으면 그 장만 조용히 NR 없이 찍힌다(배치에서 특히).
+                    // NR 이 꺼져 있으면 파이썬이 프로바이더를 비우고 nrFullReady=false 를 주므로
+                    // 이 Image 는 Null/Error 로 끝난다 → 그것도 '준비 완료'로 친다(대기 없음).
+                    readonly property bool texReady:
+                        srcFull.status === Image.Ready
+                        && (!controller.nrFullReady || nrFullImage.status === Image.Ready)
+                    onTexReadyChanged: if (texReady && grabPending) { grabPending = false; doGrab() }
                     function doGrab() {
                         // ⚠️grabToImage 는 **요청 크기 × DPR** 픽셀의 이미지를 돌려준다
                         //   (실측 dpr=2: 301x203 요청 → 602x406). 논리 크기를 그대로 요청하면
@@ -5274,7 +5299,8 @@ ApplicationWindow {
                         source: controller.fullUrl
                         onStatusChanged: {
                             if (status === Image.Ready && grabPending) {
-                                grabPending = false; doGrab()
+                                if (texReady) { grabPending = false; doGrab() }
+                                // 아직이면 NR 텍스처를 기다린다 — onTexReadyChanged 가 이어받는다
                             } else if (status === Image.Error && grabPending) {
                                 // 풀해상도 로드 실패 → export 상태 복구(멈춤 방지) + 로더 해제
                                 grabPending = false
@@ -5283,10 +5309,18 @@ ApplicationWindow {
                             }
                         }
                     }
+                    Image {
+                        // NR 노이즈 항 텍스처(CPU 가 출력 해상도에서 구움, RGBA64, nrNoise=1).
+                        // ⚠️smooth/mipmap 을 켜지 말 것 — pipeFull 과 **1:1 픽셀 대응**이라
+                        //   보간할 것이 없고, 보간은 노이즈 항을 평균해 NR 을 약하게 만든다
+                        //   (프록시 nrBase 가 실패한 것과 정확히 같은 실수).
+                        id: nrFullImage; visible: false; cache: false; smooth: false
+                        source: controller.nrFullUrl
+                    }
                     Connections {
                         target: controller
                         function onFullReady() {
-                            if (srcFull.status === Image.Ready) doGrab()
+                            if (texReady) doGrab()
                             else if (srcFull.status === Image.Error) {
                                 controller.abortGpuExport()
                                 Qt.callLater(function() { gpuExportLoader.active = false })
@@ -5439,10 +5473,17 @@ ApplicationWindow {
                         property real hazeConf: controller.hazeConf
                         property real dehazeKTmin: controller.adjustCoeffs["dehazeKTmin"]
                         property real dehazeKResid: controller.adjustCoeffs["dehazeKResid"]
-                        // NR 베이스 — 프리뷰(pipe)와 동일 바인딩(프리뷰=Export).
-                        property variant nrBase: nrBaseImage
-                        property real nrOn: controller.nrReady ? 1.0 : 0.0
-                        property real nrChroma: controller.nrChroma ? 1.0 : 0.0
+                        // ★NR 만은 프리뷰(pipe)와 **다른 텍스처**를 문다 — 유일한 예외다.
+                        //   pipe 의 nrBase 는 프록시(2560) '디노이즈드 베이스'이고, 셰이더는
+                        //   노이즈를 `dispSrc − nrBase` 로 만든다. 여기서는 `src` 만 풀해상도라
+                        //   그 식이 프록시 스케일의 노이즈가 되어 실제 픽셀 노이즈가 안 줄어든다
+                        //   (실측 −3% vs CPU −95%). 대신 CPU 가 **출력 해상도**에서 구운 노이즈 항
+                        //   텍스처를 물고 `nrNoise=1` 로 그걸 그대로 쓴다(셰이더 nrNoise 주석).
+                        //   nrChroma 는 이 분기에서 안 쓰인다(항이 이미 합쳐져 들어온다).
+                        property variant nrBase: nrFullImage
+                        property real nrOn: controller.nrFullReady ? 1.0 : 0.0
+                        property real nrChroma: 0.0
+                        property real nrNoise: 1.0
                         // 미스트(1단계) — 커널 합성은 mistFieldPass 가 이미 했다(샘플러 슬롯 절약).
                         // ⚠️binding 6 은 원래 stampTex 였다. adjust.frag 는 D3D11 상한인 16개를
                         //   정확히 쓰고 있으니 새 sampler 를 추가하지 말 것(셰이더 주석 참조).
@@ -5889,6 +5930,8 @@ ApplicationWindow {
                         property variant nrBase: nrBaseImage
                         property real nrOn: controller.nrReady ? 1.0 : 0.0
                         property real nrChroma: controller.nrChroma ? 1.0 : 0.0
+                        // 0 = nrBase 가 '디노이즈드 베이스'(예전 수식). GPU export 만 1 이다.
+                        property real nrNoise: 0.0
                         // 미스트(1단계) — 커널 합성은 mistFieldPass 가 이미 했다(샘플러 슬롯 절약).
                         // ⚠️binding 6 은 원래 stampTex 였다. adjust.frag 는 D3D11 상한인 16개를
                         //   정확히 쓰고 있으니 새 sampler 를 추가하지 말 것(셰이더 주석 참조).
@@ -6109,6 +6152,8 @@ ApplicationWindow {
                         property variant nrBase: nrBaseImage
                         property real nrOn: controller.nrReady ? 1.0 : 0.0
                         property real nrChroma: controller.nrChroma ? 1.0 : 0.0
+                        // 0 = nrBase 가 '디노이즈드 베이스'(예전 수식). GPU export 만 1 이다.
+                        property real nrNoise: 0.0
                         // 미스트(1단계) — 커널 합성은 mistFieldPass 가 이미 했다(샘플러 슬롯 절약).
                         // ⚠️binding 6 은 원래 stampTex 였다. adjust.frag 는 D3D11 상한인 16개를
                         //   정확히 쓰고 있으니 새 sampler 를 추가하지 말 것(셰이더 주석 참조).
@@ -7692,9 +7737,11 @@ ApplicationWindow {
                                     ComboBox {
                                         id: renderModeCombo
                                         Layout.fillWidth: true
-                                        // 16bit 는 CPU 전용(GPU grab 은 8bit) → 16bit 체크 시 GPU 비활성/CPU 고정
+                                        // 16bit 는 CPU 전용(GPU grab 은 8bit) → 16bit 체크 시 GPU 비활성/CPU 고정.
                                         enabled: !bitDepth16Check.checked
                                         model: ["CPU", "GPU"]
+                                        ToolTip.visible: hovered && !enabled
+                                        ToolTip.text: "16-bit output is CPU render only."
                                         onActivated: controller.rememberExportOpts({ "render": currentIndex })
                                         // 드롭다운 닫히면 포커스 해제(단축키 복구 — captionLevelCombo 와 동일)
                                         Connections {
@@ -7706,6 +7753,18 @@ ApplicationWindow {
                                         target: renderModeCombo; property: "currentIndex"
                                         value: controller.exportRender
                                     }
+                                }
+                                // GPU 를 골라 뒀는데 NR+해상도 프리셋 조합이라 CPU 로 나가는 경우 —
+                                // 콤보는 기억된 'GPU' 를 그대로 표시하므로 이 줄이 없으면 조용히
+                                // 다른 엔진으로 찍힌다(속도 손해는 없다 — 축소 렌더는 CPU 가 이미 싸다).
+                                Label {
+                                    Layout.fillWidth: true
+                                    Layout.leftMargin: 78
+                                    visible: win.nrForcesCpu && !bitDepth16Check.checked
+                                             && controller.exportRender === 1
+                                    text: "Noise reduction at a resized output uses CPU render"
+                                    color: "#c8b47a"; font.pixelSize: 11
+                                    wrapMode: Text.WordWrap
                                 }
                                 RowLayout {
                                     Layout.fillWidth: true; spacing: 6
