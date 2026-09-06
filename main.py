@@ -2350,11 +2350,20 @@ class Controller(QObject):
             data["appVersion"] = APP_VERSION        # 이 편집을 만든 앱 버전(추후 지원/디버깅용, 참고용 기록 — 읽어서 되돌리지 않음)
             _atomic_write_json(d / f"{p.name}.json", data)
             self._pending_edits = data               # 현재 파일 캐시 동기화
-            # 썸네일 편집 배지 즉시 반영(현재 탐색기 폴더 파일일 때)
-            if str(p.parent) == self._edited_folder and p.name not in self._edited:
+            # 썸네일 편집 배지 즉시 반영(현재 탐색기 폴더 파일일 때). 집합이라 재추가는 무해.
+            if str(p.parent) == self._edited_folder:
                 self._edited.add(p.name)
-                self._edit_rev += 1
-                self.editsChanged.emit()
+            # ★리비전은 **저장할 때마다** 올린다 — 배지 상태가 안 바뀌어도 올려야 한다.
+            #   Wallpaper 패널의 `image://wallthumb/<path>?r=<editsRevision>` 이 이 값으로
+            #   QML 이미지 캐시를 무효화하는데, 예전처럼 '사이드카가 처음 생길 때만' 올리면
+            #   **이미 편집이 있던 사진**의 크롭·회전을 바꿔도 URL 이 그대로라 QML 이 프로바이더를
+            #   다시 부르지 않고, 템플릿 미리보기가 편집 전 프레이밍에 멈춘다(프로바이더 내부
+            #   캐시는 사이드카 mtime 이 키라 무죄 — 재요청만 되면 최신이다).
+            #   ⚠️저장은 디바운스(editSaveTimer)와 드래그 릴리즈 커밋을 거쳐 제스처당 1회라
+            #     이 알림이 프레임마다 돌지 않는다. 다른 소비자(탐색기 파일명 앰버·컨택트 시트
+            #     라벨)는 `hasEdits` 집합 조회뿐이라 재평가가 싸다.
+            self._edit_rev += 1
+            self.editsChanged.emit()
         except Exception as exc:
             print(f"[edits] 저장 실패: {exc}")
 
@@ -2372,11 +2381,13 @@ class Controller(QObject):
         except Exception as exc:
             print(f"[edits] 삭제 실패: {exc}")
         self._pending_edits = {}                  # 현재 파일 편집 캐시 비움
-        # 썸네일 편집 배지(파일명 앰버) 해제 — 현재 폴더 파일이면 캐시에서 제거 + 리비전 증가
-        if str(p.parent) == self._edited_folder and p.name in self._edited:
+        # 썸네일 편집 배지(파일명 앰버) 해제 — 현재 폴더 파일이면 캐시에서 제거
+        if str(p.parent) == self._edited_folder:
             self._edited.discard(p.name)
-            self._edit_rev += 1
-            self.editsChanged.emit()
+        # 리비전은 저장과 같은 이유로 **항상** 올린다(saveEdits 주석) — Reset 으로 되돌아간
+        # 프레이밍도 Wallpaper 미리보기에 반영돼야 한다.
+        self._edit_rev += 1
+        self.editsChanged.emit()
 
     # ---------- 레시피 프리셋(.frpreset) — 룩만 저장/공유 + 출처 기록 ----------
     # 프리셋이 담는 키의 **단일 진실원**. 저장 필터·로드 필터·QML 의 '기본값으로 되돌릴 키' 목록이
