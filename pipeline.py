@@ -38,6 +38,13 @@ LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
 # √(2·(0.1945946·1+0.1216216·4+0.054054·9+0.016216·16)) = √2.854 ≈ 1.69.
 # export 블러 σ = 이 값 × (프리뷰 탭 간격 px) × scale 로 맞춰야 프리뷰=Export.
 _TAP_SIGMA = 1.69
+# 프리뷰 블러 체인의 **탭 간격(px)** — sigma = `_TAP_SIGMA` × 간격 × scale.
+# ★같은 간격을 여러 함수가 쓴다(`_sharpen_luma` / `nr_terms` / `render_full`). 리터럴로 각자
+#   적어 두면 한쪽만 고치는 날이 온다. 특히 `_CLA_TAP` 은 **컬러 NR 의 블러 반경**이라 갈리면
+#   CPU export 와 GPU export 가 서로 다른 NR 을 낸다 — `nr_terms` 를 한 곳으로 모은 이유가 바로
+#   그 갈림을 막는 것이었으므로, 상수도 한 곳이어야 그 의도가 지켜진다.
+_TEX_TAP = 1.25   # texBlur(작은 반경 — 텍스처)
+_CLA_TAP = 6.0    # claBlur(큰 반경 — 클래리티/디헤이즈/톤영역 마스크/컬러 NR)
 
 
 def _smoothstep(e0, e1, x):
@@ -113,7 +120,7 @@ def _sharpen(c, Ln, amt, radius_px, detail, mask, scale):
     Ld = Ln
     # 프리뷰 sharpBlur 탭 간격 = radius px, texBlur = 1.25px → σ = _TAP_SIGMA × 그 간격.
     Lr = _blur_luma(Ld, max(0.3, _TAP_SIGMA * radius_px * scale))   # 반경 블러(sharpBlur 대응)
-    Lt = _blur_luma(Ld, max(0.3, _TAP_SIGMA * 1.25 * scale))        # 미세 블러(texBlur 대응)
+    Lt = _blur_luma(Ld, max(0.3, _TAP_SIGMA * _TEX_TAP * scale))    # 미세 블러(texBlur 대응)
     hp = (Ld - Lr) + detail * (Ld - Lt)
     step = max(1, int(round(scale)))                         # 프록시 1px ~ scale 풀px
     gx = np.roll(Ld, -step, axis=1) - np.roll(Ld, step, axis=1)
@@ -489,7 +496,7 @@ def nr_terms(neutral_disp, nlum, ln, cn, ai_nr, scale, get_lb=None, progress=Non
     셰이더 `nrNoise=1` 텍스처로 굽는다 — 자유도가 3이라 RGB 한 장에 정확히 들어간다
     (`dot(chroma_detail, LUMA) == 0`, `dot(LUMA, 1) == 1`).
     """
-    sigma_cla = _TAP_SIGMA * 6.0 * scale     # 프리뷰 claBlur(6px/탭) 대응
+    sigma_cla = _TAP_SIGMA * _CLA_TAP * scale   # 프리뷰 claBlur 대응(render_full 과 같은 상수)
     den_rgb = den_l = None
     if ai_nr and (ln > 0.0 or cn > 0.0):
         try:
@@ -749,8 +756,8 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     # 실제 σ = √(2·(w1+4w2+9w3+16w4)) = √2.854 ≈ 1.69 탭(가중치 0.1946/0.1216/0.0541/0.0162).
     # 예전 상수(1.5, 7.0)는 σ≈1.2/탭 가정에서 나온 파생 오류라 export 가 프리뷰보다 ~1.4배
     # 좁았음. 프리뷰 탭 간격: texBlur 1.25px, claBlur 1.5px×(÷4 다운샘플)=6px 프록시.
-    sigma_tex = _TAP_SIGMA * 1.25 * scale   # 프리뷰 텍스처 블러(1.25px/탭) 대응 ≈ 2.11×scale
-    sigma_cla = _TAP_SIGMA * 6.0 * scale     # 프리뷰 클래리티/디헤이즈/톤영역 마스크(6px/탭) ≈ 10.1×scale
+    sigma_tex = _TAP_SIGMA * _TEX_TAP * scale   # 프리뷰 텍스처 블러 대응 ≈ 2.11×scale
+    sigma_cla = _TAP_SIGMA * _CLA_TAP * scale   # 클래리티/디헤이즈/톤영역 마스크 대응 ≈ 10.1×scale
     c = disp
     # hi/sh 국소 톤맵 마스크 = 중성 베이스(neutral_disp)의 국소 평균 휘도. 셰이더 claBlur(중성) 대응.
     nlum = (neutral_disp @ LUMA).astype(np.float32)
