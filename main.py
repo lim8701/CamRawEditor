@@ -3426,6 +3426,26 @@ class Controller(QObject):
         self._nrfull_url = f"image://nrfull/n?v={self._nrfull_counter}"
         self.nrFullChanged.emit()
 
+    @Slot()
+    def nrFullLoadFailed(self) -> None:  # noqa: N802 (QML 슬롯)
+        """QML 이 NR 노이즈 항 텍스처를 못 올렸다 → **NR 없이 계속 간다.**
+
+        ★⚠️여기서 export 를 중단하면 안 된다. `nrFullReady` 가 참인 동안 QML `texReady` 가
+          거짓으로 굳어 grab 이 영영 안 일어나고, `_exporting` 이 True 로 남아 **이후 모든
+          export 가 조용히 무시**된다(배치는 `!controller.exporting` 을 기다리다 같이 멈춘다).
+          `srcFull` 에는 에러 복구가 있는데 이쪽만 없었다.
+        ⚠️**URL 을 바꾸지 않는다**(`_clear_nr_full` 과 다른 점) — 지금 실패한 그 Image 를 다시
+          로드시키면 같은 자리를 맴돈다. 플래그만 내려 `texReady` 를 풀어 준다.
+        ★플래그를 내리는 것이 곧 `saveGrab` 의 `_nrApplied` 스냅샷을 거짓으로 만들어,
+          저장 문구에 "(noise reduction skipped)" 가 붙는다 — NR 이 말없이 빠지지 않는다.
+        """
+        if not self._nrfull_ready:
+            return
+        print("[export-gpu] NR 텍스처 로드 실패 — NR 없이 진행")
+        self._nrfull_ready = False
+        self._set_export_status("Noise reduction skipped (texture load failed) - exporting anyway")
+        self.nrFullChanged.emit()
+
     @Slot(bool)
     def _on_full_decoded(self, ok: bool) -> None:
         """메인 스레드: 풀해상도 src 준비됨 → URL 갱신(QML Image 재로드) + grab 트리거."""

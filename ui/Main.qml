@@ -5316,6 +5316,16 @@ ApplicationWindow {
                         //   (프록시 nrBase 가 실패한 것과 정확히 같은 실수).
                         id: nrFullImage; visible: false; cache: false; smooth: false
                         source: controller.nrFullUrl
+                        // ⚠️**에러도 반드시 처리해야 한다.** 이게 없으면 `nrFullReady` 가 참인
+                        //   채로 `texReady` 가 거짓으로 굳어 grab 이 영영 안 일어나고, export 가
+                        //   끝나지 않아 `controller.exporting` 이 True 로 남는다(배치도 같이
+                        //   멈추고 이후 export 가 전부 무시된다). `srcFull` 에는 있던 복구가
+                        //   이쪽만 빠져 있었다.
+                        // ★abort 가 아니라 **강등**이다 — 파이썬 `_build_nr_full` 도 굽기에
+                        //   실패하면 NR 없이 내보낸다(사용자는 저장을 요청했다). 슬롯이
+                        //   nrFullReady 를 내려 주므로 texReady 가 풀리고, 같은 플래그가
+                        //   저장 문구의 "(noise reduction skipped)" 를 켠다.
+                        onStatusChanged: if (status === Image.Error) controller.nrFullLoadFailed()
                     }
                     Connections {
                         target: controller
